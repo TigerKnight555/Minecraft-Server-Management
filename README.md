@@ -43,8 +43,10 @@ nur im Docker-Netz bzw. LAN erreichbar machen.
 ```sh
 cp .env.example .env   # Werte anpassen, insbesondere MSM_RCON_PASSWORD
 
-# Login-Hash erzeugen und in .env als MSM_ADMIN_PASSWORD_HASH eintragen:
-docker compose run --rm msm -hash-password 'DEIN_PASSWORT'
+# Login-Hash erzeugen und in .env eintragen ($ muss für Compose als $$
+# escaped werden — das erledigt diese Zeile automatisch):
+HASH=$(docker compose run --rm msm -hash-password 'DEIN_PASSWORT')
+sed -i "s|^MSM_ADMIN_PASSWORD_HASH=.*|MSM_ADMIN_PASSWORD_HASH=${HASH//$/\$\$}|" .env
 
 docker compose up -d --build
 ```
