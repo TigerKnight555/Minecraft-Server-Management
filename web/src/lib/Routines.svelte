@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte'
-  import { listRoutines, createRoutine, updateRoutine, deleteRoutine, runRoutine, recentRuns, restorePlayer } from './stream.js'
+  import { listRoutines, createRoutine, updateRoutine, deleteRoutine, runRoutine, recentRuns, restorePlayer, listRestorePlayers } from './stream.js'
 
   let routines = $state([])
   let runs = $state([])
@@ -106,10 +106,30 @@
   let restoreBusy = $state(false)
   let restoreResult = $state('')
   let restoreError = $state('')
+  let players = $state([])
+
+  async function loadPlayers() {
+    try {
+      players = await listRestorePlayers()
+    } catch {
+      players = [] // Endpoint aus (kein Daten-Mount) -> manuelles UUID-Feld
+    }
+  }
+  onMount(loadPlayers)
+
+  function playerLabel(p) {
+    const name = p.name || `(unbekannt) ${p.uuid}`
+    const seen = p.lastSaved ? new Date(p.lastSaved).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' }) : ''
+    return seen ? `${name} — zuletzt ${seen}` : name
+  }
+
+  function playerName(uuid) {
+    return players.find((p) => p.uuid === uuid)?.name || uuid
+  }
 
   async function doRestore(e) {
     e.preventDefault()
-    if (!confirm(`Spielerdaten für ${restoreUUID} aus dem letzten Backup wiederherstellen?\nDer Spieler muss offline sein!`)) return
+    if (!confirm(`Spielerdaten für ${playerName(restoreUUID)} aus dem letzten Backup wiederherstellen?\nDer Spieler muss offline sein!`)) return
     restoreBusy = true
     restoreResult = ''
     restoreError = ''
@@ -191,12 +211,23 @@
 
   <h2 style="margin-top: 1.2rem">Spielerdaten wiederherstellen</h2>
   <form class="routine-form" onsubmit={doRestore}>
-    <label>Spieler-UUID (mit Bindestrichen)
-      <input bind:value={restoreUUID} required placeholder="069a79f4-44e9-4726-a5be-fca90e38aaf5"
-        pattern="[0-9a-fA-F]{'{'}8{'}'}-[0-9a-fA-F]{'{'}4{'}'}-[0-9a-fA-F]{'{'}4{'}'}-[0-9a-fA-F]{'{'}4{'}'}-[0-9a-fA-F]{'{'}12{'}'}"
-        style="min-width: 21rem" />
-    </label>
-    <button type="submit" disabled={restoreBusy}>{restoreBusy ? 'Läuft…' : 'Aus letztem Backup wiederherstellen'}</button>
+    {#if players.length > 0}
+      <label>Spieler
+        <select bind:value={restoreUUID} required style="min-width: 18rem">
+          <option value="" disabled selected>— Spieler wählen —</option>
+          {#each players as p (p.uuid)}
+            <option value={p.uuid}>{playerLabel(p)}</option>
+          {/each}
+        </select>
+      </label>
+    {:else}
+      <label>Spieler-UUID (mit Bindestrichen)
+        <input bind:value={restoreUUID} required placeholder="069a79f4-44e9-4726-a5be-fca90e38aaf5"
+          pattern="[0-9a-fA-F]{'{'}8{'}'}-[0-9a-fA-F]{'{'}4{'}'}-[0-9a-fA-F]{'{'}4{'}'}-[0-9a-fA-F]{'{'}4{'}'}-[0-9a-fA-F]{'{'}12{'}'}"
+          style="min-width: 21rem" />
+      </label>
+    {/if}
+    <button type="submit" disabled={restoreBusy || !restoreUUID}>{restoreBusy ? 'Läuft…' : 'Aus letztem Backup wiederherstellen'}</button>
     <span class="dim">Spieler muss offline sein. Aktuelle Datei wird als .pre-restore-* gesichert.</span>
   </form>
   {#if restoreResult}<div class="ok-msg">{restoreResult}</div>{/if}

@@ -18,6 +18,7 @@
 //	MSM_BACKUP_CONTAINER    pre-created restic compose service  (default mc-backup)
 //	MSM_RESTORE_CONTAINER   pre-created restore compose service (default mc-restore)
 //	MSM_RESTORE_JOB_DIR     shared job dir for restore scripts  (default /job)
+//	MSM_MC_DATA_DIR         read-only MC data mount for the player list (default /mc/data)
 //	MSM_DISCORD_WEBHOOK_URL one Discord webhook, receives every event
 //	MSM_DISCORD_WEBHOOKS    JSON list with per-webhook event filters, wins over
 //	                        the single URL: [{"name":"admin","url":"https://...",
@@ -200,6 +201,16 @@ func main() {
 		}
 		restore = backup.NewRestore(bd, coll, envOr("MSM_RESTORE_CONTAINER", "mc-restore"), jobDir, log)
 	}
+	// Spielerliste fürs Restore-Dropdown: MC-Datenverzeichnis read-only
+	mcDataDir := envOr("MSM_MC_DATA_DIR", "/mc/data")
+	if *mockMode {
+		dir, err := mock.CreateFakeWorld(filepath.Join(os.TempDir(), "msm-mock"))
+		if err != nil {
+			log.Error("mock world failed", "err", err)
+			os.Exit(1)
+		}
+		mcDataDir = dir
+	}
 	if err := sched.Start(ctx); err != nil {
 		log.Error("scheduler start failed", "err", err)
 		os.Exit(1)
@@ -244,6 +255,7 @@ func main() {
 			ModManager:        modmgr,
 			Watcher:           watcher,
 			Restore:           restore,
+			MCDataDir:         mcDataDir,
 			MCContainer:       envOr("MSM_MC_CONTAINER", "mc-fabric"),
 			FallbackMCVersion: os.Getenv("MC_VERSION"),
 			Managed:           managed,

@@ -6,10 +6,13 @@ package mock
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -351,3 +354,35 @@ func (s *Store) QuerySeries(_ context.Context, series string, from, to time.Time
 }
 
 func (s *Store) Close() error { return nil }
+
+// CreateFakeWorld builds a minimal MC data dir (playerdata + usercache) for
+// the restore dropdown in mock mode. Returns the data dir path.
+func CreateFakeWorld(base string) (string, error) {
+	dataDir := filepath.Join(base, "data")
+	pd := filepath.Join(dataDir, "world", "playerdata")
+	if err := os.MkdirAll(pd, 0o755); err != nil {
+		return "", err
+	}
+	players := map[string]string{
+		"069a79f4-44e9-4726-a5be-fca90e38aaf5": "Steve",
+		"853c80ef-3c37-49fd-aa49-938b674adae6": "Alex",
+		"deadbeef-0000-4000-8000-000000000001": "", // nicht mehr im usercache
+	}
+	var cache []map[string]string
+	for uuid, name := range players {
+		if err := os.WriteFile(filepath.Join(pd, uuid+".dat"), []byte("fake nbt"), 0o644); err != nil {
+			return "", err
+		}
+		if name != "" {
+			cache = append(cache, map[string]string{"name": name, "uuid": uuid, "expiresOn": "2026-08-01 00:00:00 +0000"})
+		}
+	}
+	data, err := json.Marshal(cache)
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "usercache.json"), data, 0o644); err != nil {
+		return "", err
+	}
+	return dataDir, nil
+}

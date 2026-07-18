@@ -148,3 +148,4 @@ export const versionWatchCheck = () => apiFetch('/api/version-watch/check', { me
 // --- backup/restore (Phase 4.4) ---
 export const restorePlayer = (uuid) =>
   apiFetch('/api/backup/restore-player', { method: 'POST', body: JSON.stringify({ uuid }) })
+export const listRestorePlayers = () => apiFetch('/api/backup/players')

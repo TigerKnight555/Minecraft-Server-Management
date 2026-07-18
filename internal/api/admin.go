@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/backup"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/storage"
@@ -224,6 +225,21 @@ func (s *Server) handleRunRoutine(w http.ResponseWriter, r *http.Request) {
 	s.audit(r.Context(), "routine.run-now", strconv.FormatInt(id, 10))
 	go s.sched.RunNow(context.Background(), id)
 	writeJSON(w, http.StatusAccepted, map[string]bool{"started": true})
+}
+
+// handleListPlayers returns the restorable players (playerdata scan +
+// usercache names) for the restore dropdown.
+func (s *Server) handleListPlayers(w http.ResponseWriter, r *http.Request) {
+	players, err := backup.ListPlayers(s.mcDataDir)
+	if err != nil {
+		s.log.Error("player list failed", "err", err)
+		httpError(w, http.StatusInternalServerError, "Spielerliste nicht lesbar: "+err.Error())
+		return
+	}
+	if players == nil {
+		players = []backup.Player{}
+	}
+	writeJSON(w, http.StatusOK, players)
 }
 
 // handleRestorePlayer restores one player's data file from the newest

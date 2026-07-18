@@ -85,6 +85,9 @@ services:
       # Job-Verzeichnis fürs Einzeldatei-Restore (Skript-Übergabe an
       # mc-restore); muss auf dem Host existieren und g+w sein (README)
       - ${MC_DATA_PATH:-/home/knvt/minecraft/fabric_server}/.msm-restore:/job
+      # MC-Daten read-only: Spielerliste (playerdata + usercache.json)
+      # fürs Restore-Dropdown
+      - ${MC_DATA_PATH:-/home/knvt/minecraft/fabric_server}:/mc/data:ro
     ports:
       # LAN-only: an die LAN-Adresse des Hosts binden, nie 0.0.0.0 ohne Firewall
       - "${MSM_BIND_ADDR:-127.0.0.1}:8080:8080"
