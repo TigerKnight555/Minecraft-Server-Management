@@ -53,7 +53,12 @@ if [ -f "$F" ]; then
   cp -p "$F" "$F.pre-restore-$(date +%%Y-%%m-%%d_%%H-%%M-%%S)"
   echo "aktuelle Datei gesichert als $F.pre-restore-*"
 fi
-cp "/restore-out$F" "$F"
+# -p erhält Besitzer/Rechte aus dem Snapshot — ohne -p gehörte die Datei
+# root und der MC-Server (uid 1000) könnte sie nicht mehr lesen! Zusätzlich
+# Besitzer ans playerdata-Verzeichnis angleichen, falls der Snapshot selbst
+# schon falsche Ownership enthält (busybox: kein chown --reference).
+cp -p "/restore-out$F" "$F"
+chown "$(stat -c '%%u:%%g' /data/world/playerdata)" "$F"
 echo "wiederhergestellt: $F"
 `
 

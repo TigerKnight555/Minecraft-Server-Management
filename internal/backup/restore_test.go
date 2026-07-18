@@ -38,6 +38,8 @@ func TestRestoreWritesScriptAndSupervises(t *testing.T) {
 		"restic restore latest",
 		".pre-restore-",
 		"set -eu",
+		`cp -p "/restore-out$F" "$F"`, // Ownership erhalten (MC-Server muss lesen können)
+		`chown "$(stat -c '%u:%g' /data/world/playerdata)" "$F"`, // Gürtel + Hosenträger
 	} {
 		if !strings.Contains(string(script), want) {
 			t.Errorf("script fehlt %q:\n%s", want, script)
