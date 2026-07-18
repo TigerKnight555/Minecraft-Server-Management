@@ -362,3 +362,110 @@ func TestBackupChainSkipsWhenPlayersOnline(t *testing.T) {
 		t.Errorf("runs = %+v", runs)
 	}
 }
+
+// --- hostReboot (Phase 4.5) ---
+
+type fakeSignaler struct {
+	calls int
+	err   error
+}
+
+func (f *fakeSignaler) RequestReboot() error {
+	f.calls++
+	return f.err
+}
+
+func rebootRoutine(mut func(*storage.Routine)) storage.Routine {
+	r := storage.Routine{
+		Name: "nachtreboot", Cron: "30 3 * * *", Kind: "host-reboot",
+		Payload: "mc-fabric", WarnMinutes: 0, Enabled: true,
+	}
+	if mut != nil {
+		mut(&r)
+	}
+	return r
+}
+
+func TestHostRebootStopsThenSignals(t *testing.T) {
+	s, store, docker, rcon := setup(t)
+	s.containers = &fakeResolver{state: "running"}
+	sig := &fakeSignaler{}
+	s.SetRebootSignaler(sig)
+
+	id, _ := store.CreateRoutine(context.Background(), rebootRoutine(nil))
+	s.RunNow(context.Background(), id)
+
+	if got := docker.ActionLog(); len(got) != 1 || !strings.HasPrefix(got[0], "stop:") {
+		t.Fatalf("actions = %v, want nur [stop] (Start macht restart:always nach Boot)", got)
+	}
+	if sig.calls != 1 {
+		t.Errorf("signaler calls = %d, want 1", sig.calls)
+	}
+	cmds := rcon.Commands()
+	if len(cmds) != 1 || cmds[0] != "save-all" {
+		t.Errorf("rcon = %v, want [save-all]", cmds)
+	}
+	runs, _ := store.RecentRuns(context.Background(), 10)
+	if len(runs) != 1 || !runs[0].OK || !strings.Contains(runs[0].Message, "Reboot angefordert") {
+		t.Errorf("runs = %+v", runs)
+	}
+}
+
+func TestHostRebootSignalFailureRestartsServer(t *testing.T) {
+	s, store, docker, _ := setup(t)
+	s.containers = &fakeResolver{state: "running"}
+	sig := &fakeSignaler{err: errors.New("verzeichnis fehlt")}
+	s.SetRebootSignaler(sig)
+
+	id, _ := store.CreateRoutine(context.Background(), rebootRoutine(nil))
+	s.RunNow(context.Background(), id)
+
+	got := docker.ActionLog()
+	if len(got) != 2 || !strings.HasPrefix(got[1], "start:") {
+		t.Fatalf("actions = %v, want [stop, start] — Server darf nicht liegen bleiben", got)
+	}
+	runs, _ := store.RecentRuns(context.Background(), 10)
+	if len(runs) != 1 || runs[0].OK || !strings.Contains(runs[0].Message, "Server läuft wieder") {
+		t.Errorf("runs = %+v", runs)
+	}
+}
+
+func TestHostRebootStoppedServerJustSignals(t *testing.T) {
+	s, store, docker, rcon := setup(t)
+	s.containers = &fakeResolver{state: "exited"}
+	sig := &fakeSignaler{}
+	s.SetRebootSignaler(sig)
+
+	id, _ := store.CreateRoutine(context.Background(), rebootRoutine(nil))
+	s.RunNow(context.Background(), id)
+
+	if got := docker.ActionLog(); len(got) != 0 {
+		t.Fatalf("actions = %v, want keine", got)
+	}
+	if len(rcon.Commands()) != 0 {
+		t.Errorf("rcon = %v, want keine", rcon.Commands())
+	}
+	if sig.calls != 1 {
+		t.Errorf("signaler calls = %d, want 1", sig.calls)
+	}
+}
+
+func TestHostRebootSkipsWhenPlayersOnline(t *testing.T) {
+	s, store, docker, _ := setup(t)
+	s.containers = &fakeResolver{state: "running"}
+	sig := &fakeSignaler{}
+	s.SetRebootSignaler(sig)
+	var players atomic.Int32
+	var online atomic.Bool
+	players.Store(1)
+	s.SetMCStatus(mcState(&players, &online))
+
+	id, _ := store.CreateRoutine(context.Background(), rebootRoutine(func(r *storage.Routine) {
+		r.SkipIfPlayersOnline = true
+	}))
+	s.RunNow(context.Background(), id)
+
+	if sig.calls != 0 || len(docker.ActionLog()) != 0 {
+		t.Fatalf("signaler=%d actions=%v, want übersprungen", sig.calls, docker.ActionLog())
+	}
+}

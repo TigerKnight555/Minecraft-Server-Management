@@ -45,6 +45,11 @@ type BackupRunner interface {
 	Run(ctx context.Context) (string, error)
 }
 
+// RebootSignaler requests a host reboot (hostctl.Signaler satisfies this).
+type RebootSignaler interface {
+	RequestReboot() error
+}
+
 // errSkipped marks a run that was intentionally not executed because a
 // condition held (e.g. players online). Not a failure — the run history
 // records it as OK with the reason.
@@ -65,6 +70,7 @@ type Scheduler struct {
 	mcStatus func() collector.MCStatus
 	applier  StagedApplier
 	backup   BackupRunner
+	reboot   RebootSignaler
 
 	// warnStep is 1 minute in production; tests shrink it.
 	warnStep time.Duration
@@ -98,6 +104,9 @@ func (s *Scheduler) SetStagedApplier(a StagedApplier) { s.applier = a }
 
 // SetBackupRunner wires the restic backup orchestration (kind "backup").
 func (s *Scheduler) SetBackupRunner(b BackupRunner) { s.backup = b }
+
+// SetRebootSignaler wires the host-reboot signal file (kind "host-reboot").
+func (s *Scheduler) SetRebootSignaler(r RebootSignaler) { s.reboot = r }
 
 // Start loads all enabled routines and begins scheduling; Reload picks up
 // changes after CRUD operations.
@@ -243,6 +252,9 @@ func (s *Scheduler) execute(ctx context.Context, r storage.Routine) (string, err
 
 	case "backup":
 		return s.backupChain(ctx, r)
+
+	case "host-reboot":
+		return s.hostReboot(ctx, r)
 
 	default:
 		return "", fmt.Errorf("unbekannter Routinentyp %q", r.Kind)
@@ -446,6 +458,74 @@ func (s *Scheduler) backupChain(ctx context.Context, r storage.Routine) (string,
 		return "", fmt.Errorf("%w (Server-Status: %s)", backupErr, steps[len(steps)-1])
 	}
 	return strings.Join(steps, "; "), nil
+}
+
+// hostReboot is the nightly host reboot (Phase 4.5): Bedingungen →
+// Warnungen → save-all → Container-Stopp → Signaldatei. Den eigentlichen
+// Reboot führt der systemd-Watcher auf dem Host aus; MSM stirbt dabei mit.
+// Nach dem Boot übernimmt der hostctl-Reconciler (Soll-Zustand + „wieder
+// online"-Meldung — ihr Ausbleiben ist der Alarm).
+func (s *Scheduler) hostReboot(ctx context.Context, r storage.Routine) (string, error) {
+	if s.reboot == nil {
+		return "", fmt.Errorf("host-Reboot nicht verdrahtet (MSM_HOST_SIGNAL_DIR + Host-Watcher prüfen)")
+	}
+	id, err := s.resolve(r.Payload)
+	if err != nil {
+		return "", fmt.Errorf("minecraft-Container: %w", err)
+	}
+	if s.containerRunning(r.Payload) {
+		if r.SkipIfPlayersOnline {
+			if s.mcStatus == nil {
+				return "", fmt.Errorf("bedingung 'Spieler online' braucht den MC-Status (nicht verdrahtet)")
+			}
+			if n := s.mcStatus().PlayersOnline; n > 0 {
+				return "", errSkipped{reason: fmt.Sprintf("%d Spieler online", n)}
+			}
+		}
+		if r.WaitForEmpty {
+			if err := s.waitForEmpty(ctx, r); err != nil {
+				return "", err
+			}
+		}
+		if s.rcon != nil && r.WarnMinutes > 0 {
+			for m := r.WarnMinutes; m >= 1; m-- {
+				warn := fmt.Sprintf("say §cServer-Neustart (Host-Reboot) in %d Minute(n)!", m)
+				if _, err := s.rcon.Exec(ctx, warn); err != nil {
+					s.log.Warn("warn announce failed", "err", err)
+				}
+				select {
+				case <-ctx.Done():
+					return "", ctx.Err()
+				case <-time.After(s.warnStep):
+				}
+			}
+			s.rcon.Exec(ctx, "say §cServer startet jetzt neu!")
+		}
+		if s.rcon != nil {
+			if _, err := s.rcon.Exec(ctx, "save-all"); err != nil {
+				s.log.Warn("save-all before reboot failed", "err", err)
+			}
+		}
+		// expliziter Stopp mit vollem Grace-Timeout — deterministischer als
+		// das Container-Stoppen beim System-Shutdown; restart:always bringt
+		// den Server nach dem Boot von selbst wieder hoch
+		if err := s.controller.StopContainer(ctx, id); err != nil {
+			return "", fmt.Errorf("stop %s: %w", r.Payload, err)
+		}
+	}
+	if err := s.reboot.RequestReboot(); err != nil {
+		// Server nicht liegen lassen: ohne Reboot muss er wieder hoch
+		if startErr := s.controller.StartContainer(ctx, id); startErr != nil {
+			return "", fmt.Errorf("%v; Start danach AUCH fehlgeschlagen: %w", err, startErr)
+		}
+		return "", fmt.Errorf("%w (Server läuft wieder)", err)
+	}
+	s.bus.Publish(events.Event{
+		Type: events.TypeSystemReboot, Severity: events.SevInfo,
+		Title:   "Host-Reboot angefordert",
+		Message: "Minecraft gestoppt, Signal an den Host-Watcher geschrieben. Die Online-Meldung folgt nach dem Boot — bleibt sie aus, bitte nachsehen!",
+	})
+	return "Reboot angefordert (Signaldatei geschrieben)", nil
 }
 
 // containerRunning checks the collector's view of a container state.

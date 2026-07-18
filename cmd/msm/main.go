@@ -19,6 +19,7 @@
 //	MSM_RESTORE_CONTAINER   pre-created restore compose service (default mc-restore)
 //	MSM_RESTORE_JOB_DIR     shared job dir for restore scripts  (default /job)
 //	MSM_MC_DATA_DIR         read-only MC data mount for the player list (default /mc/data)
+//	MSM_HOST_SIGNAL_DIR     shared dir for host watcher signal files (default /host-signal)
 //	MSM_DISCORD_WEBHOOK_URL one Discord webhook, receives every event
 //	MSM_DISCORD_WEBHOOKS    JSON list with per-webhook event filters, wins over
 //	                        the single URL: [{"name":"admin","url":"https://...",
@@ -45,6 +46,7 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/dockerclient"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/hostctl"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/hostmetrics"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mcquery"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mcrcon"
@@ -210,6 +212,20 @@ func main() {
 			os.Exit(1)
 		}
 		mcDataDir = dir
+	}
+
+	// Host-Reboot (Phase 4.5): Signaldatei für den systemd-Watcher auf dem
+	// Host (deploy/host-watcher/) + Soll-Zustand-Abgleich nach jedem Start.
+	signalDir := envOr("MSM_HOST_SIGNAL_DIR", "/host-signal")
+	if *mockMode {
+		signalDir = filepath.Join(os.TempDir(), "msm-mock")
+	}
+	sched.SetRebootSignaler(hostctl.NewSignaler(signalDir))
+	if ds, ok := admin.(hostctl.DesiredStore); ok {
+		rec := hostctl.NewReconciler(ds, controller, coll, mcState,
+			func() collector.HostSample { return coll.Snapshot().Host },
+			bus, envOr("MSM_MC_CONTAINER", "mc-fabric"), log)
+		go rec.Run(ctx)
 	}
 	if err := sched.Start(ctx); err != nil {
 		log.Error("scheduler start failed", "err", err)

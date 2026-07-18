@@ -37,6 +37,9 @@ const (
 	TypeBackupStale     = "backup.stale"
 	TypeRestoreOK       = "backup.restore.ok"
 	TypeRestoreFailed   = "backup.restore.failed"
+	TypeSystemReboot    = "system.reboot"  // Reboot angefordert
+	TypeSystemOnline    = "system.online"  // nach Boot: alles wieder da
+	TypeSystemDegraded  = "system.degraded" // nach Boot: Server kam nicht hoch
 )
 
 // Field is one key/value pair shown in a notification (Discord embed field).

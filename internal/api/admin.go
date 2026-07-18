@@ -25,6 +25,8 @@ type AdminStore interface {
 	UpdateRoutine(ctx context.Context, r storage.Routine) error
 	DeleteRoutine(ctx context.Context, id int64) error
 	RecentRuns(ctx context.Context, limit int) ([]storage.RoutineRun, error)
+	// Soll-Zustand (Phase 4.5): nur explizite Nutzer-Aktionen setzen ihn
+	SetDesiredState(ctx context.Context, container, state string) error
 }
 
 func (s *Server) audit(ctx context.Context, action, detail string) {
@@ -81,6 +83,14 @@ func (s *Server) handleContainerAction(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadGateway, "Aktion fehlgeschlagen: "+err.Error())
 		return
 	}
+	// Nutzer-Intention persistieren: der Boot-Abgleich stellt genau diesen
+	// Zustand nach jedem Host-Reboot wieder her (bewusst gestoppt bleibt aus)
+	if s.admin != nil {
+		desired := map[string]string{"start": "running", "restart": "running", "stop": "stopped"}[action]
+		if err := s.admin.SetDesiredState(r.Context(), name, desired); err != nil {
+			s.log.Error("soll-zustand speichern fehlgeschlagen", "container", name, "err", err)
+		}
+	}
 	s.audit(r.Context(), "container."+action, detail)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -118,21 +128,23 @@ func validateRoutine(rt *storage.Routine) string {
 		if rt.WarnMinutes < 0 || rt.WarnMinutes > 60 {
 			return "Vorwarnzeit muss zwischen 0 und 60 Minuten liegen"
 		}
-	case "backup":
-		// Payload = Minecraft-Container, der für den Snapshot gestoppt wird
-		// (der Backup-Container selbst kommt aus MSM_BACKUP_CONTAINER)
+	case "backup", "host-reboot":
+		// Payload = Minecraft-Container (wird für Snapshot bzw. Reboot gestoppt)
 		if rt.Payload == "" {
-			return "Container-Name fehlt (der Minecraft-Container, der fürs Backup gestoppt wird)"
+			return "Container-Name fehlt (der Minecraft-Container)"
 		}
 		if rt.WarnMinutes < 0 || rt.WarnMinutes > 60 {
 			return "Vorwarnzeit muss zwischen 0 und 60 Minuten liegen"
 		}
+		if rt.Kind == "host-reboot" && (rt.ApplyStaged || rt.WatchdogMinutes != 0) {
+			return "Update-Einspielen und Watchdog gehören zur Backup-Routine, nicht zum Host-Reboot"
+		}
 	default:
-		return "unbekannter Typ (rcon, restart, announce-restart, backup)"
+		return "unbekannter Typ (rcon, restart, announce-restart, backup, host-reboot)"
 	}
-	stage2OK := rt.Kind == "announce-restart" || rt.Kind == "backup"
+	stage2OK := rt.Kind == "announce-restart" || rt.Kind == "backup" || rt.Kind == "host-reboot"
 	if !stage2OK && (rt.SkipIfPlayersOnline || rt.WaitForEmpty || rt.ApplyStaged || rt.WatchdogMinutes != 0) {
-		return "Bedingungen, Update-Einspielen und Watchdog gibt es nur bei angekündigtem Neustart und Backup"
+		return "Bedingungen, Update-Einspielen und Watchdog gibt es nur bei angekündigtem Neustart, Backup und Host-Reboot"
 	}
 	if rt.WatchdogMinutes < 0 || rt.WatchdogMinutes > 30 {
 		return "Watchdog muss zwischen 0 und 30 Minuten liegen"

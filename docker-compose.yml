@@ -88,6 +88,9 @@ services:
       # MC-Daten read-only: Spielerliste (playerdata + usercache.json)
       # fürs Restore-Dropdown
       - ${MC_DATA_PATH:-/home/knvt/minecraft/fabric_server}:/mc/data:ro
+      # Host-Reboot-Signaldatei (Phase 4.5): der systemd-Watcher auf dem
+      # Host reagiert darauf (deploy/host-watcher/install.sh)
+      - ${MSM_HOST_SIGNAL_PATH:-/home/knvt/minecraft/msm-host}:/host-signal
     ports:
       # LAN-only: an die LAN-Adresse des Hosts binden, nie 0.0.0.0 ohne Firewall
       - "${MSM_BIND_ADDR:-127.0.0.1}:8080:8080"

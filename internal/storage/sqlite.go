@@ -60,6 +60,9 @@ CREATE TABLE IF NOT EXISTS samples_minute (
 	if err := s.migrateAudit(); err != nil {
 		return err
 	}
+	if err := s.migrateStates(); err != nil {
+		return err
+	}
 	return s.migrateRoutines()
 }
 

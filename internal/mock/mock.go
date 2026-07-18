@@ -236,6 +236,7 @@ type Store struct {
 	AuditLog []storage.AuditEntry
 	Routines []storage.Routine
 	Runs     []storage.RoutineRun
+	Desired  map[string]string
 	nextID   int64
 }
 
@@ -385,4 +386,26 @@ func CreateFakeWorld(base string) (string, error) {
 		return "", err
 	}
 	return dataDir, nil
+}
+
+// --- Soll-Zustand (Phase 4.5) ---
+
+func (s *Store) SetDesiredState(_ context.Context, container, state string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Desired == nil {
+		s.Desired = map[string]string{}
+	}
+	s.Desired[container] = state
+	return nil
+}
+
+func (s *Store) ListDesiredStates(_ context.Context) ([]storage.DesiredState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []storage.DesiredState
+	for c, st := range s.Desired {
+		out = append(out, storage.DesiredState{Container: c, State: st, Updated: time.Now()})
+	}
+	return out, nil
 }

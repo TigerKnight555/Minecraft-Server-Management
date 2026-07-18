@@ -133,6 +133,29 @@ Nachtbackup-Skript läuft parallel weiter, bis der erste Restore-Test aus
 dem restic-Repo gelungen ist (Migrationsregel: nie weniger Sicherung als
 vorher).
 
+### Nächtlicher Host-Reboot (Phase 4.5)
+
+Routine vom Typ „Host-Reboot", Payload = Minecraft-Container. MSM selbst hat
+keine Host-Rechte: Warnungen → `save-all` → Container-Stopp → **Signaldatei**
+nach `/host-signal` (Host: `~/minecraft/msm-host/`). Ein winziger
+systemd-Path-Watcher auf dem Host reagiert darauf — seine einzige Fähigkeit
+ist `systemctl reboot`; veraltete Signaldateien (> 10 min) werden ignoriert
+(Schutz vor Reboot-Schleifen).
+
+Nach dem Boot: Docker startet MSM und mc-fabric (`restart: always`), der
+**Soll-Zustand-Abgleich** korrigiert Abweichungen (bewusst gestoppte
+Container bleiben gestoppt — der Soll-Zustand wird bei jedem Start/Stopp im
+Dashboard persistiert) und meldet „System neu gestartet — wieder online"
+nach Discord, sobald Minecraft antwortet. Kommt die Meldung nicht
+(`system.degraded` bzw. gar nichts), ist das der Alarm.
+
+Watcher einmalig installieren:
+
+```sh
+cd ~/Minecraft-Server-Management/deploy/host-watcher
+sudo bash install.sh
+```
+
 ### Discord-Benachrichtigungen
 
 Ereignisse (Routine ok/fehlgeschlagen, Mod-Updates eingespielt, Rollback,

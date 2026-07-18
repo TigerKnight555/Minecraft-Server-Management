@@ -1,0 +1,9 @@
+[Unit]
+Description=MSM Host-Watcher: wartet auf Reboot-Signaldatei
+
+[Path]
+PathExists=/home/knvt/minecraft/msm-host/reboot.request
+Unit=msm-reboot.service
+
+[Install]
+WantedBy=multi-user.target

@@ -21,7 +21,9 @@
     restart: 'Container-Neustart',
     'announce-restart': 'Angekündigter Neustart',
     backup: 'Backup (restic)',
+    'host-reboot': 'Host-Reboot (ganzes System)',
   }
+  const stage2Kinds = ['announce-restart', 'backup', 'host-reboot']
 
   async function refresh() {
     try {
@@ -42,10 +44,12 @@
   async function submit(e) {
     e.preventDefault()
     try {
+      const withWatchdog = stage2Kinds.includes(form.kind) && form.kind !== 'host-reboot'
       await createRoutine({
         ...form,
-        warnMinutes: Number(form.warnMinutes),
-        watchdogMinutes: form.kind === 'announce-restart' ? Number(form.watchdogMinutes) : 0,
+        warnMinutes: stage2Kinds.includes(form.kind) ? Number(form.warnMinutes) : 0,
+        watchdogMinutes: withWatchdog ? Number(form.watchdogMinutes) : 0,
+        applyStaged: withWatchdog ? form.applyStaged : false,
       })
       form = emptyForm()
       showForm = false
@@ -165,16 +169,20 @@
       <label>{form.kind === 'rcon' ? 'Befehl' : 'Container'}
         <input bind:value={form.payload} required placeholder={form.kind === 'rcon' ? 'save-all' : 'mc-fabric'} />
       </label>
-      {#if form.kind === 'announce-restart' || form.kind === 'backup'}
+      {#if stage2Kinds.includes(form.kind)}
         <label>Vorwarnung (Min.) <input type="number" bind:value={form.warnMinutes} min="0" max="60" /></label>
-        <label>Watchdog (Min., 0 = aus) <input type="number" bind:value={form.watchdogMinutes} min="0" max="30" /></label>
+        {#if form.kind !== 'host-reboot'}
+          <label>Watchdog (Min., 0 = aus) <input type="number" bind:value={form.watchdogMinutes} min="0" max="30" /></label>
+        {/if}
         <div class="conditions">
           <label class="check"><input type="checkbox" bind:checked={form.skipIfPlayersOnline} /> Überspringen, wenn Spieler online</label>
           <label class="check"><input type="checkbox" bind:checked={form.waitForEmpty} /> Auf leeren Server warten</label>
           {#if form.waitForEmpty}
             <label>höchstens bis (HH:MM) <input bind:value={form.waitDeadline} placeholder="06:00" pattern="[0-2][0-9]:[0-5][0-9]" /></label>
           {/if}
-          <label class="check"><input type="checkbox" bind:checked={form.applyStaged} /> Gestagte Mod-Updates beim Neustart einspielen</label>
+          {#if form.kind !== 'host-reboot'}
+            <label class="check"><input type="checkbox" bind:checked={form.applyStaged} /> Gestagte Mod-Updates beim Neustart einspielen</label>
+          {/if}
         </div>
       {/if}
       <button type="submit">Anlegen</button>

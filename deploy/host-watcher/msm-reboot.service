@@ -1,0 +1,6 @@
+[Unit]
+Description=MSM Host-Watcher: führt angeforderten Reboot aus
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/msm-reboot-watcher.sh
