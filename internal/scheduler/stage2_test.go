@@ -211,3 +211,154 @@ func TestConditionsWithoutWiringFailLoudly(t *testing.T) {
 		t.Errorf("runs = %+v, want lauter Fehler statt stillem Degradieren", runs)
 	}
 }
+
+// --- backupChain (Phase 4.3, Stop-basiertes Backup) ---
+
+type fakeResolver struct{ state string }
+
+func (f *fakeResolver) Containers() []collector.Container {
+	return []collector.Container{{ID: "abc123", Name: "mc-fabric", State: f.state}}
+}
+
+type fakeBackup struct {
+	calls int
+	msg   string
+	err   error
+}
+
+func (f *fakeBackup) Run(context.Context) (string, error) {
+	f.calls++
+	return f.msg, f.err
+}
+
+func backupRoutine(mut func(*storage.Routine)) storage.Routine {
+	r := storage.Routine{
+		Name: "nachtbackup", Cron: "30 3 * * *", Kind: "backup",
+		Payload: "mc-fabric", WarnMinutes: 0, Enabled: true,
+	}
+	if mut != nil {
+		mut(&r)
+	}
+	return r
+}
+
+func TestBackupChainStopsSnapshotsStarts(t *testing.T) {
+	s, store, docker, rcon := setup(t)
+	s.containers = &fakeResolver{state: "running"}
+	fb := &fakeBackup{msg: "Backup ok in 42s — snapshot ab12 saved"}
+	s.SetBackupRunner(fb)
+
+	id, _ := store.CreateRoutine(context.Background(), backupRoutine(nil))
+	s.RunNow(context.Background(), id)
+
+	got := docker.ActionLog()
+	if len(got) != 2 || !strings.HasPrefix(got[0], "stop:") || !strings.HasPrefix(got[1], "start:") {
+		t.Fatalf("actions = %v, want [stop, start]", got)
+	}
+	if fb.calls != 1 {
+		t.Errorf("backup calls = %d, want 1", fb.calls)
+	}
+	cmds := rcon.Commands()
+	if len(cmds) != 1 || cmds[0] != "save-all" {
+		t.Errorf("rcon = %v, want [save-all]", cmds)
+	}
+	runs, _ := store.RecentRuns(context.Background(), 10)
+	if len(runs) != 1 || !runs[0].OK ||
+		!strings.Contains(runs[0].Message, "Server gestoppt") ||
+		!strings.Contains(runs[0].Message, "Backup ok") ||
+		!strings.Contains(runs[0].Message, "Server gestartet") {
+		t.Errorf("runs = %+v, want vollständige Schrittkette", runs)
+	}
+}
+
+func TestBackupChainFailureStartsServerAnyway(t *testing.T) {
+	s, store, docker, _ := setup(t)
+	s.containers = &fakeResolver{state: "running"}
+	fb := &fakeBackup{err: errors.New("NAS weg")}
+	s.SetBackupRunner(fb)
+
+	id, _ := store.CreateRoutine(context.Background(), backupRoutine(nil))
+	s.RunNow(context.Background(), id)
+
+	got := docker.ActionLog()
+	if len(got) != 2 || !strings.HasPrefix(got[1], "start:") {
+		t.Fatalf("actions = %v, want Start trotz Backup-Fehler", got)
+	}
+	runs, _ := store.RecentRuns(context.Background(), 10)
+	if len(runs) != 1 || runs[0].OK || !strings.Contains(runs[0].Message, "NAS weg") {
+		t.Errorf("runs = %+v, want Fehler mit Ursache", runs)
+	}
+}
+
+func TestBackupChainStoppedServerStaysStopped(t *testing.T) {
+	s, store, docker, rcon := setup(t)
+	s.containers = &fakeResolver{state: "exited"}
+	fb := &fakeBackup{msg: "Backup ok in 30s — snapshot cd34 saved"}
+	s.SetBackupRunner(fb)
+
+	id, _ := store.CreateRoutine(context.Background(), backupRoutine(nil))
+	s.RunNow(context.Background(), id)
+
+	if got := docker.ActionLog(); len(got) != 0 {
+		t.Fatalf("actions = %v, want keine (Server bleibt aus)", got)
+	}
+	if len(rcon.Commands()) != 0 {
+		t.Errorf("rcon = %v, want keine Befehle bei gestopptem Server", rcon.Commands())
+	}
+	runs, _ := store.RecentRuns(context.Background(), 10)
+	if len(runs) != 1 || !runs[0].OK || !strings.Contains(runs[0].Message, "bleibt aus") {
+		t.Errorf("runs = %+v, want Hinweis 'bleibt aus'", runs)
+	}
+	if fb.calls != 1 {
+		t.Errorf("backup calls = %d, want 1", fb.calls)
+	}
+}
+
+func TestBackupChainAppliesStagedAfterBackup(t *testing.T) {
+	s, store, docker, _ := setup(t)
+	s.containers = &fakeResolver{state: "running"}
+	fb := &fakeBackup{msg: "Backup ok"}
+	s.SetBackupRunner(fb)
+	app := &fakeApplier{label: "L", n: 2}
+	s.SetStagedApplier(app)
+
+	id, _ := store.CreateRoutine(context.Background(), backupRoutine(func(r *storage.Routine) {
+		r.ApplyStaged = true
+	}))
+	s.RunNow(context.Background(), id)
+
+	if app.calls != 1 {
+		t.Errorf("ApplyStaged calls = %d, want 1 (nach Backup, vor Start)", app.calls)
+	}
+	runs, _ := store.RecentRuns(context.Background(), 10)
+	if len(runs) != 1 || !runs[0].OK || !strings.Contains(runs[0].Message, "2 Updates eingespielt") {
+		t.Errorf("runs = %+v", runs)
+	}
+	if got := docker.ActionLog(); len(got) != 2 {
+		t.Errorf("actions = %v, want [stop, start]", got)
+	}
+}
+
+func TestBackupChainSkipsWhenPlayersOnline(t *testing.T) {
+	s, store, docker, _ := setup(t)
+	s.containers = &fakeResolver{state: "running"}
+	fb := &fakeBackup{msg: "Backup ok"}
+	s.SetBackupRunner(fb)
+	var players atomic.Int32
+	var online atomic.Bool
+	players.Store(2)
+	s.SetMCStatus(mcState(&players, &online))
+
+	id, _ := store.CreateRoutine(context.Background(), backupRoutine(func(r *storage.Routine) {
+		r.SkipIfPlayersOnline = true
+	}))
+	s.RunNow(context.Background(), id)
+
+	if fb.calls != 0 || len(docker.ActionLog()) != 0 {
+		t.Fatalf("backup=%d actions=%v, want alles übersprungen", fb.calls, docker.ActionLog())
+	}
+	runs, _ := store.RecentRuns(context.Background(), 10)
+	if len(runs) != 1 || !runs[0].OK || !strings.Contains(runs[0].Message, "übersprungen") {
+		t.Errorf("runs = %+v", runs)
+	}
+}

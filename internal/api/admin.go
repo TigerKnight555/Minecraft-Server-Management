@@ -117,12 +117,20 @@ func validateRoutine(rt *storage.Routine) string {
 			return "Vorwarnzeit muss zwischen 0 und 60 Minuten liegen"
 		}
 	case "backup":
-		// kein Payload — der Backup-Container kommt aus MSM_BACKUP_CONTAINER
+		// Payload = Minecraft-Container, der für den Snapshot gestoppt wird
+		// (der Backup-Container selbst kommt aus MSM_BACKUP_CONTAINER)
+		if rt.Payload == "" {
+			return "Container-Name fehlt (der Minecraft-Container, der fürs Backup gestoppt wird)"
+		}
+		if rt.WarnMinutes < 0 || rt.WarnMinutes > 60 {
+			return "Vorwarnzeit muss zwischen 0 und 60 Minuten liegen"
+		}
 	default:
 		return "unbekannter Typ (rcon, restart, announce-restart, backup)"
 	}
-	if rt.Kind != "announce-restart" && (rt.SkipIfPlayersOnline || rt.WaitForEmpty || rt.ApplyStaged || rt.WatchdogMinutes != 0) {
-		return "Bedingungen, Update-Einspielen und Watchdog gibt es nur beim angekündigten Neustart"
+	stage2OK := rt.Kind == "announce-restart" || rt.Kind == "backup"
+	if !stage2OK && (rt.SkipIfPlayersOnline || rt.WaitForEmpty || rt.ApplyStaged || rt.WatchdogMinutes != 0) {
+		return "Bedingungen, Update-Einspielen und Watchdog gibt es nur bei angekündigtem Neustart und Backup"
 	}
 	if rt.WatchdogMinutes < 0 || rt.WatchdogMinutes > 30 {
 		return "Watchdog muss zwischen 0 und 30 Minuten liegen"

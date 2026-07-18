@@ -86,10 +86,19 @@ Der angekündigte Neustart ist eine Schrittkette (Bedingungen → Warnungen →
 
 ### Backups (restic → NAS)
 
-Routine vom Typ „Backup (restic)". Ablauf: `save-off` → `save-all flush` →
-Start des vordefinierten `mc-backup`-Containers (restic: backup → check →
-forget, `forget` nur nach erfolgreichem check) → Exit-Code-Überwachung →
-`save-on` (läuft garantiert, auch bei Fehlern). Kein Server-Stopp nötig.
+Routine vom Typ „Backup (restic)", Payload = Minecraft-Container. Das
+Backup läuft bei **gestopptem Server** — so finden während des Snapshots
+garantiert keine Dateiänderungen statt, und der integrierte Start ersetzt
+zugleich den nächtlichen Neustart (keine separate Restart-Routine nötig).
+
+Kette bei laufendem Server: Bedingungen (Spieler online?) → Warnungen →
+`save-all` → Stop → Snapshot (restic: backup → check → forget, `forget`
+nur nach erfolgreichem check) → optional gestagte Mod-Updates → Start →
+Watchdog. Der Server wird **immer** wieder gestartet, auch wenn Backup
+oder Update-Tausch fehlschlagen. Ist der Server beim Start der Routine
+bereits (bewusst) gestoppt, läuft nur der Snapshot — MSM startet nichts,
+was jemand absichtlich ausgeschaltet hat.
+
 Ergebnis inkl. restic-Zusammenfassung landet in Historie + Discord
 (`backup.ok`/`backup.failed`); bleibt ein erfolgreiches Backup > 26 h aus,
 warnt `backup.stale`.

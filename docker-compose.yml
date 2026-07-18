@@ -110,6 +110,7 @@ services:
     restart: "no"
     network_mode: bridge # nur Repo auf dem NAS-Mount, kein MSM-Netz nötig
     entrypoint: ["/bin/sh", "-c"]
+    # Läuft bei GESTOPPTEM mc-fabric (der Scheduler stoppt/startet drumherum).
     # Repo beim allerersten Lauf automatisch anlegen; forget läuft NUR nach
     # erfolgreichem check (Konzept: Datenintegrität)
     command:

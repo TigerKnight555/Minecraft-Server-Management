@@ -242,10 +242,7 @@ func (s *Scheduler) execute(ctx context.Context, r storage.Routine) (string, err
 		return s.announceRestart(ctx, r)
 
 	case "backup":
-		if s.backup == nil {
-			return "", fmt.Errorf("backup-Runner nicht verdrahtet (MSM_BACKUP_CONTAINER prüfen)")
-		}
-		return s.backup.Run(ctx)
+		return s.backupChain(ctx, r)
 
 	default:
 		return "", fmt.Errorf("unbekannter Routinentyp %q", r.Kind)
@@ -342,6 +339,126 @@ func (s *Scheduler) announceRestart(ctx context.Context, r storage.Routine) (str
 		steps = append(steps, "Watchdog: Server wieder online")
 	}
 	return strings.Join(steps, "; "), nil
+}
+
+// backupChain is the nightly maintenance chain (Nutzer-Entscheidung
+// 2026-07-18): das Backup läuft bei GESTOPPTEM Server, damit während des
+// Snapshots garantiert keine Dateiänderungen stattfinden — und der
+// integrierte Start ersetzt zugleich den nächtlichen Neustart.
+//
+// Läuft der Server: Bedingungen → Warnungen → save-all → Stop → Snapshot →
+// optional gestagte Updates → Start → Watchdog. Ist er (bewusst) gestoppt:
+// nur Snapshot, KEIN Start — MSM macht keinen Zustand kaputt, den jemand
+// absichtlich hergestellt hat.
+func (s *Scheduler) backupChain(ctx context.Context, r storage.Routine) (string, error) {
+	if s.backup == nil {
+		return "", fmt.Errorf("backup-Runner nicht verdrahtet (MSM_BACKUP_CONTAINER prüfen)")
+	}
+	id, err := s.resolve(r.Payload)
+	if err != nil {
+		return "", fmt.Errorf("minecraft-Container: %w", err)
+	}
+	running := s.containerRunning(r.Payload)
+
+	var steps []string
+	if running {
+		if r.SkipIfPlayersOnline {
+			if s.mcStatus == nil {
+				return "", fmt.Errorf("bedingung 'Spieler online' braucht den MC-Status (nicht verdrahtet)")
+			}
+			if n := s.mcStatus().PlayersOnline; n > 0 {
+				return "", errSkipped{reason: fmt.Sprintf("%d Spieler online", n)}
+			}
+		}
+		if r.WaitForEmpty {
+			if err := s.waitForEmpty(ctx, r); err != nil {
+				return "", err
+			}
+		}
+		if s.rcon != nil && r.WarnMinutes > 0 {
+			for m := r.WarnMinutes; m >= 1; m-- {
+				warn := fmt.Sprintf("say §cServer-Neustart mit Backup in %d Minute(n)!", m)
+				if _, err := s.rcon.Exec(ctx, warn); err != nil {
+					s.log.Warn("warn announce failed", "err", err)
+				}
+				select {
+				case <-ctx.Done():
+					return "", ctx.Err()
+				case <-time.After(s.warnStep):
+				}
+			}
+			s.rcon.Exec(ctx, "say §cServer startet jetzt neu!")
+		}
+		if s.rcon != nil {
+			if _, err := s.rcon.Exec(ctx, "save-all"); err != nil {
+				s.log.Warn("save-all before backup failed", "err", err)
+			}
+		}
+		if err := s.controller.StopContainer(ctx, id); err != nil {
+			return "", fmt.Errorf("stop %s: %w", r.Payload, err)
+		}
+		steps = append(steps, "Server gestoppt")
+	} else {
+		steps = append(steps, "Server war bereits gestoppt (bleibt aus)")
+	}
+
+	msg, backupErr := s.backup.Run(ctx)
+	if backupErr == nil {
+		steps = append(steps, msg)
+	}
+
+	// gestagte Updates nur einspielen, wenn das Backup gelungen ist —
+	// Pflicht-Backup vor Update (Konzept: Mod-Verwaltung)
+	if backupErr == nil && r.ApplyStaged && running {
+		if s.applier == nil {
+			backupErr = fmt.Errorf("'Updates einspielen' braucht die Mod-Verwaltung (nicht verdrahtet)")
+		} else {
+			label, n, err := s.applier.ApplyStaged("server")
+			switch {
+			case errors.Is(err, mods.ErrNothingStaged):
+				steps = append(steps, "keine gestagten Updates")
+			case err != nil:
+				backupErr = fmt.Errorf("updates einspielen: %w", err)
+			default:
+				steps = append(steps, fmt.Sprintf("%d Updates eingespielt (Backup %s)", n, label))
+			}
+		}
+	}
+
+	// Server IMMER wieder starten, wenn wir ihn gestoppt haben — auch wenn
+	// Backup oder Update-Tausch fehlgeschlagen sind
+	if running {
+		if err := s.controller.StartContainer(ctx, id); err != nil {
+			if backupErr != nil {
+				return "", fmt.Errorf("%v; Start danach AUCH fehlgeschlagen: %w", backupErr, err)
+			}
+			return "", fmt.Errorf("start %s nach Backup: %w", r.Payload, err)
+		}
+		steps = append(steps, "Server gestartet")
+		if backupErr == nil && r.WatchdogMinutes > 0 {
+			if err := s.watchdog(ctx, time.Duration(r.WatchdogMinutes)*time.Minute); err != nil {
+				return "", err
+			}
+			steps = append(steps, "Watchdog: Server wieder online")
+		}
+	}
+	if backupErr != nil {
+		return "", fmt.Errorf("%w (Server-Status: %s)", backupErr, steps[len(steps)-1])
+	}
+	return strings.Join(steps, "; "), nil
+}
+
+// containerRunning checks the collector's view of a container state.
+func (s *Scheduler) containerRunning(name string) bool {
+	if s.containers == nil {
+		return false
+	}
+	for _, c := range s.containers.Containers() {
+		if (c.Name == name || c.ID == name) && c.State == "running" {
+			return true
+		}
+	}
+	return false
 }
 
 // waitForEmpty polls until no players are online, at most until the

@@ -182,9 +182,10 @@ func main() {
 
 	// Backup (Phase 4.3): restic läuft als vordefinierter, gestoppter
 	// Compose-Service — MSM startet ihn nur (Socket-Proxy erlaubt kein
-	// create/exec) und überwacht den Exit-Code.
+	// create/exec) und überwacht den Exit-Code. Stop/Start des MC-Servers
+	// rund ums Backup übernimmt die Scheduler-Kette.
 	if bd, ok := docker.(backup.Docker); ok {
-		runner := backup.New(bd, rcon, mcState, coll, envOr("MSM_BACKUP_CONTAINER", "mc-backup"), log)
+		runner := backup.New(bd, coll, envOr("MSM_BACKUP_CONTAINER", "mc-backup"), log)
 		sched.SetBackupRunner(runner)
 		if sq, ok := store.(backup.FreshnessStore); ok {
 			go backup.WatchFreshness(ctx, sq, bus, 26*time.Hour, log)
