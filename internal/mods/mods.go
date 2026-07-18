@@ -209,12 +209,23 @@ type stagingManifest struct {
 	Items   []stagingItem `json:"items"`
 }
 
+// stagingDir lives INSIDE a mounted category dir (the container root-fs is
+// read-only, only the mounts are writable). Deterministic choice: "mods" if
+// present, otherwise the lexicographically first category. The scanner
+// ignores dot-prefixed entries, so staging never shows up as profile content.
 func stagingDir(p Profile) string {
-	// one staging dir per profile, next to the first category dir
-	for _, dir := range p.Dirs {
-		return filepath.Join(filepath.Dir(dir), ".msm-staging-"+p.Name)
+	if dir, ok := p.Dirs["mods"]; ok {
+		return filepath.Join(dir, ".msm-staging")
 	}
-	return ""
+	keys := make([]string, 0, len(p.Dirs))
+	for k := range p.Dirs {
+		keys = append(keys, k)
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	sort.Strings(keys)
+	return filepath.Join(p.Dirs[keys[0]], ".msm-staging")
 }
 
 func (m *Manager) stagedFilenames(p Profile) map[string]bool {
