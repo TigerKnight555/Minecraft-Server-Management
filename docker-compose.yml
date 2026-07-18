@@ -1,8 +1,33 @@
-# MSM Phase 1 — Sichtbarkeit.
-# Der bestehende mc-fabric-Container wird hier bewusst NICHT definiert
-# (Überführung nach Compose ist Phase 2); MSM erreicht ihn über das
-# Default-Bridge-Netz bzw. die konfigurierten Adressen in .env.
+# MSM-Stack: Dashboard + Socket-Proxy + Minecraft-Server.
+#
+# ACHTUNG: `docker compose down` stoppt auch den Minecraft-Server!
+# Für MSM-Updates stattdessen gezielt:  docker compose up -d --build msm
+# Einzelne Dienste stoppen:             docker compose stop msm
 services:
+  mc-fabric:
+    image: itzg/minecraft-server
+    container_name: mc-fabric
+    restart: unless-stopped
+    environment:
+      EULA: "TRUE"
+      TYPE: fabric
+      # exakt die laufende Version pinnen — eine höhere Version beim
+      # Neuerstellen upgradet die Welt unumkehrbar!
+      VERSION: ${MC_VERSION:?MC_VERSION in .env setzen}
+      MEMORY: 12G
+      ENABLE_QUERY: "true"
+      ENABLE_RCON: "true"
+      RCON_PASSWORD: ${MSM_RCON_PASSWORD:?MSM_RCON_PASSWORD in .env setzen}
+    ports:
+      - "25565:25565"
+      - "24454:24454/udp" # Simple Voice Chat — nie entfernen!
+    volumes:
+      - ${MC_DATA_PATH:-/home/knvt/minecraft/fabric_server}:/data
+    mem_limit: 13g # Notbremse oberhalb der 12G Heap (Konzept Kap. 8)
+    stop_grace_period: 90s # Weltspeicherung nie abwürgen
+    networks:
+      - default
+
   msm:
     build: .
     image: msm:latest
@@ -48,6 +73,7 @@ services:
       - default
     depends_on:
       - socket-proxy
+      - mc-fabric
     healthcheck:
       # distroless hat kein curl — das Binary prüft sich selbst über /healthz
       test: ["CMD", "/msm", "-healthcheck"]

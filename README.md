@@ -70,12 +70,20 @@ die Spieler per `say`, dann Neustart). Cron-Syntax, 5 Felder — Beispiel
 täglich 04:30: `30 4 * * *`. Jede Ausführung wird protokolliert, Fehler sind
 im UI sichtbar — Routinen scheitern nie still.
 
-### mc-fabric nach Compose überführen
+### mc-fabric ist Teil des Stacks
 
-Vorlage: [mc-fabric.compose.example.yml](mc-fabric.compose.example.yml) —
-erst `docker inspect mc-fabric` abgleichen, dann migrieren (Anleitung in der
-Datei). Bis dahin erreicht MSM den bestehenden Container über die in `.env`
-konfigurierten Adressen.
+Der Minecraft-Server ist als Service `mc-fabric` in der Compose-Datei
+definiert (Version über `MC_VERSION` in `.env` gepinnt, Daten-Pfad über
+`MC_DATA_PATH`). Damit entfällt jedes manuelle `docker network connect`.
+
+**Wichtig:** `docker compose down` stoppt auch den Minecraft-Server!
+Für MSM-Updates gezielt `docker compose up -d --build msm` verwenden.
+
+Migration von einem bestehenden `docker run`-Container: alten Container
+stoppen und entfernen (`docker stop mc-fabric && docker rm mc-fabric`),
+dann `docker compose up -d` — die Welt liegt im Bind-Mount und bleibt
+unangetastet. Ein eventuell vorhandenes Boot-/Autostart-Skript danach
+deaktivieren (`restart: unless-stopped` übernimmt).
 
 ### ICMP-Hinweis
 
