@@ -13,6 +13,7 @@ import (
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/auth"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
 )
@@ -31,6 +32,7 @@ type Server struct {
 	mcContainer       string
 	fallbackMCVersion string
 	managed           map[string]bool // allowlist for container actions
+	bus               *events.Bus     // optional; nil bus is a safe no-op
 	log               *slog.Logger
 	frontend          fs.FS // embedded web/dist, may be nil in tests
 }
@@ -50,6 +52,7 @@ type Deps struct {
 	MCContainer       string // name of the minecraft container (mod apply restart)
 	FallbackMCVersion string // used when query has no version yet
 	Managed           []string // container names allowed for start/stop/restart
+	Bus               *events.Bus
 	Frontend          fs.FS
 	Log               *slog.Logger
 }
@@ -75,6 +78,7 @@ func New(d Deps) *Server {
 		mcContainer:       d.MCContainer,
 		fallbackMCVersion: d.FallbackMCVersion,
 		managed:           managed,
+		bus:               d.Bus,
 		log:               d.Log,
 		frontend:          d.Frontend,
 	}

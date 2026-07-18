@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 )
 
 // WatchStatus answers "lohnt sich der Umstieg schon?" (concept chapter on
@@ -39,6 +41,7 @@ type Watcher struct {
 
 	mu   sync.Mutex
 	last *WatchStatus
+	bus  *events.Bus // optional; nil bus is a safe no-op
 }
 
 func NewWatcher(api ModrinthAPI, mgr *Manager, loader string) *Watcher {
@@ -55,6 +58,9 @@ func (w *Watcher) SetEndpoints(manifest, fabric string) {
 	w.manifest, w.fabric = manifest, fabric
 }
 
+// SetBus wires the event bus; version transitions are published there.
+func (w *Watcher) SetBus(b *events.Bus) { w.bus = b }
+
 // Last returns the most recent check result (nil before the first run).
 func (w *Watcher) Last() *WatchStatus {
 	w.mu.Lock()
@@ -65,8 +71,10 @@ func (w *Watcher) Last() *WatchStatus {
 // SetLast stores a manually triggered check result.
 func (w *Watcher) SetLast(s *WatchStatus) {
 	w.mu.Lock()
+	prev := w.last
 	w.last = s
 	w.mu.Unlock()
+	w.notifyTransitions(prev, s)
 }
 
 // Run performs checks daily until ctx is done; one check runs at start.
@@ -75,15 +83,66 @@ func (w *Watcher) Run(ctx context.Context, currentVersion func() string) {
 	defer t.Stop()
 	for {
 		if status, err := w.Check(ctx, currentVersion()); err == nil {
-			w.mu.Lock()
-			w.last = status
-			w.mu.Unlock()
+			w.SetLast(status)
 		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
+	}
+}
+
+// allReady means: loader supports the release and every managed mod of every
+// profile has a matching Modrinth version. Zero known mods everywhere means
+// the inventory was never scanned (empty cache) — that is "unknown", not
+// "ready", so no premature all-clear right after startup.
+func allReady(s *WatchStatus) bool {
+	if s == nil || !s.NewerAvailable || !s.LoaderReady {
+		return false
+	}
+	total := 0
+	for _, p := range s.Profiles {
+		if p.Ready < p.Total {
+			return false
+		}
+		total += p.Total
+	}
+	return total > 0
+}
+
+// notifyTransitions publishes only state CHANGES, so the daily check does not
+// repeat the same news: a release seen for the first time, and the moment a
+// known release becomes fully ready.
+func (w *Watcher) notifyTransitions(prev, cur *WatchStatus) {
+	if cur == nil || !cur.NewerAvailable {
+		return
+	}
+	newRelease := prev == nil || prev.LatestVersion != cur.LatestVersion
+	if newRelease {
+		ready := "nein"
+		if cur.LoaderReady {
+			ready = "ja"
+		}
+		fields := []events.Field{{Name: "Fabric-Loader bereit", Value: ready}}
+		for _, p := range cur.Profiles {
+			fields = append(fields, events.Field{
+				Name: "Mods " + p.Profile, Value: fmt.Sprintf("%d/%d bereit", p.Ready, p.Total),
+			})
+		}
+		w.bus.Publish(events.Event{
+			Type: events.TypeVersionNew, Severity: events.SevInfo,
+			Title:   "Neue Minecraft-Version: " + cur.LatestVersion,
+			Message: "Aktuell installiert: " + cur.CurrentVersion,
+			Fields:  fields,
+		})
+	}
+	if allReady(cur) && (newRelease || !allReady(prev)) {
+		w.bus.Publish(events.Event{
+			Type: events.TypeVersionReady, Severity: events.SevSuccess,
+			Title:   "Minecraft " + cur.LatestVersion + " — alles bereit für den Umstieg",
+			Message: "Fabric-Loader und alle verwalteten Mods beider Profile unterstützen die neue Version.",
+		})
 	}
 }
 

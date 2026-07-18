@@ -15,6 +15,10 @@
 //	MSM_PING_TARGETS        comma separated             (default 1.1.1.1,9.9.9.9)
 //	MSM_ADMIN_PASSWORD_HASH argon2id hash for login     (empty = kein Login! nur dev)
 //	MSM_MANAGED_CONTAINERS  comma separated allowlist for start/stop/restart
+//	MSM_DISCORD_WEBHOOK_URL one Discord webhook, receives every event
+//	MSM_DISCORD_WEBHOOKS    JSON list with per-webhook event filters, wins over
+//	                        the single URL: [{"name":"admin","url":"https://...",
+//	                        "events":["routine.","mods.","version."]}]
 package main
 
 import (
@@ -35,6 +39,7 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/auth"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/dockerclient"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/hostmetrics"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mcquery"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mcrcon"
@@ -43,6 +48,7 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modrinth"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/netcheck"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/notify"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/storage"
 	"github.com/TigerKnight555/Minecraft-Server-Management/web"
@@ -151,7 +157,24 @@ func main() {
 	}, docker, mc, host, wan, store, log)
 	go coll.Run(ctx)
 
+	// Event-Bus + Notifier (Phase 4.1). Ohne konfigurierten Webhook läuft der
+	// Bus trotzdem — Publisher merken davon nichts.
+	bus := events.New()
+	hooks, err := notify.ParseWebhooks(os.Getenv("MSM_DISCORD_WEBHOOKS"), os.Getenv("MSM_DISCORD_WEBHOOK_URL"))
+	if err != nil {
+		log.Error("discord webhook config invalid", "err", err)
+		os.Exit(1)
+	}
+	if len(hooks) > 0 {
+		ch, _ := bus.Subscribe(64)
+		go notify.NewDiscord(hooks, log).Run(ctx, ch)
+		log.Info("discord notifier active", "webhooks", len(hooks))
+	} else {
+		log.Info("no discord webhook configured — notifications disabled")
+	}
+
 	sched := scheduler.New(admin.(scheduler.RoutineStore), rcon, controller, coll, log)
+	sched.SetBus(bus)
 	if err := sched.Start(ctx); err != nil {
 		log.Error("scheduler start failed", "err", err)
 		os.Exit(1)
@@ -160,6 +183,7 @@ func main() {
 	loader := envOr("MSM_LOADER", "fabric")
 	modmgr := mods.NewManager(modAPI, loader, modProfiles)
 	watcher := mods.NewWatcher(modAPI, modmgr, loader)
+	watcher.SetBus(bus)
 	go watcher.Run(ctx, func() string {
 		if v := coll.MCVersion(); v != "" {
 			return v
@@ -196,6 +220,7 @@ func main() {
 			MCContainer:       envOr("MSM_MC_CONTAINER", "mc-fabric"),
 			FallbackMCVersion: os.Getenv("MC_VERSION"),
 			Managed:           managed,
+			Bus:               bus,
 			Frontend:          frontend,
 			Log:               log,
 		}).Handler(),

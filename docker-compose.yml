@@ -67,6 +67,12 @@ services:
       MSM_MANAGED_CONTAINERS: ${MSM_MANAGED_CONTAINERS:-mc-fabric}
       # Fallback-Version für Mod-Checks, solange der MC-Server (neu)startet
       MC_VERSION: ${MC_VERSION:-}
+      # Discord-Benachrichtigungen (Phase 4): Webhook-URL ist ein Geheimnis,
+      # gehört nur in die .env. Leer = Benachrichtigungen aus.
+      MSM_DISCORD_WEBHOOK_URL: ${MSM_DISCORD_WEBHOOK_URL:-}
+      # Optional feiner: JSON-Liste mit Event-Filtern je Webhook, gewinnt
+      # gegenüber der Einzel-URL (Format siehe cmd/msm/main.go)
+      MSM_DISCORD_WEBHOOKS: ${MSM_DISCORD_WEBHOOKS:-}
     # Zugriff auf die mods-Verzeichnisse (Phase 3): MSM läuft als 65532 und
     # schreibt über die Gruppe des Host-Users (Verzeichnisse sind g+w).
     group_add:

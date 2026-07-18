@@ -8,6 +8,9 @@ Minecraft-Status, WAN-Monitoring, Log-Streaming, RCON-Konsole.
 **Phase 2 (Kontrolle):** Login (Argon2 + Sessions), Container
 Start/Stopp/Restart (Allowlist), Routinen-Scheduler (Cron: RCON-Befehle,
 Neustarts mit Spieler-Vorwarnung), Audit-Log jeder Aktion.
+**Phase 3 (Mod-Verwaltung):** Modrinth-Update-Checks (SHA-512), Staging mit
+Hash-Verifikation, Ein-Klick-Rollback, MC-Versions-Watch.
+**Phase 4 (laufend):** Event-Bus mit Discord-Benachrichtigungen.
 
 Go-Backend (ein Binary, eingebettetes Svelte-Frontend, SQLite) + Socket-Proxy,
 Deployment per Docker Compose. Ressourcenbudget: < 150 MB RAM gesamt.
@@ -69,6 +72,18 @@ Tab „Routinen" im Dashboard. Typen: `rcon` (beliebiger Konsolenbefehl),
 die Spieler per `say`, dann Neustart). Cron-Syntax, 5 Felder — Beispiel
 täglich 04:30: `30 4 * * *`. Jede Ausführung wird protokolliert, Fehler sind
 im UI sichtbar — Routinen scheitern nie still.
+
+### Discord-Benachrichtigungen
+
+Ereignisse (Routine ok/fehlgeschlagen, Mod-Updates eingespielt, Rollback,
+neue MC-Version/Umstiegsbereitschaft) laufen über einen internen Event-Bus
+und werden als Discord-Embeds zugestellt. Einrichtung: im Discord-Channel
+unter Einstellungen → Integrationen → Webhooks eine URL erzeugen und als
+`MSM_DISCORD_WEBHOOK_URL` in die `.env` eintragen (URL geheim halten!).
+Mehrere Webhooks mit Event-Filtern: `MSM_DISCORD_WEBHOOKS` als JSON-Liste,
+Details in [.env.example](.env.example). Zustellfehler werden geloggt und
+mit Backoff bis zu 3× versucht; ohne konfigurierten Webhook ist der
+Notifier komplett inaktiv.
 
 ### mc-fabric ist Teil des Stacks
 

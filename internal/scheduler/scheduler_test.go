@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mock"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/storage"
 )
@@ -128,5 +129,38 @@ func TestReloadSkipsInvalidCronVisibly(t *testing.T) {
 	}
 	if !found {
 		t.Error("invalid cron produced no visible failure record")
+	}
+}
+
+func TestRunPublishesOutcomeEvents(t *testing.T) {
+	s, store, _, _ := setup(t)
+	bus := events.New()
+	ch, cancel := bus.Subscribe(8)
+	defer cancel()
+	s.SetBus(bus)
+
+	okID, _ := store.CreateRoutine(context.Background(), storage.Routine{
+		Name: "gut", Cron: "0 4 * * *", Kind: "rcon", Payload: "list", Enabled: true,
+	})
+	badID, _ := store.CreateRoutine(context.Background(), storage.Routine{
+		Name: "kaputt", Cron: "0 4 * * *", Kind: "unfug", Enabled: true,
+	})
+	s.RunNow(context.Background(), okID)
+	s.RunNow(context.Background(), badID)
+
+	var got []events.Event
+	for i := 0; i < 2; i++ {
+		select {
+		case ev := <-ch:
+			got = append(got, ev)
+		case <-time.After(time.Second):
+			t.Fatalf("nur %d events erhalten, want 2", len(got))
+		}
+	}
+	if got[0].Type != events.TypeRoutineOK || !strings.Contains(got[0].Title, "gut") {
+		t.Errorf("event 0 = %+v, want routine.ok für 'gut'", got[0])
+	}
+	if got[1].Type != events.TypeRoutineFailed || got[1].Severity != events.SevError {
+		t.Errorf("event 1 = %+v, want routine.failed mit severity error", got[1])
 	}
 }

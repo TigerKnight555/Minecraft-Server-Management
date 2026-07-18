@@ -16,6 +16,7 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/storage"
 )
 
@@ -37,6 +38,7 @@ type Scheduler struct {
 	controller collector.ContainerController
 	containers resolver
 	log        *slog.Logger
+	bus        *events.Bus // optional; nil bus is a safe no-op
 
 	// warnStep is 1 minute in production; tests shrink it.
 	warnStep time.Duration
@@ -58,6 +60,9 @@ func New(store RoutineStore, rcon collector.RCONClient, controller collector.Con
 		entries:    make(map[int64]cron.EntryID),
 	}
 }
+
+// SetBus wires the event bus; routine outcomes are published there.
+func (s *Scheduler) SetBus(b *events.Bus) { s.bus = b }
 
 // Start loads all enabled routines and begins scheduling; Reload picks up
 // changes after CRUD operations.
@@ -135,8 +140,20 @@ func (s *Scheduler) RunNow(ctx context.Context, routineID int64) {
 	if err != nil {
 		run.Message = err.Error()
 		s.log.Error("routine failed", "name", r.Name, "err", err)
+		s.bus.Publish(events.Event{
+			Type: events.TypeRoutineFailed, Severity: events.SevError,
+			Title:   "Routine fehlgeschlagen: " + r.Name,
+			Message: err.Error(),
+			Fields:  []events.Field{{Name: "Typ", Value: r.Kind}},
+		})
 	} else {
 		s.log.Info("routine finished", "name", r.Name)
+		s.bus.Publish(events.Event{
+			Type: events.TypeRoutineOK, Severity: events.SevSuccess,
+			Title:   "Routine erfolgreich: " + r.Name,
+			Message: msg,
+			Fields:  []events.Field{{Name: "Typ", Value: r.Kind}},
+		})
 	}
 	if err := s.store.RecordRun(ctx, run); err != nil {
 		s.log.Error("record run failed", "routine", r.Name, "err", err)

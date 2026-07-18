@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
 )
 
@@ -104,6 +105,15 @@ func (s *Server) handleModsApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit(r.Context(), "mods.apply", fmt.Sprintf("profile=%s count=%d backup=%s", req.Profile, n, label))
+	s.bus.Publish(events.Event{
+		Type: events.TypeModsApplied, Severity: events.SevSuccess,
+		Title: "Mod-Updates eingespielt",
+		Fields: []events.Field{
+			{Name: "Profil", Value: req.Profile},
+			{Name: "Anzahl", Value: fmt.Sprint(n)},
+			{Name: "Backup", Value: label},
+		},
+	})
 
 	restarted := false
 	if req.Restart && req.Profile == "server" && s.controller != nil {
@@ -141,6 +151,14 @@ func (s *Server) handleModsRollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit(r.Context(), "mods.rollback", fmt.Sprintf("profile=%s restored=%d", req.Profile, n))
+	s.bus.Publish(events.Event{
+		Type: events.TypeModsRollback, Severity: events.SevWarn,
+		Title: "Mod-Rollback durchgeführt",
+		Fields: []events.Field{
+			{Name: "Profil", Value: req.Profile},
+			{Name: "Wiederhergestellt", Value: fmt.Sprint(n)},
+		},
+	})
 	writeJSON(w, http.StatusOK, map[string]int{"restored": n})
 }
 
