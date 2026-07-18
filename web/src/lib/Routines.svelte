@@ -20,6 +20,7 @@
     rcon: 'RCON-Befehl',
     restart: 'Container-Neustart',
     'announce-restart': 'Angekündigter Neustart',
+    backup: 'Backup (restic)',
   }
 
   async function refresh() {
@@ -118,9 +119,11 @@
           {#each Object.entries(kindLabel) as [k, l]}<option value={k}>{l}</option>{/each}
         </select>
       </label>
-      <label>{form.kind === 'rcon' ? 'Befehl' : 'Container'}
-        <input bind:value={form.payload} required placeholder={form.kind === 'rcon' ? 'save-all' : 'mc-fabric'} />
-      </label>
+      {#if form.kind !== 'backup'}
+        <label>{form.kind === 'rcon' ? 'Befehl' : 'Container'}
+          <input bind:value={form.payload} required placeholder={form.kind === 'rcon' ? 'save-all' : 'mc-fabric'} />
+        </label>
+      {/if}
       {#if form.kind === 'announce-restart'}
         <label>Vorwarnung (Min.) <input type="number" bind:value={form.warnMinutes} min="0" max="60" /></label>
         <label>Watchdog (Min., 0 = aus) <input type="number" bind:value={form.watchdogMinutes} min="0" max="30" /></label>

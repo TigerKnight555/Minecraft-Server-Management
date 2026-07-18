@@ -98,6 +98,41 @@ services:
       timeout: 5s
       retries: 3
 
+  # Backup-Job (Phase 4.3): restic als vordefinierter, NICHT laufender
+  # Container. MSM startet ihn über die Docker-API (der Socket-Proxy erlaubt
+  # nur start/stop/restart — deshalb kein docker run/exec) und überwacht den
+  # Exit-Code. Profil "backup" hält ihn aus dem normalen `up -d` heraus;
+  # einmalig anlegen mit:  docker compose --profile backup up -d --no-start mc-backup
+  mc-backup:
+    image: restic/restic:0.18.1
+    container_name: mc-backup
+    profiles: ["backup"]
+    restart: "no"
+    network_mode: bridge # nur Repo auf dem NAS-Mount, kein MSM-Netz nötig
+    entrypoint: ["/bin/sh", "-c"]
+    # Repo beim allerersten Lauf automatisch anlegen; forget läuft NUR nach
+    # erfolgreichem check (Konzept: Datenintegrität)
+    command:
+      - >
+        restic cat config >/dev/null 2>&1 || restic init;
+        restic backup /data --host mc-fabric --exclude /data/.msm-staging
+        && restic check --read-data-subset=5%
+        && restic forget --host mc-fabric --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune
+    environment:
+      RESTIC_REPOSITORY: /nas/restic
+      RESTIC_PASSWORD: ${RESTIC_PASSWORD:-}
+      RESTIC_CACHE_DIR: /cache
+    volumes:
+      - ${MC_DATA_PATH:-/home/knvt/minecraft/fabric_server}:/data:ro
+      - restic-cache:/cache
+      # NAS-Automount: rslave, damit ein Host-Mount nach Container-Erstellung
+      # im Container ankommt (systemd-Automount mountet erst bei Zugriff)
+      - type: bind
+        source: ${MSM_NAS_PATH:-/mnt/mc-backups}
+        target: /nas
+        bind:
+          propagation: rslave
+
   socket-proxy:
     image: wollomatic/socket-proxy:1
     container_name: msm-socket-proxy
@@ -152,4 +187,5 @@ networks:
 
 volumes:
   msm-data:
+  restic-cache:
   # caddy-data:   # einkommentieren zusammen mit dem caddy-Service

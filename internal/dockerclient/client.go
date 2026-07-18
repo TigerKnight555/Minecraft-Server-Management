@@ -84,6 +84,57 @@ func (c *Client) RestartContainer(ctx context.Context, id string) error {
 	return c.post(ctx, "/containers/"+url.PathEscape(id)+"/restart?t=60")
 }
 
+// InspectContainer returns the state subset needed to supervise short-lived
+// job containers (backup runner): running flag, exit code, timestamps.
+func (c *Client) InspectContainer(ctx context.Context, id string) (collector.ContainerDetail, error) {
+	var raw struct {
+		State struct {
+			Running    bool      `json:"Running"`
+			ExitCode   int       `json:"ExitCode"`
+			StartedAt  time.Time `json:"StartedAt"`
+			FinishedAt time.Time `json:"FinishedAt"`
+		} `json:"State"`
+	}
+	if err := c.get(ctx, "/containers/"+url.PathEscape(id)+"/json", &raw); err != nil {
+		return collector.ContainerDetail{}, err
+	}
+	return collector.ContainerDetail{
+		Running:    raw.State.Running,
+		ExitCode:   raw.State.ExitCode,
+		StartedAt:  raw.State.StartedAt,
+		FinishedAt: raw.State.FinishedAt,
+	}, nil
+}
+
+// TailLogs returns the last lines of a container log as one string
+// (no follow) — used for backup result summaries.
+func (c *Client) TailLogs(ctx context.Context, id string, tail int) (string, error) {
+	q := url.Values{}
+	q.Set("stdout", "true")
+	q.Set("stderr", "true")
+	q.Set("tail", strconv.Itoa(tail))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.base+"/containers/"+url.PathEscape(id)+"/logs?"+q.Encode(), nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return "", fmt.Errorf("docker logs: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var rd io.Reader = resp.Body
+	if strings.HasPrefix(resp.Header.Get("Content-Type"), "application/vnd.docker.multiplexed-stream") {
+		rd = &demuxReader{src: resp.Body}
+	}
+	data, err := io.ReadAll(io.LimitReader(rd, 64<<10))
+	return string(data), err
+}
+
 type apiContainer struct {
 	ID     string   `json:"Id"`
 	Names  []string `json:"Names"`

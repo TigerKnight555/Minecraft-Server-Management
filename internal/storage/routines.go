@@ -157,6 +157,32 @@ func (s *SQLite) RecordRun(ctx context.Context, run RoutineRun) error {
 	return err
 }
 
+// LastOKRunForKind returns when a routine of the given kind last succeeded
+// (found=false if never). Skipped runs count as OK in the history but not
+// as a real execution here.
+func (s *SQLite) LastOKRunForKind(ctx context.Context, kind string) (time.Time, bool, error) {
+	var ts sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `
+SELECT MAX(rr.ts) FROM routine_runs rr
+JOIN routines r ON r.id = rr.routine_id
+WHERE r.kind = ? AND rr.ok = 1 AND rr.message NOT LIKE 'übersprungen%'`, kind).Scan(&ts)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if !ts.Valid {
+		return time.Time{}, false, nil
+	}
+	return time.Unix(ts.Int64, 0), true, nil
+}
+
+// HasEnabledRoutineKind reports whether any enabled routine of the kind exists.
+func (s *SQLite) HasEnabledRoutineKind(ctx context.Context, kind string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM routines WHERE kind = ? AND enabled = 1`, kind).Scan(&n)
+	return n > 0, err
+}
+
 func (s *SQLite) RecentRuns(ctx context.Context, limit int) ([]RoutineRun, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 50

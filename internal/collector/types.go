@@ -73,6 +73,15 @@ type PingResult struct {
 	LossPct  float64 `json:"lossPct"`
 }
 
+// ContainerDetail is the inspect subset MSM needs (exit codes for
+// short-lived job containers like the backup runner).
+type ContainerDetail struct {
+	Running    bool
+	ExitCode   int
+	StartedAt  time.Time
+	FinishedAt time.Time
+}
+
 // DockerClient reads container information through the socket proxy.
 type DockerClient interface {
 	ListContainers(ctx context.Context) ([]Container, error)

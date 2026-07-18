@@ -84,6 +84,35 @@ Der angekündigte Neustart ist eine Schrittkette (Bedingungen → Warnungen →
 - **Watchdog (Min.)** — Routine gilt erst als erfolgreich, wenn der Server
   wieder online meldet; Timeout ergibt einen sichtbaren Fehler
 
+### Backups (restic → NAS)
+
+Routine vom Typ „Backup (restic)". Ablauf: `save-off` → `save-all flush` →
+Start des vordefinierten `mc-backup`-Containers (restic: backup → check →
+forget, `forget` nur nach erfolgreichem check) → Exit-Code-Überwachung →
+`save-on` (läuft garantiert, auch bei Fehlern). Kein Server-Stopp nötig.
+Ergebnis inkl. restic-Zusammenfassung landet in Historie + Discord
+(`backup.ok`/`backup.failed`); bleibt ein erfolgreiches Backup > 26 h aus,
+warnt `backup.stale`.
+
+Einmalige Einrichtung:
+
+```sh
+# 1. NAS-Automount auf dem Host (fstab, mountet nur bei Zugriff):
+#    //NAS-IP/share /mnt/mc-backups cifs credentials=/etc/nas_credentials,uid=1000,gid=1000,vers=3.1.1,noauto,x-systemd.automount,x-systemd.idle-timeout=300,_netdev 0 0
+sudo systemctl daemon-reload && sudo systemctl restart remote-fs.target
+
+# 2. RESTIC_PASSWORD und MSM_NAS_PATH in .env setzen (Passwort zusätzlich
+#    im Passwort-Manager sichern — ohne Passwort sind Backups unlesbar!)
+
+# 3. Backup-Container anlegen (NICHT starten — das macht MSM):
+docker compose --profile backup up -d --no-start mc-backup
+```
+
+Das restic-Repo legt der erste Lauf automatisch an. Das alte
+Nachtbackup-Skript läuft parallel weiter, bis der erste Restore-Test aus
+dem restic-Repo gelungen ist (Migrationsregel: nie weniger Sicherung als
+vorher).
+
 ### Discord-Benachrichtigungen
 
 Ereignisse (Routine ok/fehlgeschlagen, Mod-Updates eingespielt, Rollback,

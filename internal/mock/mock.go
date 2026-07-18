@@ -31,7 +31,28 @@ func (d *Docker) ListContainers(context.Context) ([]collector.Container, error) 
 		{ID: "aaaa000000000000", Name: "mc-fabric", Image: "itzg/minecraft-server", State: "running", Status: "Up 3 days"},
 		{ID: "bbbb000000000000", Name: "webseite", Image: "nginx:alpine", State: "running", Status: "Up 3 days (healthy)"},
 		{ID: "cccc000000000000", Name: "msm", Image: "msm:dev", State: "running", Status: "Up 10 minutes"},
+		{ID: "dddd000000000000", Name: "mc-backup", Image: "restic/restic", State: "exited", Status: "Exited (0) 8 hours ago"},
 	}, nil
+}
+
+// InspectContainer pretends a started job container finished successfully a
+// moment later — enough for the backup runner's supervision loop.
+func (d *Docker) InspectContainer(_ context.Context, id string) (collector.ContainerDetail, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for i := len(d.Actions) - 1; i >= 0; i-- {
+		if d.Actions[i] == "start:"+id {
+			return collector.ContainerDetail{
+				Running: false, ExitCode: 0,
+				StartedAt: d.start, FinishedAt: time.Now(),
+			}, nil
+		}
+	}
+	return collector.ContainerDetail{Running: false, ExitCode: 0}, nil
+}
+
+func (d *Docker) TailLogs(context.Context, string, int) (string, error) {
+	return "processed 1234 files, 5.6 GiB in 0:42\nAdded to the repository: 120 MiB\nsnapshot ab12cd34 saved\n", nil
 }
 
 func (d *Docker) ContainerStats(_ context.Context, id string) (collector.ContainerStats, error) {

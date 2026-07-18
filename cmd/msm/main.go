@@ -15,6 +15,7 @@
 //	MSM_PING_TARGETS        comma separated             (default 1.1.1.1,9.9.9.9)
 //	MSM_ADMIN_PASSWORD_HASH argon2id hash for login     (empty = kein Login! nur dev)
 //	MSM_MANAGED_CONTAINERS  comma separated allowlist for start/stop/restart
+//	MSM_BACKUP_CONTAINER    pre-created restic compose service  (default mc-backup)
 //	MSM_DISCORD_WEBHOOK_URL one Discord webhook, receives every event
 //	MSM_DISCORD_WEBHOOKS    JSON list with per-webhook event filters, wins over
 //	                        the single URL: [{"name":"admin","url":"https://...",
@@ -37,6 +38,7 @@ import (
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/api"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/auth"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/backup"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/dockerclient"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
@@ -175,7 +177,19 @@ func main() {
 
 	sched := scheduler.New(admin.(scheduler.RoutineStore), rcon, controller, coll, log)
 	sched.SetBus(bus)
-	sched.SetMCStatus(func() collector.MCStatus { return coll.Snapshot().MC })
+	mcState := func() collector.MCStatus { return coll.Snapshot().MC }
+	sched.SetMCStatus(mcState)
+
+	// Backup (Phase 4.3): restic läuft als vordefinierter, gestoppter
+	// Compose-Service — MSM startet ihn nur (Socket-Proxy erlaubt kein
+	// create/exec) und überwacht den Exit-Code.
+	if bd, ok := docker.(backup.Docker); ok {
+		runner := backup.New(bd, rcon, mcState, coll, envOr("MSM_BACKUP_CONTAINER", "mc-backup"), log)
+		sched.SetBackupRunner(runner)
+		if sq, ok := store.(backup.FreshnessStore); ok {
+			go backup.WatchFreshness(ctx, sq, bus, 26*time.Hour, log)
+		}
+	}
 	if err := sched.Start(ctx); err != nil {
 		log.Error("scheduler start failed", "err", err)
 		os.Exit(1)

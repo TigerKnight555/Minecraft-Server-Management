@@ -57,8 +57,8 @@ func TestSnapshotEndpoint(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&snap); err != nil {
 		t.Fatal(err)
 	}
-	if len(snap.Containers) != 3 {
-		t.Errorf("containers = %d, want 3", len(snap.Containers))
+	if len(snap.Containers) != 4 {
+		t.Errorf("containers = %d, want 4 (inkl. mc-backup)", len(snap.Containers))
 	}
 	if !snap.MC.Online {
 		t.Error("MC.Online = false, want true (mock)")

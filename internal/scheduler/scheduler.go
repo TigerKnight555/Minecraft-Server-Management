@@ -40,6 +40,11 @@ type StagedApplier interface {
 	ApplyStaged(profile string) (string, int, error)
 }
 
+// BackupRunner performs one backup cycle (backup.Runner satisfies this).
+type BackupRunner interface {
+	Run(ctx context.Context) (string, error)
+}
+
 // errSkipped marks a run that was intentionally not executed because a
 // condition held (e.g. players online). Not a failure — the run history
 // records it as OK with the reason.
@@ -55,10 +60,11 @@ type Scheduler struct {
 	log        *slog.Logger
 	bus        *events.Bus // optional; nil bus is a safe no-op
 
-	// stage-2 deps, both optional (setters); routines that need them fail
+	// stage-2 deps, all optional (setters); routines that need them fail
 	// with a clear message instead of silently degrading
 	mcStatus func() collector.MCStatus
 	applier  StagedApplier
+	backup   BackupRunner
 
 	// warnStep is 1 minute in production; tests shrink it.
 	warnStep time.Duration
@@ -89,6 +95,9 @@ func (s *Scheduler) SetMCStatus(f func() collector.MCStatus) { s.mcStatus = f }
 
 // SetStagedApplier wires the mod manager for "apply staged on restart".
 func (s *Scheduler) SetStagedApplier(a StagedApplier) { s.applier = a }
+
+// SetBackupRunner wires the restic backup orchestration (kind "backup").
+func (s *Scheduler) SetBackupRunner(b BackupRunner) { s.backup = b }
 
 // Start loads all enabled routines and begins scheduling; Reload picks up
 // changes after CRUD operations.
@@ -179,16 +188,24 @@ func (s *Scheduler) RunNow(ctx context.Context, routineID int64) {
 	case err != nil:
 		run.Message = err.Error()
 		s.log.Error("routine failed", "name", r.Name, "err", err)
+		typ := events.TypeRoutineFailed
+		if r.Kind == "backup" {
+			typ = events.TypeBackupFailed // eigener Typ fürs Discord-Routing
+		}
 		s.bus.Publish(events.Event{
-			Type: events.TypeRoutineFailed, Severity: events.SevError,
+			Type: typ, Severity: events.SevError,
 			Title:   "Routine fehlgeschlagen: " + r.Name,
 			Message: err.Error(),
 			Fields:  []events.Field{{Name: "Typ", Value: r.Kind}},
 		})
 	default:
 		s.log.Info("routine finished", "name", r.Name)
+		typ := events.TypeRoutineOK
+		if r.Kind == "backup" {
+			typ = events.TypeBackupOK
+		}
 		s.bus.Publish(events.Event{
-			Type: events.TypeRoutineOK, Severity: events.SevSuccess,
+			Type: typ, Severity: events.SevSuccess,
 			Title:   "Routine erfolgreich: " + r.Name,
 			Message: msg,
 			Fields:  []events.Field{{Name: "Typ", Value: r.Kind}},
@@ -223,6 +240,12 @@ func (s *Scheduler) execute(ctx context.Context, r storage.Routine) (string, err
 
 	case "announce-restart":
 		return s.announceRestart(ctx, r)
+
+	case "backup":
+		if s.backup == nil {
+			return "", fmt.Errorf("backup-Runner nicht verdrahtet (MSM_BACKUP_CONTAINER prüfen)")
+		}
+		return s.backup.Run(ctx)
 
 	default:
 		return "", fmt.Errorf("unbekannter Routinentyp %q", r.Kind)

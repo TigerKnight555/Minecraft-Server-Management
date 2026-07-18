@@ -32,6 +32,9 @@ const (
 	TypeVersionNew      = "version.new"
 	TypeVersionReady    = "version.ready"
 	TypeContainerAction = "container.action"
+	TypeBackupOK        = "backup.ok"
+	TypeBackupFailed    = "backup.failed"
+	TypeBackupStale     = "backup.stale"
 )
 
 // Field is one key/value pair shown in a notification (Discord embed field).
