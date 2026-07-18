@@ -6,9 +6,11 @@ package mcrcon
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -29,7 +31,27 @@ func New(addr, password string) *Client {
 	return &Client{addr: addr, password: password, timeout: 5 * time.Second}
 }
 
+// Exec runs one command. Minecraft's RCON drops connections sporadically
+// under concurrent use — one transparent retry on connection-level errors
+// (EOF, reset) keeps routine logs and TPS polling free of noise.
 func (c *Client) Exec(ctx context.Context, command string) (string, error) {
+	out, err := c.execOnce(ctx, command)
+	if err != nil && ctx.Err() == nil && isTransient(err) {
+		time.Sleep(200 * time.Millisecond)
+		return c.execOnce(ctx, command)
+	}
+	return out, err
+}
+
+func isTransient(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	s := err.Error()
+	return strings.Contains(s, "connection reset") || strings.Contains(s, "broken pipe")
+}
+
+func (c *Client) execOnce(ctx context.Context, command string) (string, error) {
 	d := net.Dialer{Timeout: c.timeout}
 	conn, err := d.DialContext(ctx, "tcp", c.addr)
 	if err != nil {
