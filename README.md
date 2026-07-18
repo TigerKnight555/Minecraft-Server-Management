@@ -45,7 +45,7 @@ cp .env.example .env   # Werte anpassen, insbesondere MSM_RCON_PASSWORD
 
 # Login-Hash erzeugen und in .env eintragen ($ muss für Compose als $$
 # escaped werden — das erledigt diese Zeile automatisch):
-HASH=$(docker compose run --rm msm -hash-password 'DEIN_PASSWORT')
+HASH=$(docker compose run --rm --no-deps msm -hash-password 'DEIN_PASSWORT')
 sed -i "s|^MSM_ADMIN_PASSWORD_HASH=.*|MSM_ADMIN_PASSWORD_HASH=${HASH//$/\$\$}|" .env
 
 docker compose up -d --build
@@ -87,16 +87,17 @@ deaktivieren (`restart: unless-stopped` übernimmt).
 
 ### ICMP-Hinweis
 
-Das WAN-Monitoring pingt per ICMP. Der Container bekommt dafür `CAP_NET_RAW`
-(siehe compose). Alternativ funktionieren unprivilegierte Ping-Sockets, wenn
-auf dem Host `net.ipv4.ping_group_range` die Container-GID einschließt.
+Das WAN-Monitoring pingt per ICMP über unprivilegierte Ping-Sockets — die
+Compose-Datei setzt dafür das namespaced Sysctl `net.ipv4.ping_group_range`
+im Container. Keine Capability nötig (`CAP_NET_RAW` kollidiert auf manchen
+Hosts mit AppArmor).
 
 ### Socket-Proxy
 
-`wollomatic/socket-proxy` lässt in Phase 1 ausschließlich lesende
-Docker-Endpunkte durch (Container auflisten, Stats, Logs). `DOCKER_GID` in
-`.env` muss der docker-Gruppe des Hosts entsprechen:
-`getent group docker | cut -d: -f3`.
+`wollomatic/socket-proxy` lässt nur das Nötigste durch: lesend
+Container-Liste/Stats/Logs, schreibend ausschließlich
+`start|stop|restart`. `DOCKER_GID` in `.env` muss der docker-Gruppe des
+Hosts entsprechen: `getent group docker | cut -d: -f3`.
 
 ## Entwicklung
 

@@ -58,7 +58,7 @@ services:
       MSM_NAS_PATH: ${MSM_NAS_PATH:-}
       MSM_PING_TARGETS: ${MSM_PING_TARGETS:-1.1.1.1,9.9.9.9}
       MSM_HOST_PROC: /host/proc
-      # Login (Phase 2): Hash erzeugen mit `docker compose run --rm msm -hash-password 'DEIN_PASSWORT'`
+      # Login (Phase 2): Hash erzeugen mit `docker compose run --rm --no-deps msm -hash-password 'DEIN_PASSWORT'`
       MSM_ADMIN_PASSWORD_HASH: ${MSM_ADMIN_PASSWORD_HASH:-}
       # Nur diese Container dürfen über das Dashboard gesteuert werden
       MSM_MANAGED_CONTAINERS: ${MSM_MANAGED_CONTAINERS:-mc-fabric}
