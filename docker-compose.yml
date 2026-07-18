@@ -65,9 +65,15 @@ services:
       MSM_ADMIN_PASSWORD_HASH: ${MSM_ADMIN_PASSWORD_HASH:-}
       # Nur diese Container dürfen über das Dashboard gesteuert werden
       MSM_MANAGED_CONTAINERS: ${MSM_MANAGED_CONTAINERS:-mc-fabric}
+    # Zugriff auf die mods-Verzeichnisse (Phase 3): MSM läuft als 65532 und
+    # schreibt über die Gruppe des Host-Users (Verzeichnisse sind g+w).
+    group_add:
+      - "${MC_GID:-1000}"
     volumes:
       - msm-data:/data
       - /proc:/host/proc:ro
+      - ${MC_DATA_PATH:-/home/knvt/minecraft/fabric_server}/mods:/mc/mods
+      - ${MC_CLIENT_PACK_PATH:-/home/knvt/minecraft/client-pack}:/mc/client-pack
     ports:
       # LAN-only: an die LAN-Adresse des Hosts binden, nie 0.0.0.0 ohne Firewall
       - "${MSM_BIND_ADDR:-127.0.0.1}:8080:8080"

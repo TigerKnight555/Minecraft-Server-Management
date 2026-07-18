@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -39,6 +40,8 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mcrcon"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mcstatus"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mock"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modrinth"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/netcheck"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/storage"
@@ -80,14 +83,16 @@ func main() {
 	defer stop()
 
 	var (
-		docker     collector.DockerClient
-		controller collector.ContainerController
-		mc         collector.MCStatusSource
-		rcon       collector.RCONClient
-		host       collector.HostMetricsSource
-		wan        collector.WANChecker
-		store      collector.Store
-		admin      api.AdminStore
+		docker      collector.DockerClient
+		controller  collector.ContainerController
+		mc          collector.MCStatusSource
+		rcon        collector.RCONClient
+		host        collector.HostMetricsSource
+		wan         collector.WANChecker
+		store       collector.Store
+		admin       api.AdminStore
+		modAPI      mods.ModrinthAPI
+		modProfiles []mods.Profile
 	)
 
 	if *mockMode {
@@ -97,6 +102,13 @@ func main() {
 		docker, controller = md, md
 		mc, rcon, host, wan = mock.NewMC(), mock.NewRCON(), mock.NewHost(), mock.NewWAN()
 		store, admin = ms, ms
+		modAPI = mock.NewModrinth()
+		profiles, err := mock.CreateFakeProfiles(filepath.Join(os.TempDir(), "msm-mock"))
+		if err != nil {
+			log.Error("mock profiles failed", "err", err)
+			os.Exit(1)
+		}
+		modProfiles = profiles
 	} else {
 		dc := dockerclient.New(envOr("MSM_DOCKER_HOST", "http://socket-proxy:2375"))
 		docker, controller = dc, dc
@@ -120,6 +132,18 @@ func main() {
 		defer sq.Close()
 		store, admin = sq, sq
 		go pruneLoop(ctx, sq, log)
+
+		modAPI = modrinth.New()
+		serverMods := envOr("MSM_SERVER_MODS_DIR", "/mc/mods")
+		clientPack := envOr("MSM_CLIENT_PACK_DIR", "/mc/client-pack")
+		modProfiles = []mods.Profile{
+			{Name: "server", Dirs: map[string]string{"mods": serverMods}},
+			{Name: "client", Dirs: map[string]string{
+				"mods":          filepath.Join(clientPack, "mods"),
+				"shaderpacks":   filepath.Join(clientPack, "shaderpacks"),
+				"resourcepacks": filepath.Join(clientPack, "resourcepacks"),
+			}},
+		}
 	}
 
 	coll := collector.New(collector.Config{
@@ -132,6 +156,16 @@ func main() {
 		log.Error("scheduler start failed", "err", err)
 		os.Exit(1)
 	}
+
+	loader := envOr("MSM_LOADER", "fabric")
+	modmgr := mods.NewManager(modAPI, loader, modProfiles)
+	watcher := mods.NewWatcher(modAPI, modmgr, loader)
+	go watcher.Run(ctx, func() string {
+		if v := coll.Snapshot().MC.Version; v != "" {
+			return v
+		}
+		return os.Getenv("MC_VERSION")
+	})
 
 	passwordHash := os.Getenv("MSM_ADMIN_PASSWORD_HASH")
 	if passwordHash == "" && !*mockMode {
@@ -149,17 +183,21 @@ func main() {
 	srv := &http.Server{
 		Addr: *addr,
 		Handler: api.New(api.Deps{
-			Collector:  coll,
-			Docker:     docker,
-			Controller: controller,
-			RCON:       rcon,
-			Store:      store,
-			Admin:      admin,
-			Scheduler:  sched,
-			Auth:       authmgr,
-			Managed:    managed,
-			Frontend:   frontend,
-			Log:        log,
+			Collector:         coll,
+			Docker:            docker,
+			Controller:        controller,
+			RCON:              rcon,
+			Store:             store,
+			Admin:             admin,
+			Scheduler:         sched,
+			Auth:              authmgr,
+			ModManager:        modmgr,
+			Watcher:           watcher,
+			MCContainer:       envOr("MSM_MC_CONTAINER", "mc-fabric"),
+			FallbackMCVersion: os.Getenv("MC_VERSION"),
+			Managed:           managed,
+			Frontend:          frontend,
+			Log:               log,
 		}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

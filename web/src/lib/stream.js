@@ -132,3 +132,15 @@ export const deleteRoutine = (id) => apiFetch(`/api/routines/${id}`, { method: '
 export const runRoutine = (id) => apiFetch(`/api/routines/${id}/run`, { method: 'POST' })
 export const recentRuns = () => apiFetch('/api/routine-runs')
 export const auditLog = () => apiFetch('/api/audit')
+
+// --- mods (Phase 3) ---
+export const listMods = (profile) => apiFetch(`/api/mods?profile=${encodeURIComponent(profile)}`)
+export const checkMods = (profile) => apiFetch('/api/mods/check', { method: 'POST', body: JSON.stringify({ profile }) })
+export const stageMods = (profile, filenames) =>
+  apiFetch('/api/mods/stage', { method: 'POST', body: JSON.stringify({ profile, filenames }) })
+export const applyMods = (profile, restart) =>
+  apiFetch('/api/mods/apply', { method: 'POST', body: JSON.stringify({ profile, restart }) })
+export const rollbackMods = (profile) =>
+  apiFetch('/api/mods/rollback', { method: 'POST', body: JSON.stringify({ profile }) })
+export const versionWatch = () => apiFetch('/api/version-watch')
+export const versionWatchCheck = () => apiFetch('/api/version-watch/check', { method: 'POST' })

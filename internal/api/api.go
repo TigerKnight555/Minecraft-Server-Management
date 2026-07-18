@@ -13,36 +13,45 @@ import (
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/auth"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
 )
 
 type Server struct {
-	collector  *collector.Collector
-	docker     collector.DockerClient
-	controller collector.ContainerController
-	rcon       collector.RCONClient
-	store      collector.Store
-	admin      AdminStore
-	sched      *scheduler.Scheduler
-	authmgr    *auth.Manager
-	managed    map[string]bool // allowlist for container actions
-	log        *slog.Logger
-	frontend   fs.FS // embedded web/dist, may be nil in tests
+	collector         *collector.Collector
+	docker            collector.DockerClient
+	controller        collector.ContainerController
+	rcon              collector.RCONClient
+	store             collector.Store
+	admin             AdminStore
+	sched             *scheduler.Scheduler
+	authmgr           *auth.Manager
+	modmgr            *mods.Manager
+	watcher           *mods.Watcher
+	mcContainer       string
+	fallbackMCVersion string
+	managed           map[string]bool // allowlist for container actions
+	log               *slog.Logger
+	frontend          fs.FS // embedded web/dist, may be nil in tests
 }
 
 // Deps bundles the wiring — Phase 2 grew too many constructor params.
 type Deps struct {
-	Collector  *collector.Collector
-	Docker     collector.DockerClient
-	Controller collector.ContainerController
-	RCON       collector.RCONClient
-	Store      collector.Store
-	Admin      AdminStore
-	Scheduler  *scheduler.Scheduler
-	Auth       *auth.Manager
-	Managed    []string // container names allowed for start/stop/restart
-	Frontend   fs.FS
-	Log        *slog.Logger
+	Collector         *collector.Collector
+	Docker            collector.DockerClient
+	Controller        collector.ContainerController
+	RCON              collector.RCONClient
+	Store             collector.Store
+	Admin             AdminStore
+	Scheduler         *scheduler.Scheduler
+	Auth              *auth.Manager
+	ModManager        *mods.Manager
+	Watcher           *mods.Watcher
+	MCContainer       string // name of the minecraft container (mod apply restart)
+	FallbackMCVersion string // used when query has no version yet
+	Managed           []string // container names allowed for start/stop/restart
+	Frontend          fs.FS
+	Log               *slog.Logger
 }
 
 func New(d Deps) *Server {
@@ -53,17 +62,21 @@ func New(d Deps) *Server {
 		}
 	}
 	return &Server{
-		collector:  d.Collector,
-		docker:     d.Docker,
-		controller: d.Controller,
-		rcon:       d.RCON,
-		store:      d.Store,
-		admin:      d.Admin,
-		sched:      d.Scheduler,
-		authmgr:    d.Auth,
-		managed:    managed,
-		log:        d.Log,
-		frontend:   d.Frontend,
+		collector:         d.Collector,
+		docker:            d.Docker,
+		controller:        d.Controller,
+		rcon:              d.RCON,
+		store:             d.Store,
+		admin:             d.Admin,
+		sched:             d.Scheduler,
+		authmgr:           d.Auth,
+		modmgr:            d.ModManager,
+		watcher:           d.Watcher,
+		mcContainer:       d.MCContainer,
+		fallbackMCVersion: d.FallbackMCVersion,
+		managed:           managed,
+		log:               d.Log,
+		frontend:          d.Frontend,
 	}
 }
 
@@ -87,6 +100,18 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("POST /api/routines/{id}/run", s.handleRunRoutine)
 		mux.HandleFunc("GET /api/routine-runs", s.handleRecentRuns)
 		mux.HandleFunc("GET /api/audit", s.handleAudit)
+	}
+	// Phase 3
+	if s.modmgr != nil {
+		mux.HandleFunc("GET /api/mods", s.handleModsList)
+		mux.HandleFunc("POST /api/mods/check", s.handleModsCheck)
+		mux.HandleFunc("POST /api/mods/stage", s.handleModsStage)
+		mux.HandleFunc("POST /api/mods/apply", s.handleModsApply)
+		mux.HandleFunc("POST /api/mods/rollback", s.handleModsRollback)
+	}
+	if s.watcher != nil {
+		mux.HandleFunc("GET /api/version-watch", s.handleVersionWatch)
+		mux.HandleFunc("POST /api/version-watch/check", s.handleVersionWatchCheck)
 	}
 	if s.authmgr != nil {
 		mux.HandleFunc("POST /api/login", s.authmgr.HandleLogin)

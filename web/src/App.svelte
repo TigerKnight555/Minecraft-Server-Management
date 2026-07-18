@@ -11,6 +11,7 @@
   import Containers from './lib/Containers.svelte'
   import Routines from './lib/Routines.svelte'
   import Audit from './lib/Audit.svelte'
+  import Mods from './lib/Mods.svelte'
 
   let authChecked = $state(false)
   let tab = $state('dashboard')
@@ -69,6 +70,7 @@
     <span class="sub">Minecraft Server Management</span>
     <nav class="tabs">
       <button class={tab === 'dashboard' ? 'active' : ''} onclick={() => (tab = 'dashboard')}>Dashboard</button>
+      <button class={tab === 'mods' ? 'active' : ''} onclick={() => (tab = 'mods')}>Mods</button>
       <button class={tab === 'routines' ? 'active' : ''} onclick={() => (tab = 'routines')}>Routinen</button>
       <button class={tab === 'audit' ? 'active' : ''} onclick={() => (tab = 'audit')}>Audit</button>
     </nav>
@@ -84,6 +86,8 @@
     <div class="panels"><Routines /></div>
   {:else if tab === 'audit'}
     <div class="panels"><Audit /></div>
+  {:else if tab === 'mods'}
+    <div class="panels"><Mods /></div>
   {:else}
 
   <div class="tiles">
