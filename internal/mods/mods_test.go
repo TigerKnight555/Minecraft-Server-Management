@@ -118,6 +118,55 @@ func TestStageApplyRollback(t *testing.T) {
 	}
 }
 
+func TestApplyKeepsRemainingUpdateBadges(t *testing.T) {
+	mgr, _, _ := setup(t)
+	ctx := context.Background()
+	mgr.CheckUpdates(ctx, "server", "1.21.11")
+
+	// nur EIN Update stagen und anwenden
+	var first string
+	for _, e := range mgr.Entries("server") {
+		if e.UpdateVersion != "" {
+			first = e.Filename
+			break
+		}
+	}
+	if _, err := mgr.Stage(ctx, "server", []string{first}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := mgr.ApplyStaged("server"); err != nil {
+		t.Fatal(err)
+	}
+
+	entries := mgr.Entries("server")
+	if len(entries) == 0 {
+		t.Fatal("cache wurde geleert — Update-Badges verloren (UX-Regression)")
+	}
+	var stillUpdatable, appliedCurrent int
+	for _, e := range entries {
+		if e.UpdateVersion != "" {
+			stillUpdatable++
+		}
+		if e.Version == "1.1.0" && e.UpdateVersion == "" {
+			appliedCurrent++
+		}
+	}
+	if stillUpdatable == 0 {
+		t.Error("übrige Updates verschwunden — nur der angewendete Eintrag darf 'aktuell' werden")
+	}
+	if appliedCurrent != 1 {
+		t.Errorf("angewendeter Eintrag nicht als aktuell markiert (got %d)", appliedCurrent)
+	}
+}
+
+func TestWatcherRejectsEmptyVersion(t *testing.T) {
+	mgr, _, _ := setup(t)
+	w := mods.NewWatcher(mock.NewModrinth(), mgr, "fabric")
+	if _, err := w.Check(context.Background(), ""); err == nil {
+		t.Error("Check mit leerer Version muss fehlschlagen statt Unsinn zu liefern")
+	}
+}
+
 func TestApplyWithoutStagingFails(t *testing.T) {
 	mgr, _, _ := setup(t)
 	if _, _, err := mgr.ApplyStaged("server"); err == nil {

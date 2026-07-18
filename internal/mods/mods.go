@@ -367,7 +367,27 @@ func (m *Manager) ApplyStaged(profileName string) (string, int, error) {
 		writeManifest(filepath.Join(backupDir, "manifest.json"), backupMan)
 	}
 	os.Remove(manPath)
-	m.invalidate(profileName)
+	// den Cache NICHT komplett verwerfen — nur die angewendeten Einträge auf
+	// den neuen Stand setzen. Die übrigen Update-Badges bleiben stehen, die
+	// Oberfläche "vergisst" nichts (UX-Feedback vom ersten echten Update).
+	m.mu.Lock()
+	entries := m.entries[profileName]
+	for _, it := range man.Items {
+		for i := range entries {
+			if entries[i].Filename == it.OldFilename && entries[i].Category == it.Category {
+				entries[i].Filename = it.NewFilename
+				entries[i].SHA512 = it.SHA512
+				entries[i].Version = it.Version
+				entries[i].UpdateVersion = ""
+				entries[i].UpdateFilename = ""
+				entries[i].UpdateURL = ""
+				entries[i].UpdateSHA512 = ""
+				entries[i].Changelog = ""
+				entries[i].Staged = false
+			}
+		}
+	}
+	m.mu.Unlock()
 	return label, applied, nil
 }
 

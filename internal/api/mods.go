@@ -25,7 +25,7 @@ func (s *Server) handleModsList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) mcVersion() string {
-	if v := s.collector.Snapshot().MC.Version; v != "" {
+	if v := s.collector.MCVersion(); v != "" {
 		return v
 	}
 	return s.fallbackMCVersion
@@ -40,9 +40,15 @@ func (s *Server) handleModsCheck(w http.ResponseWriter, r *http.Request) {
 	if req.Profile == "" {
 		req.Profile = "server"
 	}
+	version := s.mcVersion()
+	if version == "" {
+		// lieber ehrlich ablehnen als mit leerer Version "alles aktuell" melden
+		httpError(w, http.StatusConflict, "Minecraft-Version unbekannt (Server startet noch?) — Check in 1–2 Minuten wiederholen")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
-	entries, err := s.modmgr.CheckUpdates(ctx, req.Profile, s.mcVersion())
+	entries, err := s.modmgr.CheckUpdates(ctx, req.Profile, version)
 	if err != nil {
 		s.log.Error("mod check failed", "profile", req.Profile, "err", err)
 		httpError(w, http.StatusBadGateway, err.Error())
@@ -150,9 +156,14 @@ func (s *Server) handleVersionWatch(w http.ResponseWriter, r *http.Request) {
 
 // handleVersionWatchCheck triggers a readiness check now.
 func (s *Server) handleVersionWatchCheck(w http.ResponseWriter, r *http.Request) {
+	version := s.mcVersion()
+	if version == "" {
+		httpError(w, http.StatusConflict, "Minecraft-Version unbekannt (Server startet noch?) — Check in 1–2 Minuten wiederholen")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
-	status, err := s.watcher.Check(ctx, s.mcVersion())
+	status, err := s.watcher.Check(ctx, version)
 	if err != nil {
 		httpError(w, http.StatusBadGateway, err.Error())
 		return

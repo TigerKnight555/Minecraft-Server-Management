@@ -105,6 +105,10 @@ func (w *Watcher) getJSON(ctx context.Context, url string, out any) error {
 
 // Check runs one readiness evaluation against the given current version.
 func (w *Watcher) Check(ctx context.Context, currentVersion string) (*WatchStatus, error) {
+	if currentVersion == "" {
+		// ohne bekannte Version wäre jedes Ergebnis irreführend
+		return nil, fmt.Errorf("aktuelle Minecraft-Version unbekannt — Check übersprungen")
+	}
 	status := &WatchStatus{
 		Checked:        time.Now(),
 		CurrentVersion: currentVersion,

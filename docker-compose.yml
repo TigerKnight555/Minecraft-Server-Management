@@ -65,6 +65,8 @@ services:
       MSM_ADMIN_PASSWORD_HASH: ${MSM_ADMIN_PASSWORD_HASH:-}
       # Nur diese Container dürfen über das Dashboard gesteuert werden
       MSM_MANAGED_CONTAINERS: ${MSM_MANAGED_CONTAINERS:-mc-fabric}
+      # Fallback-Version für Mod-Checks, solange der MC-Server (neu)startet
+      MC_VERSION: ${MC_VERSION:-}
     # Zugriff auf die mods-Verzeichnisse (Phase 3): MSM läuft als 65532 und
     # schreibt über die Gruppe des Host-Users (Verzeichnisse sind g+w).
     group_add:

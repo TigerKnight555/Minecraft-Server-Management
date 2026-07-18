@@ -57,6 +57,9 @@ type Collector struct {
 	lastHost    HostSample
 	lastMC      MCStatus
 	lastWAN     WANSample
+	// survives short offline windows (e.g. restart after mod apply) so
+	// update checks never run with an empty version
+	lastMCVersion string
 
 	pending   []Sample
 	pendingMu sync.Mutex
@@ -134,6 +137,14 @@ func (c *Collector) Snapshot() Snapshot {
 		MC:         c.lastMC,
 		WAN:        c.lastWAN,
 	}
+}
+
+// MCVersion returns the last known Minecraft version — also while the
+// server is briefly offline (restart windows).
+func (c *Collector) MCVersion() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lastMCVersion
 }
 
 func (c *Collector) Containers() []Container {
@@ -250,6 +261,9 @@ func (c *Collector) pollMC(ctx context.Context) {
 	}
 	c.mu.Lock()
 	c.lastMC = s
+	if s.Online && s.Version != "" {
+		c.lastMCVersion = s.Version
+	}
 	c.mu.Unlock()
 	c.publish(Event{Type: "mc", Data: s})
 	online := 0.0

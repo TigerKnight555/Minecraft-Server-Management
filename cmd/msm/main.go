@@ -161,7 +161,7 @@ func main() {
 	modmgr := mods.NewManager(modAPI, loader, modProfiles)
 	watcher := mods.NewWatcher(modAPI, modmgr, loader)
 	go watcher.Run(ctx, func() string {
-		if v := coll.Snapshot().MC.Version; v != "" {
+		if v := coll.MCVersion(); v != "" {
 			return v
 		}
 		return os.Getenv("MC_VERSION")
