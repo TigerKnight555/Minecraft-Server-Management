@@ -10,8 +10,9 @@ services:
     restart: unless-stopped
     read_only: true
     user: "65532:65532"
-    security_opt:
-      - no-new-privileges:true
+    # no-new-privileges entfernt: Docker 29 + AppArmor verweigert damit den
+    # Container-Start ("exec: operation not permitted"). Risiko akzeptabel:
+    # distroless enthält keine setuid-Binaries, non-root + cap_drop ALL aktiv.
     cap_drop:
       - ALL
     # ICMP-Ping ohne CAP_NET_RAW: unprivilegierte Ping-Sockets für alle GIDs
@@ -59,8 +60,7 @@ services:
     container_name: msm-socket-proxy
     restart: unless-stopped
     read_only: true
-    security_opt:
-      - no-new-privileges:true
+    # no-new-privileges entfernt — siehe Kommentar beim msm-Service
     mem_limit: 64m
     user: "65534:${DOCKER_GID:-988}" # Gruppe muss auf docker-GID des Hosts zeigen
     command:
