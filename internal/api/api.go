@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/auth"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/backup"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
@@ -29,6 +30,7 @@ type Server struct {
 	authmgr           *auth.Manager
 	modmgr            *mods.Manager
 	watcher           *mods.Watcher
+	restore           *backup.Restore
 	mcContainer       string
 	fallbackMCVersion string
 	managed           map[string]bool // allowlist for container actions
@@ -49,6 +51,7 @@ type Deps struct {
 	Auth              *auth.Manager
 	ModManager        *mods.Manager
 	Watcher           *mods.Watcher
+	Restore           *backup.Restore
 	MCContainer       string // name of the minecraft container (mod apply restart)
 	FallbackMCVersion string // used when query has no version yet
 	Managed           []string // container names allowed for start/stop/restart
@@ -75,6 +78,7 @@ func New(d Deps) *Server {
 		authmgr:           d.Auth,
 		modmgr:            d.ModManager,
 		watcher:           d.Watcher,
+		restore:           d.Restore,
 		mcContainer:       d.MCContainer,
 		fallbackMCVersion: d.FallbackMCVersion,
 		managed:           managed,
@@ -116,6 +120,10 @@ func (s *Server) Handler() http.Handler {
 	if s.watcher != nil {
 		mux.HandleFunc("GET /api/version-watch", s.handleVersionWatch)
 		mux.HandleFunc("POST /api/version-watch/check", s.handleVersionWatchCheck)
+	}
+	// Phase 4.4
+	if s.restore != nil {
+		mux.HandleFunc("POST /api/backup/restore-player", s.handleRestorePlayer)
 	}
 	if s.authmgr != nil {
 		mux.HandleFunc("POST /api/login", s.authmgr.HandleLogin)

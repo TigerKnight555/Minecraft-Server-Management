@@ -35,6 +35,8 @@ const (
 	TypeBackupOK        = "backup.ok"
 	TypeBackupFailed    = "backup.failed"
 	TypeBackupStale     = "backup.stale"
+	TypeRestoreOK       = "backup.restore.ok"
+	TypeRestoreFailed   = "backup.restore.failed"
 )
 
 // Field is one key/value pair shown in a notification (Discord embed field).

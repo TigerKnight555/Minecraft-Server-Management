@@ -144,3 +144,7 @@ export const rollbackMods = (profile) =>
   apiFetch('/api/mods/rollback', { method: 'POST', body: JSON.stringify({ profile }) })
 export const versionWatch = () => apiFetch('/api/version-watch')
 export const versionWatchCheck = () => apiFetch('/api/version-watch/check', { method: 'POST' })
+
+// --- backup/restore (Phase 4.4) ---
+export const restorePlayer = (uuid) =>
+  apiFetch('/api/backup/restore-player', { method: 'POST', body: JSON.stringify({ uuid }) })

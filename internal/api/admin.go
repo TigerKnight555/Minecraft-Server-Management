@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/storage"
 )
@@ -223,6 +224,40 @@ func (s *Server) handleRunRoutine(w http.ResponseWriter, r *http.Request) {
 	s.audit(r.Context(), "routine.run-now", strconv.FormatInt(id, 10))
 	go s.sched.RunNow(context.Background(), id)
 	writeJSON(w, http.StatusAccepted, map[string]bool{"started": true})
+}
+
+// handleRestorePlayer restores one player's data file from the newest
+// backup snapshot. Synchronous — the browser waits for the result.
+func (s *Server) handleRestorePlayer(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UUID string `json:"uuid"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Minute)
+	defer cancel()
+	msg, err := s.restore.RestorePlayer(ctx, req.UUID)
+	if err != nil {
+		s.audit(r.Context(), "backup.restore.failed", "uuid="+req.UUID+" err="+err.Error())
+		s.bus.Publish(events.Event{
+			Type: events.TypeRestoreFailed, Severity: events.SevError,
+			Title:   "Spielerdaten-Restore fehlgeschlagen",
+			Message: err.Error(),
+			Fields:  []events.Field{{Name: "UUID", Value: req.UUID}},
+		})
+		httpError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	s.audit(r.Context(), "backup.restore", "uuid="+req.UUID)
+	s.bus.Publish(events.Event{
+		Type: events.TypeRestoreOK, Severity: events.SevSuccess,
+		Title:   "Spielerdaten wiederhergestellt",
+		Message: msg,
+		Fields:  []events.Field{{Name: "UUID", Value: req.UUID}},
+	})
+	writeJSON(w, http.StatusOK, map[string]string{"message": msg})
 }
 
 func (s *Server) handleRecentRuns(w http.ResponseWriter, r *http.Request) {

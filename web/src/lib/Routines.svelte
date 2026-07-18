@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte'
-  import { listRoutines, createRoutine, updateRoutine, deleteRoutine, runRoutine, recentRuns } from './stream.js'
+  import { listRoutines, createRoutine, updateRoutine, deleteRoutine, runRoutine, recentRuns, restorePlayer } from './stream.js'
 
   let routines = $state([])
   let runs = $state([])
@@ -100,6 +100,29 @@
   function fmtTime(t) {
     return new Date(t).toLocaleString('de-DE')
   }
+
+  // --- Einzeldatei-Restore (Phase 4.4) ---
+  let restoreUUID = $state('')
+  let restoreBusy = $state(false)
+  let restoreResult = $state('')
+  let restoreError = $state('')
+
+  async function doRestore(e) {
+    e.preventDefault()
+    if (!confirm(`Spielerdaten für ${restoreUUID} aus dem letzten Backup wiederherstellen?\nDer Spieler muss offline sein!`)) return
+    restoreBusy = true
+    restoreResult = ''
+    restoreError = ''
+    try {
+      const res = await restorePlayer(restoreUUID.trim())
+      restoreResult = res.message
+      restoreUUID = ''
+    } catch (err) {
+      restoreError = err.message
+    } finally {
+      restoreBusy = false
+    }
+  }
 </script>
 
 <div class="panel wide">
@@ -166,6 +189,19 @@
     </table>
   {/if}
 
+  <h2 style="margin-top: 1.2rem">Spielerdaten wiederherstellen</h2>
+  <form class="routine-form" onsubmit={doRestore}>
+    <label>Spieler-UUID (mit Bindestrichen)
+      <input bind:value={restoreUUID} required placeholder="069a79f4-44e9-4726-a5be-fca90e38aaf5"
+        pattern="[0-9a-fA-F]{'{'}8{'}'}-[0-9a-fA-F]{'{'}4{'}'}-[0-9a-fA-F]{'{'}4{'}'}-[0-9a-fA-F]{'{'}4{'}'}-[0-9a-fA-F]{'{'}12{'}'}"
+        style="min-width: 21rem" />
+    </label>
+    <button type="submit" disabled={restoreBusy}>{restoreBusy ? 'Läuft…' : 'Aus letztem Backup wiederherstellen'}</button>
+    <span class="dim">Spieler muss offline sein. Aktuelle Datei wird als .pre-restore-* gesichert.</span>
+  </form>
+  {#if restoreResult}<div class="ok-msg">{restoreResult}</div>{/if}
+  {#if restoreError}<div class="err-msg">{restoreError}</div>{/if}
+
   <h2 style="margin-top: 1.2rem">Letzte Ausführungen</h2>
   {#if runs.length === 0}
     <div class="empty">Noch keine Ausführungen</div>
@@ -225,6 +261,7 @@
   }
   .rt-actions button.danger:hover { background: var(--err); color: #0f1419; }
   .err-msg { color: var(--err); font-size: 0.85rem; margin-bottom: 0.6rem; }
+  .ok-msg { color: var(--accent); font-size: 0.85rem; margin-bottom: 0.6rem; }
   .conditions {
     display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center;
     width: 100%; padding-top: 0.2rem; border-top: 1px dashed var(--panel-border);

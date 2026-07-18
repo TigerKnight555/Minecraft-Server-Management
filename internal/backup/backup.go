@@ -83,37 +83,43 @@ func (r *Runner) Run(ctx context.Context) (string, error) {
 	if err := r.docker.StartContainer(ctx, id); err != nil {
 		return "", fmt.Errorf("backup-container starten: %w", err)
 	}
+	det, err := superviseJob(ctx, r.docker, r.log, id, started, r.Timeout, r.PollStep)
+	if err != nil {
+		return "", fmt.Errorf("backup %w", err)
+	}
+	dur := det.FinishedAt.Sub(started).Round(time.Second)
+	logs, _ := r.docker.TailLogs(ctx, id, 40)
+	if det.ExitCode != 0 {
+		return "", fmt.Errorf("backup fehlgeschlagen (exit %d nach %s): %s",
+			det.ExitCode, dur, tailSummary(logs, 400))
+	}
+	return fmt.Sprintf("Backup ok in %s — %s", dur, resticSummary(logs)), nil
+}
 
-	deadline := time.Now().Add(r.Timeout)
+// superviseJob waits until a started job container exits and returns its
+// final state. Only results finishing AFTER `started` count — the container
+// could be a leftover from an earlier run.
+func superviseJob(ctx context.Context, docker Docker, log *slog.Logger,
+	id string, started time.Time, timeout, poll time.Duration) (collector.ContainerDetail, error) {
+	deadline := time.Now().Add(timeout)
 	for {
 		if time.Now().After(deadline) {
-			return "", fmt.Errorf("backup nach %s nicht fertig — Container %s läuft noch, bitte prüfen", r.Timeout, r.container)
+			return collector.ContainerDetail{}, fmt.Errorf("nach %s nicht fertig — Container läuft noch, bitte prüfen", timeout)
 		}
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(r.PollStep):
+			return collector.ContainerDetail{}, ctx.Err()
+		case <-time.After(poll):
 		}
-		det, err := r.docker.InspectContainer(ctx, id)
+		det, err := docker.InspectContainer(ctx, id)
 		if err != nil {
-			r.log.Warn("backup inspect failed, retrying", "err", err)
+			log.Warn("job inspect failed, retrying", "err", err)
 			continue
 		}
-		if det.Running {
+		if det.Running || det.FinishedAt.Before(started) {
 			continue
 		}
-		// finished — der Container könnte von einem früheren Lauf übrig
-		// sein; nur Ergebnisse NACH unserem Start zählen
-		if det.FinishedAt.Before(started) {
-			continue
-		}
-		dur := det.FinishedAt.Sub(started).Round(time.Second)
-		logs, _ := r.docker.TailLogs(ctx, id, 40)
-		if det.ExitCode != 0 {
-			return "", fmt.Errorf("backup fehlgeschlagen (exit %d nach %s): %s",
-				det.ExitCode, dur, tailSummary(logs, 400))
-		}
-		return fmt.Sprintf("Backup ok in %s — %s", dur, resticSummary(logs)), nil
+		return det, nil
 	}
 }
 

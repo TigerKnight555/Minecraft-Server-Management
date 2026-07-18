@@ -16,6 +16,8 @@
 //	MSM_ADMIN_PASSWORD_HASH argon2id hash for login     (empty = kein Login! nur dev)
 //	MSM_MANAGED_CONTAINERS  comma separated allowlist for start/stop/restart
 //	MSM_BACKUP_CONTAINER    pre-created restic compose service  (default mc-backup)
+//	MSM_RESTORE_CONTAINER   pre-created restore compose service (default mc-restore)
+//	MSM_RESTORE_JOB_DIR     shared job dir for restore scripts  (default /job)
 //	MSM_DISCORD_WEBHOOK_URL one Discord webhook, receives every event
 //	MSM_DISCORD_WEBHOOKS    JSON list with per-webhook event filters, wins over
 //	                        the single URL: [{"name":"admin","url":"https://...",
@@ -184,12 +186,19 @@ func main() {
 	// Compose-Service — MSM startet ihn nur (Socket-Proxy erlaubt kein
 	// create/exec) und überwacht den Exit-Code. Stop/Start des MC-Servers
 	// rund ums Backup übernimmt die Scheduler-Kette.
+	var restore *backup.Restore
 	if bd, ok := docker.(backup.Docker); ok {
 		runner := backup.New(bd, coll, envOr("MSM_BACKUP_CONTAINER", "mc-backup"), log)
 		sched.SetBackupRunner(runner)
 		if sq, ok := store.(backup.FreshnessStore); ok {
 			go backup.WatchFreshness(ctx, sq, bus, 26*time.Hour, log)
 		}
+		// Einzeldatei-Restore (Phase 4.4): Job-Skript-Übergabe an mc-restore
+		jobDir := envOr("MSM_RESTORE_JOB_DIR", "/job")
+		if *mockMode {
+			jobDir = filepath.Join(os.TempDir(), "msm-mock")
+		}
+		restore = backup.NewRestore(bd, coll, envOr("MSM_RESTORE_CONTAINER", "mc-restore"), jobDir, log)
 	}
 	if err := sched.Start(ctx); err != nil {
 		log.Error("scheduler start failed", "err", err)
@@ -234,6 +243,7 @@ func main() {
 			Auth:              authmgr,
 			ModManager:        modmgr,
 			Watcher:           watcher,
+			Restore:           restore,
 			MCContainer:       envOr("MSM_MC_CONTAINER", "mc-fabric"),
 			FallbackMCVersion: os.Getenv("MC_VERSION"),
 			Managed:           managed,

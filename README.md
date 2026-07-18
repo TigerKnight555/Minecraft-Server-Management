@@ -113,9 +113,20 @@ sudo systemctl daemon-reload && sudo systemctl restart remote-fs.target
 # 2. RESTIC_PASSWORD und MSM_NAS_PATH in .env setzen (Passwort zusätzlich
 #    im Passwort-Manager sichern — ohne Passwort sind Backups unlesbar!)
 
-# 3. Backup-Container anlegen (NICHT starten — das macht MSM):
-docker compose --profile backup up -d --no-start mc-backup
+# 3. Job-Verzeichnis fürs Einzeldatei-Restore anlegen (MSM schreibt hier
+#    die Restore-Skripte hinein; Gruppe = MC_GID aus .env):
+mkdir -m 775 -p ~/minecraft/fabric_server/.msm-restore
+
+# 4. Backup- und Restore-Container anlegen (NICHT starten — das macht MSM):
+docker compose --profile backup up -d --no-start mc-backup mc-restore
 ```
+
+**Einzeldatei-Restore (Spielerdaten):** Tab „Routinen" →
+„Spielerdaten wiederherstellen": Spieler-UUID eingeben →
+`playerdata/<UUID>.dat` wird aus dem letzten Snapshot wiederhergestellt.
+Der Spieler muss offline sein; die aktuelle Datei wird vorher als
+`.pre-restore-<Zeitstempel>` gesichert (nie gelöscht). Ersetzt
+`restore_player_inventory.sh`.
 
 Das restic-Repo legt der erste Lauf automatisch an. Das alte
 Nachtbackup-Skript läuft parallel weiter, bis der erste Restore-Test aus
