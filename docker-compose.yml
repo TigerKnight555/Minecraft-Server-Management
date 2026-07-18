@@ -14,8 +14,12 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    cap_add:
-      - NET_RAW # ICMP-Ping für WAN-Monitoring
+    # ICMP-Ping ohne CAP_NET_RAW: unprivilegierte Ping-Sockets für alle GIDs
+    # freigeben (namespaced Sysctl, wirkt nur in diesem Container).
+    # cap_add NET_RAW kollidiert mit no-new-privileges bei Non-Root-User
+    # ("exec: operation not permitted").
+    sysctls:
+      net.ipv4.ping_group_range: "0 2147483647"
     mem_limit: 200m
     cpus: 0.5
     cpu_shares: 128
