@@ -73,6 +73,17 @@ die Spieler per `say`, dann Neustart). Cron-Syntax, 5 Felder — Beispiel
 täglich 04:30: `30 4 * * *`. Jede Ausführung wird protokolliert, Fehler sind
 im UI sichtbar — Routinen scheitern nie still.
 
+Der angekündigte Neustart ist eine Schrittkette (Bedingungen → Warnungen →
+`save-all` → Stop → Start → Watchdog) mit Optionen:
+- **Überspringen, wenn Spieler online** — Lauf wird sichtbar als
+  „übersprungen" protokolliert
+- **Auf leeren Server warten (max. bis HH:MM)** — bei Fristablauf wird
+  trotzdem neugestartet
+- **Gestagte Mod-Updates einspielen** — Stop → Tausch → Start; schlägt der
+  Tausch fehl, startet der Server trotzdem wieder (alter Stand)
+- **Watchdog (Min.)** — Routine gilt erst als erfolgreich, wenn der Server
+  wieder online meldet; Timeout ergibt einen sichtbaren Fehler
+
 ### Discord-Benachrichtigungen
 
 Ereignisse (Routine ok/fehlgeschlagen, Mod-Updates eingespielt, Rollback,
