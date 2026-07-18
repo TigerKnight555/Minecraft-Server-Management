@@ -5,8 +5,7 @@
 /msm
 /msm.exe
 node_modules/
-web/dist/
+web/dist/*
 !web/dist/.gitkeep
-dist/
 .idea/
 .vscode/
