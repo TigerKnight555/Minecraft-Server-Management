@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte'
   import { listRoutines, createRoutine, updateRoutine, deleteRoutine, runRoutine, recentRuns, restorePlayer, listRestorePlayers } from './stream.js'
+  import Maintenance from './Maintenance.svelte'
 
   let routines = $state([])
   let runs = $state([])
@@ -216,6 +217,8 @@
       </tbody>
     </table>
   {/if}
+
+  <Maintenance />
 
   <h2 style="margin-top: 1.2rem">Spielerdaten wiederherstellen</h2>
   <form class="routine-form" onsubmit={doRestore}>

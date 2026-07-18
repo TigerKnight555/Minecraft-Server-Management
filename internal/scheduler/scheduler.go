@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -71,6 +72,9 @@ type Scheduler struct {
 	applier  StagedApplier
 	backup   BackupRunner
 	reboot   RebootSignaler
+	// maintActive: Routinen laufen nicht in Wartungsfenster hinein —
+	// sichtbar übersprungen, nie still (v1: kein Vorziehen/Nachholen)
+	maintActive func() bool
 
 	// warnStep is 1 minute in production; tests shrink it.
 	warnStep time.Duration
@@ -79,7 +83,14 @@ type Scheduler struct {
 	cron    *cron.Cron
 	entries map[int64]cron.EntryID
 	ctx     context.Context
+
+	// expectedDown is true while a chain intentionally has the MC server
+	// stopped — der Down-Wächter (Phase 4.7) schlägt dann keinen Alarm.
+	expectedDown atomic.Bool
 }
+
+// ExpectedDown reports whether a routine currently keeps the server down.
+func (s *Scheduler) ExpectedDown() bool { return s.expectedDown.Load() }
 
 func New(store RoutineStore, rcon collector.RCONClient, controller collector.ContainerController, containers resolver, log *slog.Logger) *Scheduler {
 	return &Scheduler{
@@ -107,6 +118,9 @@ func (s *Scheduler) SetBackupRunner(b BackupRunner) { s.backup = b }
 
 // SetRebootSignaler wires the host-reboot signal file (kind "host-reboot").
 func (s *Scheduler) SetRebootSignaler(r RebootSignaler) { s.reboot = r }
+
+// SetMaintenanceCheck wires the maintenance-window state (Phase 4.6).
+func (s *Scheduler) SetMaintenanceCheck(f func() bool) { s.maintActive = f }
 
 // Start loads all enabled routines and begins scheduling; Reload picks up
 // changes after CRUD operations.
@@ -179,7 +193,12 @@ func (s *Scheduler) RunNow(ctx context.Context, routineID int64) {
 		return
 	}
 	s.log.Info("routine started", "name", r.Name, "kind", r.Kind)
-	msg, err := s.execute(ctx, r)
+	var msg string
+	if s.maintActive != nil && s.maintActive() {
+		err = errSkipped{reason: "Wartungsfenster aktiv"}
+	} else {
+		msg, err = s.execute(ctx, r)
+	}
 	run := storage.RoutineRun{RoutineID: r.ID, Time: time.Now(), OK: err == nil, Message: msg}
 	var skipped errSkipped
 	switch {
@@ -248,12 +267,19 @@ func (s *Scheduler) execute(ctx context.Context, r storage.Routine) (string, err
 		return "Container neugestartet", nil
 
 	case "announce-restart":
+		// Flag für den Down-Wächter: dieser Ausfall ist gewollt
+		s.expectedDown.Store(true)
+		defer s.expectedDown.Store(false)
 		return s.announceRestart(ctx, r)
 
 	case "backup":
+		s.expectedDown.Store(true)
+		defer s.expectedDown.Store(false)
 		return s.backupChain(ctx, r)
 
 	case "host-reboot":
+		s.expectedDown.Store(true)
+		defer s.expectedDown.Store(false)
 		return s.hostReboot(ctx, r)
 
 	default:

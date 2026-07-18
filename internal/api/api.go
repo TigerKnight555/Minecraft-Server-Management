@@ -31,7 +31,8 @@ type Server struct {
 	modmgr            *mods.Manager
 	watcher           *mods.Watcher
 	restore           *backup.Restore
-	mcDataDir         string // read-only mount of the MC data dir ("" = feature off)
+	mcDataDir         string       // read-only mount of the MC data dir ("" = feature off)
+	maintActive       func() bool  // Wartungsfenster gerade aktiv?
 	mcContainer       string
 	fallbackMCVersion string
 	managed           map[string]bool // allowlist for container actions
@@ -53,7 +54,8 @@ type Deps struct {
 	ModManager        *mods.Manager
 	Watcher           *mods.Watcher
 	Restore           *backup.Restore
-	MCDataDir         string // read-only MC data dir for the player list
+	MCDataDir         string      // read-only MC data dir for the player list
+	MaintActive       func() bool // maintenance.Manager.Active
 	MCContainer       string // name of the minecraft container (mod apply restart)
 	FallbackMCVersion string // used when query has no version yet
 	Managed           []string // container names allowed for start/stop/restart
@@ -82,6 +84,7 @@ func New(d Deps) *Server {
 		watcher:           d.Watcher,
 		restore:           d.Restore,
 		mcDataDir:         d.MCDataDir,
+		maintActive:       d.MaintActive,
 		mcContainer:       d.MCContainer,
 		fallbackMCVersion: d.FallbackMCVersion,
 		managed:           managed,
@@ -130,6 +133,13 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.mcDataDir != "" {
 		mux.HandleFunc("GET /api/backup/players", s.handleListPlayers)
+	}
+	// Phase 4.6
+	if s.admin != nil {
+		mux.HandleFunc("GET /api/maintenance", s.handleListWindows)
+		mux.HandleFunc("POST /api/maintenance", s.handleCreateWindow)
+		mux.HandleFunc("POST /api/maintenance/{id}/end", s.handleEndWindow)
+		mux.HandleFunc("DELETE /api/maintenance/{id}", s.handleDeleteWindow)
 	}
 	if s.authmgr != nil {
 		mux.HandleFunc("POST /api/login", s.authmgr.HandleLogin)

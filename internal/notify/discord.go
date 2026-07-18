@@ -55,40 +55,115 @@ func ParseWebhooks(jsonList, singleURL string) ([]Webhook, error) {
 	return nil, nil
 }
 
-// Discord posts events as webhook embeds.
+// queued is one undeliverable notification waiting for the net to return.
+type queued struct {
+	hook Webhook
+	ev   events.Event
+}
+
+// Discord posts events as webhook embeds. Ist das Internet weg, landen
+// Meldungen in einer begrenzten Offline-Warteschlange und werden nach der
+// Rückkehr nachgeliefert (Konzept: Benachrichtigungen & Integrationen).
 type Discord struct {
 	hooks []Webhook
 	http  *http.Client
 	log   *slog.Logger
+
+	// Mute unterdrückt Meldungen während Wartungsfenstern; Fenster- und
+	// System-Meldungen kommen immer durch. Nil = nie stumm.
+	Mute func() bool
+
+	queue      []queued
+	dropped    int
+	RetryEvery time.Duration
+	QueueMax   int
 }
 
 func NewDiscord(hooks []Webhook, log *slog.Logger) *Discord {
 	return &Discord{
-		hooks: hooks,
-		http:  &http.Client{Timeout: 15 * time.Second},
-		log:   log,
+		hooks:      hooks,
+		http:       &http.Client{Timeout: 15 * time.Second},
+		log:        log,
+		RetryEvery: time.Minute,
+		QueueMax:   100,
 	}
 }
 
+// muted reports whether this event should be swallowed right now.
+func (d *Discord) muted(ev events.Event) bool {
+	if d.Mute == nil || !d.Mute() {
+		return false
+	}
+	// Fenster-/System-Meldungen (Ankündigung, Ende, wieder online) immer
+	return !strings.HasPrefix(ev.Type, "maintenance.") && !strings.HasPrefix(ev.Type, "system.")
+}
+
 // Run consumes the event channel until it closes or ctx is done. Meant to be
-// started as a goroutine; delivery failures are logged, never fatal.
+// started as a goroutine; delivery failures are queued, never fatal.
 func (d *Discord) Run(ctx context.Context, ch <-chan events.Event) {
+	retry := time.NewTicker(d.RetryEvery)
+	defer retry.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-retry.C:
+			d.flushQueue(ctx)
 		case ev, ok := <-ch:
 			if !ok {
 				return
+			}
+			if d.muted(ev) {
+				continue
 			}
 			for _, h := range d.hooks {
 				if !events.Matches(h.Events, ev.Type) {
 					continue
 				}
 				if err := d.send(ctx, h.URL, ev); err != nil {
-					d.log.Error("discord delivery failed", "webhook", h.Name, "event", ev.Type, "err", err)
+					d.log.Error("discord delivery failed, queued", "webhook", h.Name, "event", ev.Type, "err", err)
+					d.enqueue(queued{hook: h, ev: ev})
 				}
 			}
+		}
+	}
+}
+
+func (d *Discord) enqueue(q queued) {
+	if len(d.queue) >= d.QueueMax {
+		d.queue = d.queue[1:] // älteste opfern, Zusammenfassung zählt mit
+		d.dropped++
+	}
+	d.queue = append(d.queue, q)
+}
+
+// flushQueue re-delivers queued notifications once the net is back. Bricht
+// beim ersten weiterhin scheiternden Versuch ab (Internet wohl noch weg).
+func (d *Discord) flushQueue(ctx context.Context) {
+	if len(d.queue) == 0 {
+		return
+	}
+	delivered := 0
+	for len(d.queue) > 0 {
+		q := d.queue[0]
+		if err := d.send(ctx, q.hook.URL, q.ev); err != nil {
+			break
+		}
+		d.queue = d.queue[1:]
+		delivered++
+	}
+	if delivered > 0 && len(d.queue) == 0 {
+		summary := fmt.Sprintf("%d aufgestaute Meldung(en) nachgeliefert.", delivered)
+		if d.dropped > 0 {
+			summary += fmt.Sprintf(" %d weitere gingen wegen voller Warteschlange verloren.", d.dropped)
+			d.dropped = 0
+		}
+		for _, h := range d.hooks {
+			d.send(ctx, h.URL, events.Event{
+				Type: events.TypeNetOK, Severity: events.SevInfo,
+				Title: "Zustellung nachgeholt", Message: summary, Time: time.Now(),
+			})
+			break // Zusammenfassung nur an den ersten Webhook
 		}
 	}
 }

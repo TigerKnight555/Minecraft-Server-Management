@@ -149,3 +149,9 @@ export const versionWatchCheck = () => apiFetch('/api/version-watch/check', { me
 export const restorePlayer = (uuid) =>
   apiFetch('/api/backup/restore-player', { method: 'POST', body: JSON.stringify({ uuid }) })
 export const listRestorePlayers = () => apiFetch('/api/backup/players')
+
+// --- Wartungsfenster (Phase 4.6) ---
+export const listMaintenance = () => apiFetch('/api/maintenance')
+export const createMaintenance = (w) => apiFetch('/api/maintenance', { method: 'POST', body: JSON.stringify(w) })
+export const endMaintenance = (id) => apiFetch(`/api/maintenance/${id}/end`, { method: 'POST' })
+export const deleteMaintenance = (id) => apiFetch(`/api/maintenance/${id}`, { method: 'DELETE' })

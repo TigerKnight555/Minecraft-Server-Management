@@ -237,6 +237,7 @@ type Store struct {
 	Routines []storage.Routine
 	Runs     []storage.RoutineRun
 	Desired  map[string]string
+	Windows  []storage.MaintenanceWindow
 	nextID   int64
 }
 
@@ -408,4 +409,57 @@ func (s *Store) ListDesiredStates(_ context.Context) ([]storage.DesiredState, er
 		out = append(out, storage.DesiredState{Container: c, State: st, Updated: time.Now()})
 	}
 	return out, nil
+}
+
+// --- Wartungsfenster (Phase 4.6) ---
+
+func (s *Store) CreateWindow(_ context.Context, w storage.MaintenanceWindow) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w.ID = s.nextID
+	s.nextID++
+	s.Windows = append(s.Windows, w)
+	return w.ID, nil
+}
+
+func (s *Store) ListWindows(_ context.Context) ([]storage.MaintenanceWindow, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]storage.MaintenanceWindow(nil), s.Windows...), nil
+}
+
+func (s *Store) MarkWindow(_ context.Context, id int64, started, ended, stoppedServer bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.Windows {
+		if s.Windows[i].ID == id {
+			s.Windows[i].Started, s.Windows[i].Ended, s.Windows[i].StoppedServer = started, ended, stoppedServer
+			return nil
+		}
+	}
+	return sql.ErrNoRows
+}
+
+func (s *Store) EndWindowNow(_ context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.Windows {
+		if s.Windows[i].ID == id && !s.Windows[i].Ended {
+			s.Windows[i].End = time.Now()
+			return nil
+		}
+	}
+	return sql.ErrNoRows
+}
+
+func (s *Store) DeleteWindow(_ context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.Windows {
+		if s.Windows[i].ID == id {
+			s.Windows = append(s.Windows[:i], s.Windows[i+1:]...)
+			return nil
+		}
+	}
+	return nil
 }

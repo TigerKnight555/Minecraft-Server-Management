@@ -48,6 +48,7 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/hostctl"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/hostmetrics"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/maintenance"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mcquery"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mcrcon"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mcstatus"
@@ -58,6 +59,7 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/notify"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/storage"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/watchers"
 	"github.com/TigerKnight555/Minecraft-Server-Management/web"
 )
 
@@ -172,9 +174,11 @@ func main() {
 		log.Error("discord webhook config invalid", "err", err)
 		os.Exit(1)
 	}
+	var notifier *notify.Discord
 	if len(hooks) > 0 {
+		notifier = notify.NewDiscord(hooks, log)
 		ch, _ := bus.Subscribe(64)
-		go notify.NewDiscord(hooks, log).Run(ctx, ch)
+		go notifier.Run(ctx, ch)
 		log.Info("discord notifier active", "webhooks", len(hooks))
 	} else {
 		log.Info("no discord webhook configured — notifications disabled")
@@ -221,12 +225,43 @@ func main() {
 		signalDir = filepath.Join(os.TempDir(), "msm-mock")
 	}
 	sched.SetRebootSignaler(hostctl.NewSignaler(signalDir))
+	hostState := func() collector.HostSample { return coll.Snapshot().Host }
+	mcName := envOr("MSM_MC_CONTAINER", "mc-fabric")
 	if ds, ok := admin.(hostctl.DesiredStore); ok {
-		rec := hostctl.NewReconciler(ds, controller, coll, mcState,
-			func() collector.HostSample { return coll.Snapshot().Host },
-			bus, envOr("MSM_MC_CONTAINER", "mc-fabric"), log)
+		rec := hostctl.NewReconciler(ds, controller, coll, mcState, hostState, bus, mcName, log)
 		go rec.Run(ctx)
 	}
+
+	// Wartungsfenster (Phase 4.6): stumme Alarme + Banner + Routinen-Skip
+	var maint *maintenance.Manager
+	if ms, ok := admin.(maintenance.Store); ok {
+		maint = maintenance.New(ms, controller, coll, rcon, mcState, bus, mcName, log)
+		go maint.Run(ctx)
+		sched.SetMaintenanceCheck(maint.Active)
+		if notifier != nil {
+			notifier.Mute = maint.Active
+		}
+	}
+
+	// Wächter (Phase 4.7): Crash-Reports, unerwarteter Ausfall, Internet-
+	// Hysterese, Ressourcen-Schwellwerte — melden nur, greifen nie ein
+	go watchers.NewCrash(mcDataDir, bus, log).Run(ctx)
+	desiredStopped := func() bool {
+		if ds, ok := admin.(hostctl.DesiredStore); ok {
+			states, err := ds.ListDesiredStates(context.Background())
+			if err == nil {
+				for _, st := range states {
+					if st.Container == mcName && st.State == "stopped" {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}
+	go watchers.NewDown(coll, mcName, sched.ExpectedDown, desiredStopped, bus).Run(ctx)
+	go watchers.NewNet(func() collector.WANSample { return coll.Snapshot().WAN }, bus).Run(ctx)
+	go watchers.NewResource(hostState, bus).Run(ctx)
 	if err := sched.Start(ctx); err != nil {
 		log.Error("scheduler start failed", "err", err)
 		os.Exit(1)
@@ -272,6 +307,9 @@ func main() {
 			Watcher:           watcher,
 			Restore:           restore,
 			MCDataDir:         mcDataDir,
+			MaintActive: func() bool {
+				return maint != nil && maint.Active()
+			},
 			MCContainer:       envOr("MSM_MC_CONTAINER", "mc-fabric"),
 			FallbackMCVersion: os.Getenv("MC_VERSION"),
 			Managed:           managed,

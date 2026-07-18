@@ -37,9 +37,22 @@ const (
 	TypeBackupStale     = "backup.stale"
 	TypeRestoreOK       = "backup.restore.ok"
 	TypeRestoreFailed   = "backup.restore.failed"
-	TypeSystemReboot    = "system.reboot"  // Reboot angefordert
-	TypeSystemOnline    = "system.online"  // nach Boot: alles wieder da
+	TypeSystemReboot    = "system.reboot"   // Reboot angefordert
+	TypeSystemOnline    = "system.online"   // nach Boot: alles wieder da
 	TypeSystemDegraded  = "system.degraded" // nach Boot: Server kam nicht hoch
+
+	// Wächter (Phase 4.7)
+	TypeCrash       = "watch.crash"        // Crash-Report aufgetaucht
+	TypeServerDown  = "watch.server.down"  // MC-Container unerwartet aus
+	TypeServerUp    = "watch.server.up"    // Entwarnung nach server.down
+	TypeNetDegraded = "watch.net.degraded" // Internet anhaltend schlecht
+	TypeNetOK       = "watch.net.ok"       // Entwarnung nach net.degraded
+	TypeResource    = "watch.resource"     // Disk/RAM-Schwellwert gerissen
+
+	// Wartungsfenster (Phase 4.6)
+	TypeMaintAnnounce = "maintenance.announce" // Fenster angekündigt
+	TypeMaintStart    = "maintenance.start"    // Fenster beginnt
+	TypeMaintEnd      = "maintenance.end"      // Fenster beendet, alles wieder da
 )
 
 // Field is one key/value pair shown in a notification (Discord embed field).

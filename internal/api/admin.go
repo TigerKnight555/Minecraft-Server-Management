@@ -27,6 +27,11 @@ type AdminStore interface {
 	RecentRuns(ctx context.Context, limit int) ([]storage.RoutineRun, error)
 	// Soll-Zustand (Phase 4.5): nur explizite Nutzer-Aktionen setzen ihn
 	SetDesiredState(ctx context.Context, container, state string) error
+	// Wartungsfenster (Phase 4.6)
+	CreateWindow(ctx context.Context, w storage.MaintenanceWindow) (int64, error)
+	ListWindows(ctx context.Context) ([]storage.MaintenanceWindow, error)
+	EndWindowNow(ctx context.Context, id int64) error
+	DeleteWindow(ctx context.Context, id int64) error
 }
 
 func (s *Server) audit(ctx context.Context, action, detail string) {
@@ -237,6 +242,93 @@ func (s *Server) handleRunRoutine(w http.ResponseWriter, r *http.Request) {
 	s.audit(r.Context(), "routine.run-now", strconv.FormatInt(id, 10))
 	go s.sched.RunNow(context.Background(), id)
 	writeJSON(w, http.StatusAccepted, map[string]bool{"started": true})
+}
+
+// --- Wartungsfenster (Phase 4.6) ---
+
+func (s *Server) handleListWindows(w http.ResponseWriter, r *http.Request) {
+	windows, err := s.admin.ListWindows(r.Context())
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if windows == nil {
+		windows = []storage.MaintenanceWindow{}
+	}
+	active := s.maintActive != nil && s.maintActive()
+	writeJSON(w, http.StatusOK, map[string]any{"windows": windows, "active": active})
+}
+
+func (s *Server) handleCreateWindow(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name  string `json:"name"`
+		Start string `json:"start"` // "2026-07-19T09:00" (datetime-local)
+		End   string `json:"end"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		httpError(w, http.StatusBadRequest, "Name fehlt")
+		return
+	}
+	start, err1 := time.ParseInLocation("2006-01-02T15:04", req.Start, time.Local)
+	end, err2 := time.ParseInLocation("2006-01-02T15:04", req.End, time.Local)
+	if err1 != nil || err2 != nil {
+		httpError(w, http.StatusBadRequest, "Start/Ende müssen als JJJJ-MM-TTTHH:MM kommen")
+		return
+	}
+	if !end.After(start) {
+		httpError(w, http.StatusBadRequest, "Ende muss nach dem Start liegen")
+		return
+	}
+	if end.Before(time.Now()) {
+		httpError(w, http.StatusBadRequest, "Fenster liegt komplett in der Vergangenheit")
+		return
+	}
+	id, err := s.admin.CreateWindow(r.Context(), storage.MaintenanceWindow{Name: req.Name, Start: start, End: end})
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.audit(r.Context(), "maintenance.create", fmt.Sprintf("%s %s–%s", req.Name, start.Format("02.01. 15:04"), end.Format("15:04")))
+	s.bus.Publish(events.Event{
+		Type: events.TypeMaintAnnounce, Severity: events.SevInfo,
+		Title: "Wartungsfenster angekündigt: " + req.Name,
+		Message: fmt.Sprintf("Der Server ist am %s von %s bis %s offline.",
+			start.Format("02.01.2006"), start.Format("15:04"), end.Format("15:04")),
+	})
+	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
+}
+
+func (s *Server) handleEndWindow(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if err := s.admin.EndWindowNow(r.Context(), id); err != nil {
+		httpError(w, http.StatusNotFound, "Fenster nicht gefunden oder schon beendet")
+		return
+	}
+	s.audit(r.Context(), "maintenance.end-now", strconv.FormatInt(id, 10))
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleDeleteWindow(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if err := s.admin.DeleteWindow(r.Context(), id); err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.audit(r.Context(), "maintenance.delete", strconv.FormatInt(id, 10))
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // handleListPlayers returns the restorable players (playerdata scan +
