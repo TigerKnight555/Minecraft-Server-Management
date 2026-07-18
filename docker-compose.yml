@@ -7,7 +7,10 @@ services:
   mc-fabric:
     image: itzg/minecraft-server
     container_name: mc-fabric
-    restart: unless-stopped
+    # always statt unless-stopped: das Nacht-Backup stoppt den Container
+    # explizit vor dem Host-Reboot — er muss danach trotzdem wieder starten
+    # (ersetzt den alten systemd-Service mc-fabric.service)
+    restart: always
     environment:
       EULA: "TRUE"
       TYPE: fabric

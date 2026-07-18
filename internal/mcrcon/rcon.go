@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,6 +26,11 @@ type Client struct {
 	addr     string
 	password string
 	timeout  time.Duration
+
+	// Minecrafts RCON verträgt parallele Verbindungen schlecht (sporadische
+	// EOFs, wenn Poller und Routinen gleichzeitig zugreifen) — alle Zugriffe
+	// über diesen Client laufen deshalb strikt nacheinander.
+	mu sync.Mutex
 }
 
 func New(addr, password string) *Client {
@@ -35,6 +41,8 @@ func New(addr, password string) *Client {
 // under concurrent use — one transparent retry on connection-level errors
 // (EOF, reset) keeps routine logs and TPS polling free of noise.
 func (c *Client) Exec(ctx context.Context, command string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	out, err := c.execOnce(ctx, command)
 	if err != nil && ctx.Err() == nil && isTransient(err) {
 		time.Sleep(200 * time.Millisecond)
@@ -48,7 +56,10 @@ func isTransient(err error) bool {
 		return true
 	}
 	s := err.Error()
-	return strings.Contains(s, "connection reset") || strings.Contains(s, "broken pipe")
+	return strings.Contains(s, "connection reset") ||
+		strings.Contains(s, "broken pipe") ||
+		strings.Contains(s, "connection was aborted") || // windows: WSAECONNABORTED
+		strings.Contains(s, "forcibly closed") // windows: WSAECONNRESET
 }
 
 func (c *Client) execOnce(ctx context.Context, command string) (string, error) {
