@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/storage"
@@ -117,6 +118,21 @@ func validateRoutine(rt *storage.Routine) string {
 		}
 	default:
 		return "unbekannter Typ (rcon, restart, announce-restart)"
+	}
+	if rt.Kind != "announce-restart" && (rt.SkipIfPlayersOnline || rt.WaitForEmpty || rt.ApplyStaged || rt.WatchdogMinutes != 0) {
+		return "Bedingungen, Update-Einspielen und Watchdog gibt es nur beim angekündigten Neustart"
+	}
+	if rt.WatchdogMinutes < 0 || rt.WatchdogMinutes > 30 {
+		return "Watchdog muss zwischen 0 und 30 Minuten liegen"
+	}
+	rt.WaitDeadline = strings.TrimSpace(rt.WaitDeadline)
+	if rt.WaitDeadline != "" {
+		if !rt.WaitForEmpty {
+			return "Warte-Frist ohne 'auf leeren Server warten' ergibt keinen Sinn"
+		}
+		if _, err := time.Parse("15:04", rt.WaitDeadline); err != nil {
+			return "Warte-Frist muss HH:MM sein (z. B. 06:00)"
+		}
 	}
 	return ""
 }

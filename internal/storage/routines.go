@@ -3,14 +3,19 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 )
 
-// Routine is a scheduled action (scheduler stage 1). Kinds:
+// Routine is a scheduled action. Kinds:
 //
 //	rcon             — run Payload as an RCON command
 //	restart          — restart the container named in Payload
 //	announce-restart — warn players via RCON over WarnMinutes, then restart
+//
+// The stage-2 fields (conditions, staged updates, watchdog) only apply to
+// announce-restart; everything defaults to off so stage-1 routines behave
+// exactly as before.
 type Routine struct {
 	ID          int64  `json:"id"`
 	Name        string `json:"name"`
@@ -19,6 +24,13 @@ type Routine struct {
 	Payload     string `json:"payload"`
 	WarnMinutes int    `json:"warnMinutes"`
 	Enabled     bool   `json:"enabled"`
+
+	// Stufe-2-Bedingungen (Konzept: Routinen & Wartungsfenster)
+	SkipIfPlayersOnline bool   `json:"skipIfPlayersOnline"` // ganz überspringen, wenn Spieler online
+	WaitForEmpty        bool   `json:"waitForEmpty"`        // auf leeren Server warten …
+	WaitDeadline        string `json:"waitDeadline"`        // … höchstens bis "HH:MM" (leer = 60 min)
+	ApplyStaged         bool   `json:"applyStaged"`         // gestagte Mod-Updates beim Neustart einspielen
+	WatchdogMinutes     int    `json:"watchdogMinutes"`     // nach Start auf Online warten (0 = aus)
 }
 
 // RoutineRun is one execution record. Routines must never fail silently
@@ -51,20 +63,46 @@ CREATE TABLE IF NOT EXISTS routine_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_runs_routine ON routine_runs(routine_id, ts);
 `)
-	return err
+	if err != nil {
+		return err
+	}
+	// Phase-4.2-Spalten: ALTER TABLE schlägt fehl, wenn die Spalte schon
+	// existiert — das ist der "Migration schon gelaufen"-Normalfall.
+	for _, col := range []string{
+		`ALTER TABLE routines ADD COLUMN skip_if_players INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE routines ADD COLUMN wait_for_empty INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE routines ADD COLUMN wait_deadline TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE routines ADD COLUMN apply_staged INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE routines ADD COLUMN watchdog_minutes INTEGER NOT NULL DEFAULT 0`,
+	} {
+		if _, err := s.db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
+	}
+	return nil
+}
+
+const routineCols = `id, name, cron, kind, payload, warn_minutes, enabled,
+	skip_if_players, wait_for_empty, wait_deadline, apply_staged, watchdog_minutes`
+
+func scanRoutine(scan func(...any) error) (Routine, error) {
+	var r Routine
+	err := scan(&r.ID, &r.Name, &r.Cron, &r.Kind, &r.Payload, &r.WarnMinutes, &r.Enabled,
+		&r.SkipIfPlayersOnline, &r.WaitForEmpty, &r.WaitDeadline, &r.ApplyStaged, &r.WatchdogMinutes)
+	return r, err
 }
 
 func (s *SQLite) ListRoutines(ctx context.Context) ([]Routine, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, cron, kind, payload, warn_minutes, enabled FROM routines ORDER BY id`)
+		`SELECT `+routineCols+` FROM routines ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []Routine
 	for rows.Next() {
-		var r Routine
-		if err := rows.Scan(&r.ID, &r.Name, &r.Cron, &r.Kind, &r.Payload, &r.WarnMinutes, &r.Enabled); err != nil {
+		r, err := scanRoutine(rows.Scan)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -73,17 +111,18 @@ func (s *SQLite) ListRoutines(ctx context.Context) ([]Routine, error) {
 }
 
 func (s *SQLite) GetRoutine(ctx context.Context, id int64) (Routine, error) {
-	var r Routine
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, cron, kind, payload, warn_minutes, enabled FROM routines WHERE id = ?`, id).
-		Scan(&r.ID, &r.Name, &r.Cron, &r.Kind, &r.Payload, &r.WarnMinutes, &r.Enabled)
-	return r, err
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+routineCols+` FROM routines WHERE id = ?`, id)
+	return scanRoutine(row.Scan)
 }
 
 func (s *SQLite) CreateRoutine(ctx context.Context, r Routine) (int64, error) {
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO routines(name, cron, kind, payload, warn_minutes, enabled) VALUES(?,?,?,?,?,?)`,
-		r.Name, r.Cron, r.Kind, r.Payload, r.WarnMinutes, r.Enabled)
+		`INSERT INTO routines(name, cron, kind, payload, warn_minutes, enabled,
+			skip_if_players, wait_for_empty, wait_deadline, apply_staged, watchdog_minutes)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		r.Name, r.Cron, r.Kind, r.Payload, r.WarnMinutes, r.Enabled,
+		r.SkipIfPlayersOnline, r.WaitForEmpty, r.WaitDeadline, r.ApplyStaged, r.WatchdogMinutes)
 	if err != nil {
 		return 0, err
 	}
@@ -92,8 +131,11 @@ func (s *SQLite) CreateRoutine(ctx context.Context, r Routine) (int64, error) {
 
 func (s *SQLite) UpdateRoutine(ctx context.Context, r Routine) error {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE routines SET name=?, cron=?, kind=?, payload=?, warn_minutes=?, enabled=? WHERE id=?`,
-		r.Name, r.Cron, r.Kind, r.Payload, r.WarnMinutes, r.Enabled, r.ID)
+		`UPDATE routines SET name=?, cron=?, kind=?, payload=?, warn_minutes=?, enabled=?,
+			skip_if_players=?, wait_for_empty=?, wait_deadline=?, apply_staged=?, watchdog_minutes=?
+		 WHERE id=?`,
+		r.Name, r.Cron, r.Kind, r.Payload, r.WarnMinutes, r.Enabled,
+		r.SkipIfPlayersOnline, r.WaitForEmpty, r.WaitDeadline, r.ApplyStaged, r.WatchdogMinutes, r.ID)
 	if err != nil {
 		return err
 	}

@@ -175,6 +175,7 @@ func main() {
 
 	sched := scheduler.New(admin.(scheduler.RoutineStore), rcon, controller, coll, log)
 	sched.SetBus(bus)
+	sched.SetMCStatus(func() collector.MCStatus { return coll.Snapshot().MC })
 	if err := sched.Start(ctx); err != nil {
 		log.Error("scheduler start failed", "err", err)
 		os.Exit(1)
@@ -182,6 +183,7 @@ func main() {
 
 	loader := envOr("MSM_LOADER", "fabric")
 	modmgr := mods.NewManager(modAPI, loader, modProfiles)
+	sched.SetStagedApplier(modmgr)
 	watcher := mods.NewWatcher(modAPI, modmgr, loader)
 	watcher.SetBus(bus)
 	go watcher.Run(ctx, func() string {

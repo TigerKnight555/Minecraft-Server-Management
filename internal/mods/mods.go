@@ -14,6 +14,7 @@ import (
 	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -25,6 +26,10 @@ import (
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modrinth"
 )
+
+// ErrNothingStaged signals an apply without staged files — callers like the
+// scheduler treat this as "nothing to do", not as a failure.
+var ErrNothingStaged = errors.New("nichts gestaged")
 
 // ModrinthAPI is the subset of the Modrinth client the manager needs
 // (interface for tests/mock mode).
@@ -337,7 +342,7 @@ func (m *Manager) ApplyStaged(profileName string) (string, int, error) {
 	manPath := filepath.Join(sdir, "manifest.json")
 	man, err := readManifest(manPath)
 	if err != nil || len(man.Items) == 0 {
-		return "", 0, fmt.Errorf("nichts gestaged für Profil %s", profileName)
+		return "", 0, fmt.Errorf("%w für Profil %s", ErrNothingStaged, profileName)
 	}
 
 	label := time.Now().Format("2006-01-02_15-04-05")

@@ -67,12 +67,15 @@ func TestAnnounceRestartWarnsThenRestarts(t *testing.T) {
 	s.RunNow(context.Background(), id)
 
 	cmds := rcon.Commands()
-	// 3 countdown warnings + final "jetzt"
-	if len(cmds) != 4 {
-		t.Fatalf("rcon commands = %v, want 4 announcements", cmds)
+	// 3 countdown warnings + final "jetzt" + save-all vor dem Stopp (Stufe 2)
+	if len(cmds) != 5 {
+		t.Fatalf("rcon commands = %v, want 4 announcements + save-all", cmds)
 	}
 	if !strings.Contains(cmds[0], "3 Minute") {
 		t.Errorf("first warning = %q, want countdown at 3", cmds[0])
+	}
+	if cmds[4] != "save-all" {
+		t.Errorf("last command = %q, want save-all before stop", cmds[4])
 	}
 	if len(docker.ActionLog()) != 1 {
 		t.Errorf("actions = %v, want one restart after warnings", docker.ActionLog())

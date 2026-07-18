@@ -26,6 +26,7 @@ const (
 const (
 	TypeRoutineOK       = "routine.ok"
 	TypeRoutineFailed   = "routine.failed"
+	TypeRoutineSkipped  = "routine.skipped"
 	TypeModsApplied     = "mods.applied"
 	TypeModsRollback    = "mods.rollback"
 	TypeVersionNew      = "version.new"

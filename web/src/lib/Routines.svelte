@@ -9,7 +9,11 @@
 
   let form = $state(emptyForm())
   function emptyForm() {
-    return { name: '', cron: '30 4 * * *', kind: 'rcon', payload: '', warnMinutes: 5, enabled: true }
+    return {
+      name: '', cron: '30 4 * * *', kind: 'rcon', payload: '', warnMinutes: 5, enabled: true,
+      skipIfPlayersOnline: false, waitForEmpty: false, waitDeadline: '',
+      applyStaged: false, watchdogMinutes: 5,
+    }
   }
 
   const kindLabel = {
@@ -37,13 +41,27 @@
   async function submit(e) {
     e.preventDefault()
     try {
-      await createRoutine({ ...form, warnMinutes: Number(form.warnMinutes) })
+      await createRoutine({
+        ...form,
+        warnMinutes: Number(form.warnMinutes),
+        watchdogMinutes: form.kind === 'announce-restart' ? Number(form.watchdogMinutes) : 0,
+      })
       form = emptyForm()
       showForm = false
       await refresh()
     } catch (err) {
       error = err.message
     }
+  }
+
+  // kompakte Badges für die Stufe-2-Optionen in der Tabelle
+  function optionBadges(r) {
+    const out = []
+    if (r.skipIfPlayersOnline) out.push('überspringt bei Spielern')
+    if (r.waitForEmpty) out.push(`wartet auf leer${r.waitDeadline ? ` bis ${r.waitDeadline}` : ''}`)
+    if (r.applyStaged) out.push('spielt Updates ein')
+    if (r.watchdogMinutes > 0) out.push(`Watchdog ${r.watchdogMinutes} min`)
+    return out
   }
 
   async function toggle(r) {
@@ -105,6 +123,15 @@
       </label>
       {#if form.kind === 'announce-restart'}
         <label>Vorwarnung (Min.) <input type="number" bind:value={form.warnMinutes} min="0" max="60" /></label>
+        <label>Watchdog (Min., 0 = aus) <input type="number" bind:value={form.watchdogMinutes} min="0" max="30" /></label>
+        <div class="conditions">
+          <label class="check"><input type="checkbox" bind:checked={form.skipIfPlayersOnline} /> Überspringen, wenn Spieler online</label>
+          <label class="check"><input type="checkbox" bind:checked={form.waitForEmpty} /> Auf leeren Server warten</label>
+          {#if form.waitForEmpty}
+            <label>höchstens bis (HH:MM) <input bind:value={form.waitDeadline} placeholder="06:00" pattern="[0-2][0-9]:[0-5][0-9]" /></label>
+          {/if}
+          <label class="check"><input type="checkbox" bind:checked={form.applyStaged} /> Gestagte Mod-Updates beim Neustart einspielen</label>
+        </div>
       {/if}
       <button type="submit">Anlegen</button>
     </form>
@@ -123,7 +150,10 @@
             <td>{r.name}</td>
             <td class="mono">{r.cron}</td>
             <td>{kindLabel[r.kind] ?? r.kind}</td>
-            <td class="mono">{r.payload}{r.kind === 'announce-restart' ? ` (${r.warnMinutes} min)` : ''}</td>
+            <td class="mono">
+              {r.payload}{r.kind === 'announce-restart' ? ` (${r.warnMinutes} min)` : ''}
+              {#each optionBadges(r) as b}<span class="badge">{b}</span>{/each}
+            </td>
             <td class="rt-actions">
               <button onclick={() => toggle(r)}>{r.enabled ? 'Deaktivieren' : 'Aktivieren'}</button>
               <button onclick={() => runNow(r)}>Jetzt</button>
@@ -194,4 +224,16 @@
   }
   .rt-actions button.danger:hover { background: var(--err); color: #0f1419; }
   .err-msg { color: var(--err); font-size: 0.85rem; margin-bottom: 0.6rem; }
+  .conditions {
+    display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center;
+    width: 100%; padding-top: 0.2rem; border-top: 1px dashed var(--panel-border);
+  }
+  .conditions label.check {
+    flex-direction: row; align-items: center; gap: 0.35rem; font-size: 0.78rem;
+  }
+  .badge {
+    display: inline-block; background: var(--panel-border); border-radius: 4px;
+    font-size: 0.68rem; padding: 0.1rem 0.4rem; margin-left: 0.35rem;
+    color: var(--text-dim); font-family: inherit;
+  }
 </style>
