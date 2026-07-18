@@ -66,6 +66,9 @@ services:
     command:
       - -loglevel=info
       - -listenip=0.0.0.0
+      # nur Anfragen aus dem internen MSM-Netz zulassen (Default wäre nur
+      # 127.0.0.1 — damit würde jede MSM-Anfrage abgelehnt)
+      - -allowfrom=172.28.97.0/24
       # Lesend: Container-Liste, Stats, Logs
       - -allowGET=/v1\..{1,2}/(containers/.*|version|info|events.*)
       # Phase 2: ausschließlich start/stop/restart — kein Create/Delete/Exec,
@@ -96,9 +99,13 @@ services:
   #     - default
 
 networks:
-  # internes Netz: nur MSM und der Socket-Proxy, kein Weg nach außen
+  # internes Netz: nur MSM und der Socket-Proxy, kein Weg nach außen.
+  # Festes Subnetz, damit -allowfrom beim Proxy greifen kann.
   msm-internal:
     internal: true
+    ipam:
+      config:
+        - subnet: 172.28.97.0/24
 
 volumes:
   msm-data:
