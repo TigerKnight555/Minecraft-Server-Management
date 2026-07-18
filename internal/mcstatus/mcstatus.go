@@ -1,10 +1,13 @@
 // Package mcstatus combines the Query protocol (players, version, MOTD) with
-// spark via RCON (TPS/MSPT) into one MCStatus, per the concept: spark values
-// are "deutlich verlässlicher als eigene Schätzungen".
+// TPS/MSPT via RCON into one MCStatus. Primary source is spark; because
+// spark answers asynchronously over RCON (response often arrives after the
+// RCON reply and is lost), the vanilla `tick query` command (MC 1.20.3+,
+// synchronous) serves as fallback.
 package mcstatus
 
 import (
 	"context"
+	"math"
 	"regexp"
 	"strconv"
 
@@ -29,7 +32,14 @@ func (s *Source) Status(ctx context.Context) (collector.MCStatus, error) {
 	if err == nil {
 		st.TPS, st.MSPT = ParseSparkTPS(out)
 	}
-	// spark failing must not degrade the rest of the status
+	if st.TPS == 0 {
+		// spark missing or answered asynchronously (empty RCON response) —
+		// vanilla `tick query` responds synchronously since MC 1.20.3
+		if out, err := s.rcon.Exec(ctx, "tick query"); err == nil {
+			st.TPS, st.MSPT = ParseTickQuery(out)
+		}
+	}
+	// TPS failing must not degrade the rest of the status
 	return st, nil
 }
 
@@ -52,5 +62,35 @@ func ParseSparkTPS(raw string) (tps, mspt float64) {
 	if m := msptLine.FindStringSubmatch(clean); m != nil {
 		mspt, _ = strconv.ParseFloat(m[1], 64)
 	}
+	return tps, mspt
+}
+
+var (
+	// "The target tick rate is 20.0 per second." / "Target tick rate: 20.0"
+	tickRate = regexp.MustCompile(`(?i)t(?:arget)?[^\d]*tick rate[^\d]*([\d.]+)`)
+	// "Average time per tick: 2.5ms (Target: 50.0ms)"
+	tickAvg = regexp.MustCompile(`(?i)average time per tick:\s*([\d.]+)\s*ms`)
+)
+
+// ParseTickQuery derives TPS/MSPT from vanilla `tick query` output.
+// Actual TPS = min(target rate, 1000/mspt) — the server never ticks faster
+// than the target, and slower only when a tick exceeds its budget.
+func ParseTickQuery(raw string) (tps, mspt float64) {
+	clean := colorCodes.ReplaceAllString(raw, "")
+	target := 20.0
+	if m := tickRate.FindStringSubmatch(clean); m != nil {
+		if v, err := strconv.ParseFloat(m[1], 64); err == nil && v > 0 {
+			target = v
+		}
+	}
+	m := tickAvg.FindStringSubmatch(clean)
+	if m == nil {
+		return 0, 0
+	}
+	mspt, _ = strconv.ParseFloat(m[1], 64)
+	if mspt <= 0 {
+		return 0, 0
+	}
+	tps = math.Min(target, 1000.0/mspt)
 	return tps, mspt
 }

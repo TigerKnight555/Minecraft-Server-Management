@@ -48,6 +48,72 @@ func TestParseSparkTPS(t *testing.T) {
 	}
 }
 
+func TestParseTickQuery(t *testing.T) {
+	cases := []struct {
+		name     string
+		raw      string
+		wantTPS  float64
+		wantMSPT float64
+	}{
+		{
+			name:     "normal",
+			raw:      "The game is running normally. Target tick rate: 20.0 per second.\nAverage time per tick: 2.5ms (Target: 50.0ms)",
+			wantTPS:  20.0,
+			wantMSPT: 2.5,
+		},
+		{
+			name:     "laggy server",
+			raw:      "Target tick rate: 20.0 per second.\nAverage time per tick: 80.0ms (Target: 50.0ms)",
+			wantTPS:  12.5, // 1000/80
+			wantMSPT: 80.0,
+		},
+		{
+			name:     "garbage",
+			raw:      "Unknown or incomplete command",
+			wantTPS:  0,
+			wantMSPT: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tps, mspt := ParseTickQuery(tc.raw)
+			if tps != tc.wantTPS {
+				t.Errorf("tps = %v, want %v", tps, tc.wantTPS)
+			}
+			if mspt != tc.wantMSPT {
+				t.Errorf("mspt = %v, want %v", mspt, tc.wantMSPT)
+			}
+		})
+	}
+}
+
+// emptySparkRCON simulates spark answering asynchronously (empty RCON reply)
+// while vanilla tick query works.
+type emptySparkRCON struct{ cmds []string }
+
+func (r *emptySparkRCON) Exec(_ context.Context, cmd string) (string, error) {
+	r.cmds = append(r.cmds, cmd)
+	if cmd == "tick query" {
+		return "Target tick rate: 20.0 per second.\nAverage time per tick: 4.0ms (Target: 50.0ms)", nil
+	}
+	return "", nil // spark: async, RCON sees nothing
+}
+
+func TestStatusFallsBackToTickQuery(t *testing.T) {
+	rcon := &emptySparkRCON{}
+	s := New(fakeQuery{st: collector.MCStatus{Online: true}}, rcon)
+	st, err := s.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.TPS != 20.0 || st.MSPT != 4.0 {
+		t.Errorf("tps/mspt = %v/%v, want 20/4 from tick query fallback", st.TPS, st.MSPT)
+	}
+	if len(rcon.cmds) != 2 || rcon.cmds[1] != "tick query" {
+		t.Errorf("commands = %v, want spark tps then tick query", rcon.cmds)
+	}
+}
+
 // fakeQuery lets us control the query result independent of mock package.
 type fakeQuery struct{ st collector.MCStatus }
 
