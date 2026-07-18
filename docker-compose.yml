@@ -1,0 +1,101 @@
+# MSM Phase 1 — Sichtbarkeit.
+# Der bestehende mc-fabric-Container wird hier bewusst NICHT definiert
+# (Überführung nach Compose ist Phase 2); MSM erreicht ihn über das
+# Default-Bridge-Netz bzw. die konfigurierten Adressen in .env.
+services:
+  msm:
+    build: .
+    image: msm:latest
+    container_name: msm
+    restart: unless-stopped
+    read_only: true
+    user: "65532:65532"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_RAW # ICMP-Ping für WAN-Monitoring
+    mem_limit: 200m
+    cpus: 0.5
+    cpu_shares: 128
+    environment:
+      MSM_DOCKER_HOST: http://socket-proxy:2375
+      MSM_DB_PATH: /data/msm.db
+      MSM_QUERY_ADDR: ${MSM_QUERY_ADDR:-mc-fabric:25565}
+      MSM_RCON_ADDR: ${MSM_RCON_ADDR:-mc-fabric:25575}
+      MSM_RCON_PASSWORD: ${MSM_RCON_PASSWORD:-}
+      MSM_NAS_PATH: ${MSM_NAS_PATH:-}
+      MSM_PING_TARGETS: ${MSM_PING_TARGETS:-1.1.1.1,9.9.9.9}
+      MSM_HOST_PROC: /host/proc
+      # Login (Phase 2): Hash erzeugen mit `docker compose run --rm msm -hash-password 'DEIN_PASSWORT'`
+      MSM_ADMIN_PASSWORD_HASH: ${MSM_ADMIN_PASSWORD_HASH:-}
+      # Nur diese Container dürfen über das Dashboard gesteuert werden
+      MSM_MANAGED_CONTAINERS: ${MSM_MANAGED_CONTAINERS:-mc-fabric}
+    volumes:
+      - msm-data:/data
+      - /proc:/host/proc:ro
+    ports:
+      # LAN-only: an die LAN-Adresse des Hosts binden, nie 0.0.0.0 ohne Firewall
+      - "${MSM_BIND_ADDR:-127.0.0.1}:8080:8080"
+    networks:
+      - msm-internal
+      - default
+    depends_on:
+      - socket-proxy
+    healthcheck:
+      # distroless hat kein curl — das Binary prüft sich selbst über /healthz
+      test: ["CMD", "/msm", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  socket-proxy:
+    image: wollomatic/socket-proxy:1
+    container_name: msm-socket-proxy
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 64m
+    user: "65534:${DOCKER_GID:-988}" # Gruppe muss auf docker-GID des Hosts zeigen
+    command:
+      - -loglevel=info
+      - -listenip=0.0.0.0
+      # Lesend: Container-Liste, Stats, Logs
+      - -allowGET=/v1\..{1,2}/(containers/.*|version|info|events.*)
+      # Phase 2: ausschließlich start/stop/restart — kein Create/Delete/Exec,
+      # kein Image-Pull, keine Volumes (Konzept: alles andere bleibt gesperrt)
+      - -allowPOST=/v1\..{1,2}/containers/[a-zA-Z0-9_.-]+/(start|stop|restart)
+      - -watchdoginterval=300
+      - -stoponwatchdog
+      - -shutdowngracetime=5
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - msm-internal
+
+  # Optional (empfohlen sobald Login aktiv ist): TLS-Terminierung via Caddy.
+  # Einkommentieren und MSM-Port-Mapping oben entfernen — dann läuft alles
+  # über https://<host>:8443 mit Caddys interner CA (Zertifikatswarnung im
+  # Browser einmalig akzeptieren oder Caddy-Root-CA im LAN verteilen).
+  # caddy:
+  #   image: caddy:2-alpine
+  #   container_name: msm-caddy
+  #   restart: unless-stopped
+  #   command: caddy reverse-proxy --from https://:8443 --to http://msm:8080 --internal-certs
+  #   ports:
+  #     - "${MSM_BIND_ADDR:-127.0.0.1}:8443:8443"
+  #   volumes:
+  #     - caddy-data:/data
+  #   networks:
+  #     - default
+
+networks:
+  # internes Netz: nur MSM und der Socket-Proxy, kein Weg nach außen
+  msm-internal:
+    internal: true
+
+volumes:
+  msm-data:
+  # caddy-data:   # einkommentieren zusammen mit dem caddy-Service
