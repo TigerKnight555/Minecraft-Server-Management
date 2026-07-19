@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -150,10 +151,14 @@ func (c *Client) VersionsByHash(ctx context.Context, sha512s []string) (map[stri
 }
 
 // ProjectSupports reports whether a project has any version for the given
-// loader + MC version (readiness check for the version watch).
+// loader + MC version (readiness check for the version watch). Die Filter
+// sind JSON-Arrays im Query-String und MÜSSEN URL-encodiert werden — rohe
+// Anführungszeichen/Klammern beantwortet Modrinth mit 400 (Learning 14).
 func (c *Client) ProjectSupports(ctx context.Context, projectID, loader, mcVersion string) (bool, error) {
-	path := fmt.Sprintf("/project/%s/version?loaders=[%q]&game_versions=[%q]",
-		projectID, loader, mcVersion)
+	q := url.Values{}
+	q.Set("loaders", fmt.Sprintf(`["%s"]`, loader))
+	q.Set("game_versions", fmt.Sprintf(`["%s"]`, mcVersion))
+	path := "/project/" + url.PathEscape(projectID) + "/version?" + q.Encode()
 	var versions []Version
 	if err := c.do(ctx, http.MethodGet, path, nil, &versions); err != nil {
 		return false, err
