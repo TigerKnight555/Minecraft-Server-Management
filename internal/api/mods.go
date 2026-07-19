@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
@@ -179,51 +178,17 @@ func (s *Server) handlePublishClientPack(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	s.audit(r.Context(), "mods.publish", "client-pack upload gestartet")
-	go s.publishClientPack(clientDirs)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+		defer cancel()
+		if err := dropbox.Publish(ctx, s.dropbox, clientDirs, s.bus, s.log); err != nil {
+			s.audit(ctx, "mods.publish.failed", err.Error())
+		} else {
+			s.audit(ctx, "mods.publish.ok", "client-pack veröffentlicht")
+		}
+	}()
 	writeJSON(w, http.StatusAccepted, map[string]string{
 		"message": "Upload gestartet — das Ergebnis kommt als Discord-Meldung (und ins Audit-Log).",
-	})
-}
-
-func (s *Server) publishClientPack(dirs map[string]string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
-	defer cancel()
-	name := "/MSM/mc-clientpack-" + time.Now().Format("2006-01-02") + ".zip"
-
-	pr, pw := io.Pipe()
-	files := 0
-	go func() {
-		n, err := dropbox.ZipDirs(pw, dirs)
-		files = n
-		pw.CloseWithError(err)
-	}()
-	fail := func(err error) {
-		s.log.Error("client-pack publish failed", "err", err)
-		s.audit(ctx, "mods.publish.failed", err.Error())
-		s.bus.Publish(events.Event{
-			Type: events.TypeClientPack, Severity: events.SevError,
-			Title: "⚠️ Mod-Paket-Upload fehlgeschlagen", Message: "Info für den Admin — Details unten.",
-			Fields: []events.Field{{Name: "Details", Value: err.Error()}},
-		})
-	}
-	if err := s.dropbox.Upload(ctx, name, pr); err != nil {
-		fail(err)
-		return
-	}
-	link, err := s.dropbox.ShareLink(ctx, name)
-	if err != nil {
-		fail(err)
-		return
-	}
-	s.audit(ctx, "mods.publish.ok", name)
-	s.bus.Publish(events.Event{
-		Type: events.TypeClientPack, Severity: events.SevSuccess,
-		Title:   "📦 Neues Mod-Paket zum Download!",
-		Message: "Download: " + link + "\nZIP in den bestehenden .minecraft-Ordner entpacken — Karten, Wegpunkte und Configs bleiben erhalten.",
-		Fields: []events.Field{
-			{Name: "Dateien", Value: fmt.Sprint(files)},
-			{Name: "Stand", Value: time.Now().Format("02.01.2006")},
-		},
 	})
 }
 

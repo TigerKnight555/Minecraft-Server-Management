@@ -322,6 +322,21 @@ func main() {
 	if dbxCfg.Complete() {
 		dbx = dropbox.New(dbxCfg)
 		log.Info("dropbox client-pack publishing active")
+		// nach dem Ein-Klick-MC-Update wird das frische Client-Paket
+		// automatisch verteilt (Upload + Discord-Link)
+		if upgrader != nil {
+			var clientDirs map[string]string
+			for _, p := range modProfiles {
+				if p.Name == "client" {
+					clientDirs = p.Dirs
+				}
+			}
+			if clientDirs != nil {
+				upgrader.Publish = func(ctx context.Context) error {
+					return dropbox.Publish(ctx, dbx, clientDirs, bus, log)
+				}
+			}
+		}
 	}
 
 	passwordHash := os.Getenv("MSM_ADMIN_PASSWORD_HASH")
@@ -340,23 +355,23 @@ func main() {
 	srv := &http.Server{
 		Addr: *addr,
 		Handler: api.New(api.Deps{
-			Collector:         coll,
-			Docker:            docker,
-			Controller:        controller,
-			RCON:              rcon,
-			Store:             store,
-			Admin:             admin,
-			Scheduler:         sched,
-			Auth:              authmgr,
-			ModManager:        modmgr,
-			Watcher:           watcher,
-			Restore:           restore,
-			MCDataDir:         mcDataDir,
+			Collector:  coll,
+			Docker:     docker,
+			Controller: controller,
+			RCON:       rcon,
+			Store:      store,
+			Admin:      admin,
+			Scheduler:  sched,
+			Auth:       authmgr,
+			ModManager: modmgr,
+			Watcher:    watcher,
+			Restore:    restore,
+			MCDataDir:  mcDataDir,
 			MaintActive: func() bool {
 				return maint != nil && maint.Active()
 			},
-			Dropbox:  dbx,
-			Upgrader: upgrader,
+			Dropbox:           dbx,
+			Upgrader:          upgrader,
 			MCContainer:       envOr("MSM_MC_CONTAINER", "mc-fabric"),
 			FallbackMCVersion: os.Getenv("MC_VERSION"),
 			Managed:           managed,

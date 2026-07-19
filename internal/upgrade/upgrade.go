@@ -69,6 +69,10 @@ type Orchestrator struct {
 	OnlineTimeout time.Duration // Welt-Upgrade beim ersten Start kann dauern
 	PollStep      time.Duration
 
+	// Publish veröffentlicht das Client-Paket (Dropbox + Discord-Link) —
+	// optional; läuft automatisch nach erfolgreichem Client-Mod-Update
+	Publish func(ctx context.Context) error
+
 	mu      sync.Mutex
 	running bool
 	status  string
@@ -245,13 +249,23 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 func (o *Orchestrator) finish(ctx context.Context, version string) error {
 	o.setStatus("aktualisiere Client-Mods")
 	clientNote := ""
+	clientUpdated := false
 	if _, err := o.modmgr.CheckUpdates(ctx, "client", version); err == nil {
 		if _, err := o.modmgr.Stage(ctx, "client", nil); err == nil {
 			if _, n, err := o.modmgr.ApplyStaged("client"); err == nil {
-				clientNote = fmt.Sprintf(" %d Client-Mods wurden aktualisiert — neues Mod-Paket folgt.", n)
+				clientUpdated = true
+				clientNote = fmt.Sprintf(" %d Client-Mods wurden aktualisiert — Download-Link folgt.", n)
 			} else if !errors.Is(err, mods.ErrNothingStaged) {
 				clientNote = " (Client-Mods konnten nicht automatisch aktualisiert werden — siehe Mods-Tab.)"
 			}
+		}
+	}
+	// neues Paket automatisch verteilen, damit niemand mit alten Mods
+	// gegen den neuen Server anrennt
+	if clientUpdated && o.Publish != nil {
+		o.setStatus("veröffentliche Client-Paket")
+		if err := o.Publish(ctx); err != nil {
+			clientNote += " (Paket-Upload fehlgeschlagen — im Mods-Tab manuell veröffentlichen.)"
 		}
 	}
 	o.bus.Publish(events.Event{
