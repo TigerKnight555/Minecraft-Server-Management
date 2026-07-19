@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -18,6 +20,8 @@ type MaintenanceWindow struct {
 	Started       bool      `json:"started"`       // Stopp-Sequenz gelaufen
 	Ended         bool      `json:"ended"`         // Wiederanlauf gelaufen
 	StoppedServer bool      `json:"stoppedServer"` // Fenster hat den Server gestoppt (dann startet es ihn auch wieder)
+	Notified1h    bool      `json:"notified1h"`    // Discord-Ankündigung T-1h raus
+	Notified5m    bool      `json:"notified5m"`    // Discord-Ankündigung T-5min raus
 }
 
 func (s *SQLite) migrateMaintenance() error {
@@ -31,7 +35,19 @@ CREATE TABLE IF NOT EXISTS maintenance_windows (
 	ended   INTEGER NOT NULL DEFAULT 0,
 	stopped_server INTEGER NOT NULL DEFAULT 0
 );`)
-	return err
+	if err != nil {
+		return err
+	}
+	// additive Spalten — "duplicate column" heißt: schon migriert
+	for _, col := range []string{
+		`ALTER TABLE maintenance_windows ADD COLUMN notified_1h INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE maintenance_windows ADD COLUMN notified_5m INTEGER NOT NULL DEFAULT 0`,
+	} {
+		if _, err := s.db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *SQLite) CreateWindow(ctx context.Context, w MaintenanceWindow) (int64, error) {
@@ -48,7 +64,7 @@ func (s *SQLite) CreateWindow(ctx context.Context, w MaintenanceWindow) (int64, 
 // last few finished ones for the history view).
 func (s *SQLite) ListWindows(ctx context.Context) ([]MaintenanceWindow, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, name, start, end, started, ended, stopped_server
+SELECT id, name, start, end, started, ended, stopped_server, notified_1h, notified_5m
 FROM maintenance_windows
 ORDER BY start DESC LIMIT 20`)
 	if err != nil {
@@ -59,7 +75,7 @@ ORDER BY start DESC LIMIT 20`)
 	for rows.Next() {
 		var w MaintenanceWindow
 		var start, end int64
-		if err := rows.Scan(&w.ID, &w.Name, &start, &end, &w.Started, &w.Ended, &w.StoppedServer); err != nil {
+		if err := rows.Scan(&w.ID, &w.Name, &start, &end, &w.Started, &w.Ended, &w.StoppedServer, &w.Notified1h, &w.Notified5m); err != nil {
 			return nil, err
 		}
 		w.Start, w.End = time.Unix(start, 0), time.Unix(end, 0)
@@ -80,6 +96,17 @@ func (s *SQLite) MarkWindow(ctx context.Context, id int64, started, ended, stopp
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+// MarkWindowNotified sets one Discord announcement stage ("1h" | "5m").
+func (s *SQLite) MarkWindowNotified(ctx context.Context, id int64, stage string) error {
+	col := map[string]string{"1h": "notified_1h", "5m": "notified_5m"}[stage]
+	if col == "" {
+		return fmt.Errorf("unbekannte Stufe %q", stage)
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE maintenance_windows SET `+col+`=1 WHERE id=?`, id)
+	return err
 }
 
 // EndWindowNow moves the end to now (vorzeitig beenden).

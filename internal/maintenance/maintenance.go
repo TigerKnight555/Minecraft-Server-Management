@@ -25,6 +25,7 @@ import (
 type Store interface {
 	ListWindows(ctx context.Context) ([]storage.MaintenanceWindow, error)
 	MarkWindow(ctx context.Context, id int64, started, ended, stoppedServer bool) error
+	MarkWindowNotified(ctx context.Context, id int64, stage string) error
 }
 
 type resolver interface {
@@ -96,6 +97,7 @@ func (m *Manager) tick(ctx context.Context) {
 		}
 		switch {
 		case now.Before(w.Start):
+			m.announcePhase(ctx, w, now)
 			m.warnPhase(ctx, w, now)
 		case now.Before(w.End):
 			anyActive = true
@@ -112,6 +114,41 @@ func (m *Manager) tick(ctx context.Context) {
 		}
 	}
 	m.active.Store(anyActive)
+}
+
+// announcePhase posts the Discord reminders before a planned downtime:
+// 1 Stunde vorher und nochmal 5 Minuten vorher (Nutzerwunsch). Persistiert —
+// ein MSM-Neustart dazwischen (z. B. Nacht-Reboot) wiederholt nichts.
+func (m *Manager) announcePhase(ctx context.Context, w storage.MaintenanceWindow, now time.Time) {
+	remaining := w.Start.Sub(now)
+	fmtSpan := func() string {
+		return fmt.Sprintf("%s bis ca. %s Uhr", w.Start.Format("15:04"), w.End.Format("15:04"))
+	}
+	// kurzfristig angelegte Fenster (< 5 min Vorlauf) überspringen die
+	// 1h-Stufe — sonst käme „in einer Stunde" 3 Minuten vor dem Start
+	if remaining <= time.Hour && remaining > 5*time.Minute && !w.Notified1h {
+		if err := m.store.MarkWindowNotified(ctx, w.ID, "1h"); err != nil {
+			m.log.Error("wartung: 1h-marke speichern fehlgeschlagen", "err", err)
+			return // lieber nächster Tick als Doppel-Post riskieren
+		}
+		m.bus.Publish(events.Event{
+			Type: events.TypeMaintAnnounce, Severity: events.SevInfo,
+			Title:   "🔧 In einer Stunde: Wartung „" + w.Name + "“",
+			Message: "Der Server geht heute von " + fmtSpan() + " offline. Meldung folgt, wenn er wieder da ist.",
+		})
+		return // pro Tick höchstens eine Stufe
+	}
+	if remaining <= 5*time.Minute && !w.Notified5m {
+		if err := m.store.MarkWindowNotified(ctx, w.ID, "5m"); err != nil {
+			m.log.Error("wartung: 5m-marke speichern fehlgeschlagen", "err", err)
+			return
+		}
+		m.bus.Publish(events.Event{
+			Type: events.TypeMaintAnnounce, Severity: events.SevWarn,
+			Title:   "🔧 Gleich geht's los: Wartung „" + w.Name + "“",
+			Message: "Der Server geht in etwa 5 Minuten offline (" + fmtSpan() + "). Bitte jetzt einen sicheren Ort suchen und ausloggen.",
+		})
+	}
 }
 
 // warnPhase sends the 30/15/5/1-minute player warnings before the start.

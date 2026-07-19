@@ -138,3 +138,46 @@ func TestWarningsBeforeStart(t *testing.T) {
 		t.Error("Active() = true vor Fensterbeginn")
 	}
 }
+
+// Discord-Ankündigungen vor geplanter Downtime: 1 h vorher + 5 min vorher,
+// persistiert (kein Doppel-Post nach MSM-Neustart), Kurzfrist-Fenster
+// überspringen die 1h-Stufe.
+func TestAnnouncePhaseStages(t *testing.T) {
+	m, store, _, _, ch := setup(t, "running", true)
+	id, _ := store.CreateWindow(context.Background(), storage.MaintenanceWindow{
+		Name: "Stromkasten", Start: time.Now().Add(50 * time.Minute), End: time.Now().Add(3 * time.Hour),
+	})
+
+	m.Tick(context.Background()) // 50 min vorher -> 1h-Stufe
+	m.Tick(context.Background()) // darf nicht doppeln
+	evs := drain(ch)
+	if len(evs) != 1 || evs[0].Type != events.TypeMaintAnnounce || !strings.Contains(evs[0].Title, "In einer Stunde") {
+		t.Fatalf("events = %+v, want genau eine 1h-Ankündigung", evs)
+	}
+
+	// Fenster rückt auf 4 min heran -> 5m-Stufe
+	store.Windows[0].Start = time.Now().Add(4 * time.Minute)
+	m.Tick(context.Background())
+	m.Tick(context.Background())
+	evs = drain(ch)
+	if len(evs) != 1 || !strings.Contains(evs[0].Title, "Gleich geht's los") {
+		t.Fatalf("events = %+v, want genau eine 5m-Ankündigung", evs)
+	}
+	ws, _ := store.ListWindows(context.Background())
+	if !ws[0].Notified1h || !ws[0].Notified5m {
+		t.Errorf("window = %+v, want beide Marken persistiert", ws[0])
+	}
+	_ = id
+}
+
+func TestAnnouncePhaseShortNoticeSkips1h(t *testing.T) {
+	m, store, _, _, ch := setup(t, "running", true)
+	store.CreateWindow(context.Background(), storage.MaintenanceWindow{
+		Name: "kurzfristig", Start: time.Now().Add(3 * time.Minute), End: time.Now().Add(time.Hour),
+	})
+	m.Tick(context.Background())
+	evs := drain(ch)
+	if len(evs) != 1 || !strings.Contains(evs[0].Title, "Gleich geht's los") {
+		t.Fatalf("events = %+v, want nur die 5m-Ankündigung (keine falsche 1h)", evs)
+	}
+}

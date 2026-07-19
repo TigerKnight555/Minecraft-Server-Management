@@ -463,3 +463,20 @@ func (s *Store) DeleteWindow(_ context.Context, id int64) error {
 	}
 	return nil
 }
+
+func (s *Store) MarkWindowNotified(_ context.Context, id int64, stage string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.Windows {
+		if s.Windows[i].ID == id {
+			switch stage {
+			case "1h":
+				s.Windows[i].Notified1h = true
+			case "5m":
+				s.Windows[i].Notified5m = true
+			}
+			return nil
+		}
+	}
+	return sql.ErrNoRows
+}

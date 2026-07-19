@@ -46,18 +46,28 @@
     e.preventDefault()
     try {
       const withWatchdog = stage2Kinds.includes(form.kind) && form.kind !== 'host-reboot'
-      await createRoutine({
+      const payload = {
         ...form,
         warnMinutes: stage2Kinds.includes(form.kind) ? Number(form.warnMinutes) : 0,
         watchdogMinutes: withWatchdog ? Number(form.watchdogMinutes) : 0,
         applyStaged: withWatchdog ? form.applyStaged : false,
-      })
+      }
+      if (form.id) {
+        await updateRoutine(payload)
+      } else {
+        await createRoutine(payload)
+      }
       form = emptyForm()
       showForm = false
       await refresh()
     } catch (err) {
       error = err.message
     }
+  }
+
+  function edit(r) {
+    form = { ...r } // inkl. id -> submit speichert statt anzulegen
+    showForm = true
   }
 
   // kompakte Badges für die Stufe-2-Optionen in der Tabelle
@@ -153,7 +163,7 @@
 <div class="panel wide">
   <h2>
     Routinen
-    <button class="add" onclick={() => (showForm = !showForm)}>{showForm ? 'Abbrechen' : '+ Neu'}</button>
+    <button class="add" onclick={() => { form = emptyForm(); showForm = !showForm }}>{showForm ? 'Abbrechen' : '+ Neu'}</button>
   </h2>
 
   {#if error}<div class="err-msg">{error}</div>{/if}
@@ -186,7 +196,7 @@
           {/if}
         </div>
       {/if}
-      <button type="submit">Anlegen</button>
+      <button type="submit">{form.id ? 'Speichern' : 'Anlegen'}</button>
     </form>
   {/if}
 
@@ -208,6 +218,7 @@
               {#each optionBadges(r) as b}<span class="badge">{b}</span>{/each}
             </td>
             <td class="rt-actions">
+              <button onclick={() => edit(r)}>Bearbeiten</button>
               <button onclick={() => toggle(r)}>{r.enabled ? 'Deaktivieren' : 'Aktivieren'}</button>
               <button onclick={() => runNow(r)}>Jetzt</button>
               <button class="danger" onclick={() => remove(r)}>Löschen</button>
