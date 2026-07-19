@@ -50,6 +50,25 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.settings.View())
 }
 
+// handleRevealSetting returns one plaintext value on explicit request —
+// bewusster Klick im Dashboard, immer auditiert (ohne den Wert).
+func (s *Server) handleRevealSetting(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Field string `json:"field"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	v := s.settings.Reveal(req.Field)
+	if v == "" {
+		httpError(w, http.StatusNotFound, "kein Wert gesetzt")
+		return
+	}
+	s.audit(r.Context(), "settings.reveal", "feld="+req.Field)
+	writeJSON(w, http.StatusOK, map[string]string{"value": v})
+}
+
 // handleTestDiscord sends a test embed to the currently effective webhook.
 func (s *Server) handleTestDiscord(w http.ResponseWriter, r *http.Request) {
 	if len(s.settings.DiscordHooks()) == 0 {
