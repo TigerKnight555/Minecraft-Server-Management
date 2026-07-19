@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import {
     connect, connected, containers, stats, host, mc, wan,
-    authRequired, authenticated, checkAuth, logout,
+    authRequired, authenticated, checkAuth, logout, versionWatch,
   } from './lib/stream.js'
   import Chart from './lib/Chart.svelte'
   import LogViewer from './lib/LogViewer.svelte'
@@ -15,6 +15,16 @@
 
   let authChecked = $state(false)
   let tab = $state('dashboard')
+  let watch = $state(null) // letzter Versions-Watch (läuft serverseitig täglich)
+
+  async function loadWatch() {
+    try {
+      const w = await versionWatch()
+      watch = w?.checked ? w : null
+    } catch {
+      watch = null
+    }
+  }
 
   onMount(async () => {
     try {
@@ -23,7 +33,16 @@
       // backend without auth endpoints (old build) — run open
     }
     authChecked = true
+    loadWatch()
+    const t = setInterval(loadWatch, 5 * 60 * 1000)
+    return () => clearInterval(t)
   })
+
+  // Update-Bereitschaft: neue Version + Loader ok + ALLE Server-Mods bereit
+  let srvReady = $derived(watch?.profiles?.find((p) => p.profile === 'server'))
+  let updateReady = $derived(
+    watch?.newerAvailable && watch?.loaderReady && srvReady && srvReady.total > 0 && srvReady.ready === srvReady.total
+  )
 
   // (re)connect the SSE stream whenever we are authenticated
   $effect(() => {
@@ -140,6 +159,26 @@
     <div class="tile">
       <div class="label">Host-Uptime</div>
       <div class="value" style="font-size:1.1rem">{fmtUptime($host?.uptimeSec)}</div>
+    </div>
+
+    <div class="tile {watch?.newerAvailable ? (updateReady ? 'ok' : 'warn') : ''}">
+      <div class="label">MC-Update</div>
+      {#if !watch}
+        <div class="value" style="font-size:1.1rem">—</div>
+        <div class="detail">Versions-Watch läuft noch</div>
+      {:else if !watch.newerAvailable}
+        <div class="value" style="font-size:1.1rem">aktuell</div>
+        <div class="detail">{watch.currentVersion}</div>
+      {:else}
+        <div class="value" style="font-size:1.1rem">{watch.latestVersion} verfügbar</div>
+        <div class="detail">
+          {#if updateReady}
+            ✔ alle Server-Mods bereit ({srvReady.ready}/{srvReady.total}) — Update möglich
+          {:else}
+            Server-Mods {srvReady ? `${srvReady.ready}/${srvReady.total}` : '–'} bereit{watch.loaderReady ? '' : ' · Loader fehlt'} — warten
+          {/if}
+        </div>
+      {/if}
     </div>
 
     <div class="tile">

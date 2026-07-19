@@ -89,17 +89,35 @@ func (w *Watcher) SetLast(s *WatchStatus) {
 }
 
 // Run performs checks daily until ctx is done; one check runs at start.
+// Vor jedem Check wird das Mod-Inventar beider Profile automatisch
+// aktualisiert — sonst zeigt die Bereitschaft "0/0", bis jemand im Mods-Tab
+// manuell prüft. Scheitert ein Lauf (z. B. MC-Version direkt nach dem Boot
+// noch unbekannt), wird nach 10 Minuten erneut versucht statt erst morgen.
 func (w *Watcher) Run(ctx context.Context, currentVersion func() string) {
-	t := time.NewTicker(24 * time.Hour)
-	defer t.Stop()
+	daily := time.NewTicker(24 * time.Hour)
+	defer daily.Stop()
 	for {
-		if status, err := w.Check(ctx, currentVersion()); err == nil {
-			w.SetLast(status)
+		ok := false
+		if v := currentVersion(); v != "" {
+			for _, p := range w.mgr.Profiles() {
+				// Fehler einzelner Profile kippen den Lauf nicht — die
+				// Bereitschaftsprüfung arbeitet dann mit dem alten Stand
+				w.mgr.CheckUpdates(ctx, p.Name, v)
+			}
+			if status, err := w.Check(ctx, v); err == nil {
+				w.SetLast(status)
+				ok = true
+			}
+		}
+		retry := time.After(10 * time.Minute)
+		if ok {
+			retry = nil // nächster Lauf regulär in 24 h
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-daily.C:
+		case <-retry:
 		}
 	}
 }
