@@ -73,6 +73,11 @@ services:
       # Optional feiner: JSON-Liste mit Event-Filtern je Webhook, gewinnt
       # gegenüber der Einzel-URL (Format siehe cmd/msm/main.go)
       MSM_DISCORD_WEBHOOKS: ${MSM_DISCORD_WEBHOOKS:-}
+      # Dropbox-Veröffentlichung des Client-Pakets (Phase 4.8, optional).
+      # Alle drei GEHEIM; leer = Feature aus.
+      MSM_DROPBOX_APP_KEY: ${MSM_DROPBOX_APP_KEY:-}
+      MSM_DROPBOX_APP_SECRET: ${MSM_DROPBOX_APP_SECRET:-}
+      MSM_DROPBOX_REFRESH_TOKEN: ${MSM_DROPBOX_REFRESH_TOKEN:-}
     # Zugriff auf die mods-Verzeichnisse (Phase 3): MSM läuft als 65532 und
     # schreibt über die Gruppe des Host-Users (Verzeichnisse sind g+w).
     group_add:

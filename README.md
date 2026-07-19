@@ -156,6 +156,26 @@ cd ~/Minecraft-Server-Management/deploy/host-watcher
 sudo bash install.sh
 ```
 
+### Client-Paket zu Dropbox (Phase 4.8)
+
+Mods-Tab, Profil „client" → „Client-Paket veröffentlichen": das komplette
+Client-Profil (mods/, shaderpacks/, resourcepacks/) wird als ZIP gestreamt
+zu Dropbox hochgeladen (Upload-Session, beliebige Größe, kein Temp-File)
+und der Shared Link als Discord-Embed gepostet. Vorher einmal die
+Mod-Lizenzen prüfen, wenn der Link öffentlich geteilt wird!
+
+Einmalige Einrichtung (alle Werte in `.env`, GEHEIM):
+
+```sh
+# 1. Scoped App: https://www.dropbox.com/developers/apps  → Create App
+#    Scopes: files.content.write, files.content.read, sharing.write
+# 2. Autorisierungscode holen (Browser, KEY ersetzen):
+#    https://www.dropbox.com/oauth2/authorize?client_id=KEY&response_type=code&token_access_type=offline
+# 3. Refresh-Token tauschen (CODE/KEY/SECRET ersetzen):
+curl https://api.dropbox.com/oauth2/token -d code=CODE -d grant_type=authorization_code -u KEY:SECRET
+# -> "refresh_token" aus der Antwort in MSM_DROPBOX_REFRESH_TOKEN
+```
+
 ### Discord-Benachrichtigungen
 
 Ereignisse (Routine ok/fehlgeschlagen, Mod-Updates eingespielt, Rollback,

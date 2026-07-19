@@ -14,6 +14,7 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/auth"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/backup"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/dropbox"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
@@ -32,7 +33,8 @@ type Server struct {
 	watcher           *mods.Watcher
 	restore           *backup.Restore
 	mcDataDir         string       // read-only mount of the MC data dir ("" = feature off)
-	maintActive       func() bool  // Wartungsfenster gerade aktiv?
+	maintActive       func() bool // Wartungsfenster gerade aktiv?
+	dropbox           *dropbox.Client
 	mcContainer       string
 	fallbackMCVersion string
 	managed           map[string]bool // allowlist for container actions
@@ -56,6 +58,7 @@ type Deps struct {
 	Restore           *backup.Restore
 	MCDataDir         string      // read-only MC data dir for the player list
 	MaintActive       func() bool // maintenance.Manager.Active
+	Dropbox           *dropbox.Client
 	MCContainer       string // name of the minecraft container (mod apply restart)
 	FallbackMCVersion string // used when query has no version yet
 	Managed           []string // container names allowed for start/stop/restart
@@ -85,6 +88,7 @@ func New(d Deps) *Server {
 		restore:           d.Restore,
 		mcDataDir:         d.MCDataDir,
 		maintActive:       d.MaintActive,
+		dropbox:           d.Dropbox,
 		mcContainer:       d.MCContainer,
 		fallbackMCVersion: d.FallbackMCVersion,
 		managed:           managed,
@@ -122,6 +126,9 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("POST /api/mods/stage", s.handleModsStage)
 		mux.HandleFunc("POST /api/mods/apply", s.handleModsApply)
 		mux.HandleFunc("POST /api/mods/rollback", s.handleModsRollback)
+		if s.dropbox != nil {
+			mux.HandleFunc("POST /api/mods/publish", s.handlePublishClientPack)
+		}
 	}
 	if s.watcher != nil {
 		mux.HandleFunc("GET /api/version-watch", s.handleVersionWatch)

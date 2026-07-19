@@ -29,6 +29,7 @@ const (
 	TypeRoutineSkipped  = "routine.skipped"
 	TypeModsApplied     = "mods.applied"
 	TypeModsRollback    = "mods.rollback"
+	TypeClientPack      = "mods.clientpack" // Client-Paket veröffentlicht
 	TypeVersionNew      = "version.new"
 	TypeVersionReady    = "version.ready"
 	TypeContainerAction = "container.action"

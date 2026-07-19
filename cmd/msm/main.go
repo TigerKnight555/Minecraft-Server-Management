@@ -45,6 +45,7 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/backup"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/dockerclient"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/dropbox"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/hostctl"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/hostmetrics"
@@ -279,6 +280,18 @@ func main() {
 		return os.Getenv("MC_VERSION")
 	})
 
+	// Dropbox (Phase 4.8): nur aktiv, wenn alle drei Credentials da sind
+	var dbx *dropbox.Client
+	dbxCfg := dropbox.Config{
+		AppKey:       os.Getenv("MSM_DROPBOX_APP_KEY"),
+		AppSecret:    os.Getenv("MSM_DROPBOX_APP_SECRET"),
+		RefreshToken: os.Getenv("MSM_DROPBOX_REFRESH_TOKEN"),
+	}
+	if dbxCfg.Complete() {
+		dbx = dropbox.New(dbxCfg)
+		log.Info("dropbox client-pack publishing active")
+	}
+
 	passwordHash := os.Getenv("MSM_ADMIN_PASSWORD_HASH")
 	if passwordHash == "" && !*mockMode {
 		log.Warn("MSM_ADMIN_PASSWORD_HASH not set — dashboard runs WITHOUT login (nur für Entwicklung akzeptabel)")
@@ -310,6 +323,7 @@ func main() {
 			MaintActive: func() bool {
 				return maint != nil && maint.Active()
 			},
+			Dropbox: dbx,
 			MCContainer:       envOr("MSM_MC_CONTAINER", "mc-fabric"),
 			FallbackMCVersion: os.Getenv("MC_VERSION"),
 			Managed:           managed,

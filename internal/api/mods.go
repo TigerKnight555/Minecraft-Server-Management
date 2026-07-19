@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/dropbox"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
 )
@@ -160,6 +162,68 @@ func (s *Server) handleModsRollback(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	writeJSON(w, http.StatusOK, map[string]int{"restored": n})
+}
+
+// handlePublishClientPack zips the client profile, uploads it to Dropbox
+// and posts the shared link to Discord (Phase 4.8). Läuft asynchron — der
+// Upload kann bei großen Paketen Minuten dauern; Ergebnis kommt als Event.
+func (s *Server) handlePublishClientPack(w http.ResponseWriter, r *http.Request) {
+	var clientDirs map[string]string
+	for _, p := range s.modmgr.Profiles() {
+		if p.Name == "client" {
+			clientDirs = p.Dirs
+		}
+	}
+	if clientDirs == nil {
+		httpError(w, http.StatusServiceUnavailable, "kein Client-Profil konfiguriert")
+		return
+	}
+	s.audit(r.Context(), "mods.publish", "client-pack upload gestartet")
+	go s.publishClientPack(clientDirs)
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"message": "Upload gestartet — das Ergebnis kommt als Discord-Meldung (und ins Audit-Log).",
+	})
+}
+
+func (s *Server) publishClientPack(dirs map[string]string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+	defer cancel()
+	name := "/MSM/mc-clientpack-" + time.Now().Format("2006-01-02") + ".zip"
+
+	pr, pw := io.Pipe()
+	files := 0
+	go func() {
+		n, err := dropbox.ZipDirs(pw, dirs)
+		files = n
+		pw.CloseWithError(err)
+	}()
+	fail := func(err error) {
+		s.log.Error("client-pack publish failed", "err", err)
+		s.audit(ctx, "mods.publish.failed", err.Error())
+		s.bus.Publish(events.Event{
+			Type: events.TypeClientPack, Severity: events.SevError,
+			Title: "Client-Paket-Upload fehlgeschlagen", Message: err.Error(),
+		})
+	}
+	if err := s.dropbox.Upload(ctx, name, pr); err != nil {
+		fail(err)
+		return
+	}
+	link, err := s.dropbox.ShareLink(ctx, name)
+	if err != nil {
+		fail(err)
+		return
+	}
+	s.audit(ctx, "mods.publish.ok", name)
+	s.bus.Publish(events.Event{
+		Type: events.TypeClientPack, Severity: events.SevSuccess,
+		Title:   "Neues Client-Paket verfügbar!",
+		Message: "Download: " + link + "\nZIP in den bestehenden .minecraft-Ordner entpacken — Karten, Wegpunkte und Configs bleiben erhalten.",
+		Fields: []events.Field{
+			{Name: "Dateien", Value: fmt.Sprint(files)},
+			{Name: "Stand", Value: time.Now().Format("02.01.2006")},
+		},
+	})
 }
 
 // handleVersionWatch returns the last readiness check.

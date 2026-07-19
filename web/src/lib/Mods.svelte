@@ -2,8 +2,19 @@
   import { onMount } from 'svelte'
   import {
     listMods, checkMods, stageMods, applyMods, rollbackMods,
-    versionWatch, versionWatchCheck,
+    versionWatch, versionWatchCheck, publishClientPack,
   } from './stream.js'
+
+  async function doPublish() {
+    if (!confirm('Client-Paket als ZIP zu Dropbox hochladen und den Link in Discord posten?\nVorher einmal Mod-Lizenzen geprüft?')) return
+    try {
+      const res = await publishClientPack()
+      info = res.message
+      error = ''
+    } catch (err) {
+      error = err.message
+    }
+  }
 
   let profile = $state('server')
   let entries = $state([])
@@ -115,6 +126,9 @@
       {profile === 'server' ? 'Anwenden + Neustart' : 'Anwenden'} ({stagedCount})
     </button>
     <button class="btn danger" onclick={doRollback} disabled={busy}>Rollback</button>
+    {#if profile === 'client'}
+      <button class="btn" onclick={doPublish} disabled={busy}>Client-Paket veröffentlichen (Dropbox)</button>
+    {/if}
   </div>
 
   {#if entries.length === 0}

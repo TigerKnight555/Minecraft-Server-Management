@@ -155,3 +155,6 @@ export const listMaintenance = () => apiFetch('/api/maintenance')
 export const createMaintenance = (w) => apiFetch('/api/maintenance', { method: 'POST', body: JSON.stringify(w) })
 export const endMaintenance = (id) => apiFetch(`/api/maintenance/${id}/end`, { method: 'POST' })
 export const deleteMaintenance = (id) => apiFetch(`/api/maintenance/${id}`, { method: 'DELETE' })
+
+// --- Client-Pack-Veröffentlichung (Phase 4.8) ---
+export const publishClientPack = () => apiFetch('/api/mods/publish', { method: 'POST' })
