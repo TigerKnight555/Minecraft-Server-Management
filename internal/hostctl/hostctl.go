@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
@@ -37,6 +38,27 @@ func (s *Signaler) RequestReboot() error {
 	content := "MSM Reboot-Anforderung " + time.Now().Format(time.RFC3339) + "\n"
 	if err := os.WriteFile(path, []byte(content), 0o664); err != nil {
 		return fmt.Errorf("signaldatei schreiben (%s): %w — Host-Watcher installiert und Verzeichnis g+w?", path, err)
+	}
+	return nil
+}
+
+// mcVersionRe: exakt das, was der Host-Helfer akzeptiert — der Wert landet
+// via sed in der .env, deshalb streng (keine Shell-/sed-Metazeichen).
+var mcVersionRe = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._-]{0,31}$`)
+
+// RequestUpgrade signals the host helper to set MC_VERSION and recreate the
+// Minecraft container (docker compose up -d mc-fabric). MSM selbst darf
+// keine Container erstellen — gleicher Vertrauensschnitt wie beim Reboot.
+func (s *Signaler) RequestUpgrade(version string) error {
+	if s.dir == "" {
+		return fmt.Errorf("kein Signal-Verzeichnis konfiguriert (MSM_HOST_SIGNAL_DIR)")
+	}
+	if !mcVersionRe.MatchString(version) {
+		return fmt.Errorf("ungültige Versionsangabe %q", version)
+	}
+	path := filepath.Join(s.dir, "upgrade.request")
+	if err := os.WriteFile(path, []byte(version+"\n"), 0o664); err != nil {
+		return fmt.Errorf("signaldatei schreiben (%s): %w — Host-Watcher installiert?", path, err)
 	}
 	return nil
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/upgrade"
 )
 
 type Server struct {
@@ -35,6 +36,7 @@ type Server struct {
 	mcDataDir         string      // read-only mount of the MC data dir ("" = feature off)
 	maintActive       func() bool // Wartungsfenster gerade aktiv?
 	dropbox           *dropbox.Client
+	upgrader          *upgrade.Orchestrator
 	mcContainer       string
 	fallbackMCVersion string
 	managed           map[string]bool // allowlist for container actions
@@ -59,6 +61,7 @@ type Deps struct {
 	MCDataDir         string      // read-only MC data dir for the player list
 	MaintActive       func() bool // maintenance.Manager.Active
 	Dropbox           *dropbox.Client
+	Upgrader          *upgrade.Orchestrator
 	MCContainer       string   // name of the minecraft container (mod apply restart)
 	FallbackMCVersion string   // used when query has no version yet
 	Managed           []string // container names allowed for start/stop/restart
@@ -89,6 +92,7 @@ func New(d Deps) *Server {
 		mcDataDir:         d.MCDataDir,
 		maintActive:       d.MaintActive,
 		dropbox:           d.Dropbox,
+		upgrader:          d.Upgrader,
 		mcContainer:       d.MCContainer,
 		fallbackMCVersion: d.FallbackMCVersion,
 		managed:           managed,
@@ -133,6 +137,11 @@ func (s *Server) Handler() http.Handler {
 	if s.watcher != nil {
 		mux.HandleFunc("GET /api/version-watch", s.handleVersionWatch)
 		mux.HandleFunc("POST /api/version-watch/check", s.handleVersionWatchCheck)
+	}
+	// MC-Versions-Upgrade per Klick
+	if s.upgrader != nil {
+		mux.HandleFunc("POST /api/version-upgrade", s.handleVersionUpgrade)
+		mux.HandleFunc("GET /api/version-upgrade/status", s.handleVersionUpgradeStatus)
 	}
 	// Phase 4.4
 	if s.restore != nil {

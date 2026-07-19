@@ -1,0 +1,6 @@
+[Unit]
+Description=MSM Host-Watcher: führt angeforderten MC-Versionssprung aus
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/msm-upgrade-watcher.sh

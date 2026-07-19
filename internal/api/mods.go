@@ -227,6 +227,34 @@ func (s *Server) publishClientPack(dirs map[string]string) {
 	})
 }
 
+// handleVersionUpgrade kicks off the one-click MC version bump. Läuft
+// asynchron; Fortschritt via Status-Endpoint + Discord-Meldungen.
+func (s *Server) handleVersionUpgrade(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if s.maintActive != nil && s.maintActive() {
+		httpError(w, http.StatusConflict, "Wartungsfenster aktiv — Upgrade danach starten")
+		return
+	}
+	if err := s.upgrader.Start(req.Version); err != nil {
+		httpError(w, http.StatusConflict, err.Error())
+		return
+	}
+	s.audit(r.Context(), "version.upgrade", "ziel="+req.Version)
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"message": "Update auf " + req.Version + " gestartet — Fortschritt siehe Kachel und Discord.",
+	})
+}
+
+func (s *Server) handleVersionUpgradeStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": s.upgrader.Status()})
+}
+
 // handleVersionWatch returns the last readiness check.
 func (s *Server) handleVersionWatch(w http.ResponseWriter, r *http.Request) {
 	last := s.watcher.Last()

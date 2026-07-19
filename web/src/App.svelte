@@ -3,6 +3,7 @@
   import {
     connect, connected, containers, stats, host, mc, wan,
     authRequired, authenticated, checkAuth, logout, versionWatch,
+    startVersionUpgrade, versionUpgradeStatus,
   } from './lib/stream.js'
   import Chart from './lib/Chart.svelte'
   import LogViewer from './lib/LogViewer.svelte'
@@ -17,12 +18,45 @@
   let tab = $state('dashboard')
   let watch = $state(null) // letzter Versions-Watch (läuft serverseitig täglich)
 
+  let upgradeStatus = $state('')
+  let upgradeError = $state('')
+
   async function loadWatch() {
     try {
       const w = await versionWatch()
       watch = w?.checked ? w : null
     } catch {
       watch = null
+    }
+    try {
+      const s = await versionUpgradeStatus()
+      upgradeStatus = s.status
+    } catch {
+      upgradeStatus = ''
+    }
+  }
+
+  async function doUpgrade() {
+    const v = watch?.latestVersion
+    if (!v) return
+    if (!confirm(
+      `Minecraft-Update auf ${v} starten?\n\n` +
+      `Ablauf: Spieler-Warnung (5 min) → Backup → Server-Mods → Server-Neuerstellung → Client-Mods.\n` +
+      `Das Welt-Upgrade ist UNUMKEHRBAR (Rollback nur übers Backup). Dauer: mehrere Minuten.`
+    )) return
+    upgradeError = ''
+    try {
+      await startVersionUpgrade(v)
+      upgradeStatus = 'gestartet…'
+      const t = setInterval(async () => {
+        try {
+          const s = await versionUpgradeStatus()
+          upgradeStatus = s.status
+          if (!s.status) { clearInterval(t); loadWatch() }
+        } catch { /* Server ist während des Updates zeitweise weg */ }
+      }, 5000)
+    } catch (err) {
+      upgradeError = err.message
     }
   }
 
@@ -172,11 +206,15 @@
       {:else}
         <div class="value" style="font-size:1.1rem">{watch.latestVersion} verfügbar</div>
         <div class="detail">
-          {#if updateReady}
-            ✔ alle Server-Mods bereit ({srvReady.ready}/{srvReady.total}) — Update möglich
+          {#if upgradeStatus}
+            ⏳ {upgradeStatus}
+          {:else if updateReady}
+            ✔ alle Server-Mods bereit ({srvReady.ready}/{srvReady.total})
+            <button class="upgrade-btn" onclick={doUpgrade}>Jetzt updaten</button>
           {:else}
             Server-Mods {srvReady ? `${srvReady.ready}/${srvReady.total}` : '–'} bereit{watch.loaderReady ? '' : ' · Loader fehlt'} — warten
           {/if}
+          {#if upgradeError}<div style="color:var(--err)">{upgradeError}</div>{/if}
         </div>
       {/if}
     </div>
@@ -252,3 +290,11 @@
   {/if}
 </div>
 {/if}
+
+<style>
+  .upgrade-btn {
+    display: block; margin-top: 0.3rem;
+    background: var(--accent); color: #0f1419; border: none; border-radius: 5px;
+    padding: 0.25rem 0.7rem; font-weight: 600; cursor: pointer; font-size: 0.75rem;
+  }
+</style>

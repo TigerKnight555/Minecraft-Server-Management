@@ -50,6 +50,11 @@ const (
 	TypeNetOK       = "watch.net.ok"       // Entwarnung nach net.degraded
 	TypeResource    = "watch.resource"     // Disk/RAM-Schwellwert gerissen
 
+	// MC-Versions-Upgrade per Klick (Phase 5-Vorgriff)
+	TypeUpgradeStart  = "system.upgrade.start"
+	TypeUpgradeOK     = "system.upgrade.ok"
+	TypeUpgradeFailed = "system.upgrade.failed"
+
 	// Wartungsfenster (Phase 4.6)
 	TypeMaintAnnounce = "maintenance.announce" // Fenster angekündigt
 	TypeMaintStart    = "maintenance.start"    // Fenster beginnt

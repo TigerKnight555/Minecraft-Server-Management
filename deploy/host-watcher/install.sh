@@ -12,17 +12,20 @@ mkdir -p "$SIGNAL_DIR"
 chown knvt:knvt "$SIGNAL_DIR"
 chmod 775 "$SIGNAL_DIR"
 
-echo "[2/4] Watcher-Skript nach /usr/local/bin"
+echo "[2/4] Watcher-Skripte nach /usr/local/bin"
 install -m 755 "$HERE/msm-reboot-watcher.sh" /usr/local/bin/msm-reboot-watcher.sh
+install -m 755 "$HERE/msm-upgrade-watcher.sh" /usr/local/bin/msm-upgrade-watcher.sh
 
 echo "[3/4] systemd-Units"
 install -m 644 "$HERE/msm-reboot.path" /etc/systemd/system/msm-reboot.path
 install -m 644 "$HERE/msm-reboot.service" /etc/systemd/system/msm-reboot.service
+install -m 644 "$HERE/msm-upgrade.path" /etc/systemd/system/msm-upgrade.path
+install -m 644 "$HERE/msm-upgrade.service" /etc/systemd/system/msm-upgrade.service
 systemctl daemon-reload
-systemctl enable --now msm-reboot.path
+systemctl enable --now msm-reboot.path msm-upgrade.path
 
 echo "[4/4] Status"
-systemctl status msm-reboot.path --no-pager | head -5
+systemctl status msm-reboot.path msm-upgrade.path --no-pager | head -12
 
 echo
 echo "Fertig. Test (löst NACH 10 s einen echten Reboot aus — nur wenn gewollt!):"

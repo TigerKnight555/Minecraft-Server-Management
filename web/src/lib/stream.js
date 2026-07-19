@@ -158,3 +158,8 @@ export const deleteMaintenance = (id) => apiFetch(`/api/maintenance/${id}`, { me
 
 // --- Client-Pack-Veröffentlichung (Phase 4.8) ---
 export const publishClientPack = () => apiFetch('/api/mods/publish', { method: 'POST' })
+
+// --- Ein-Klick-MC-Upgrade ---
+export const startVersionUpgrade = (version) =>
+  apiFetch('/api/version-upgrade', { method: 'POST', body: JSON.stringify({ version }) })
+export const versionUpgradeStatus = () => apiFetch('/api/version-upgrade/status')

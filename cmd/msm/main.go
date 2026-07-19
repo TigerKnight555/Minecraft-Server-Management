@@ -64,6 +64,7 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/notify"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/storage"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/upgrade"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/watchers"
 	"github.com/TigerKnight555/Minecraft-Server-Management/web"
 )
@@ -302,6 +303,15 @@ func main() {
 		return os.Getenv("MC_VERSION")
 	})
 
+	// Ein-Klick-MC-Upgrade: MSM orchestriert, der Host-Helfer erledigt den
+	// privilegierten Schritt (MC_VERSION setzen + Container neu erstellen)
+	var upgrader *upgrade.Orchestrator
+	if bd, ok := docker.(backup.Docker); ok {
+		bkRunner := backup.New(bd, coll, envOr("MSM_BACKUP_CONTAINER", "mc-backup"), log)
+		upgrader = upgrade.New(rcon, controller, coll, mcState, bkRunner, modmgr,
+			watcher, hostctl.NewSignaler(signalDir), bus, mcName, log)
+	}
+
 	// Dropbox (Phase 4.8): nur aktiv, wenn alle drei Credentials da sind
 	var dbx *dropbox.Client
 	dbxCfg := dropbox.Config{
@@ -345,7 +355,8 @@ func main() {
 			MaintActive: func() bool {
 				return maint != nil && maint.Active()
 			},
-			Dropbox: dbx,
+			Dropbox:  dbx,
+			Upgrader: upgrader,
 			MCContainer:       envOr("MSM_MC_CONTAINER", "mc-fabric"),
 			FallbackMCVersion: os.Getenv("MC_VERSION"),
 			Managed:           managed,
