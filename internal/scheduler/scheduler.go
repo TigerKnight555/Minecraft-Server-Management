@@ -75,6 +75,8 @@ type Scheduler struct {
 	// maintActive: Routinen laufen nicht in Wartungsfenster hinein —
 	// sichtbar übersprungen, nie still (v1: kein Vorziehen/Nachholen)
 	maintActive func() bool
+	// stateSet persistiert Kleinigkeiten über Reboots (app_state in SQLite)
+	stateSet func(key, value string)
 
 	// warnStep is 1 minute in production; tests shrink it.
 	warnStep time.Duration
@@ -121,6 +123,9 @@ func (s *Scheduler) SetRebootSignaler(r RebootSignaler) { s.reboot = r }
 
 // SetMaintenanceCheck wires the maintenance-window state (Phase 4.6).
 func (s *Scheduler) SetMaintenanceCheck(f func() bool) { s.maintActive = f }
+
+// SetStateStore wires small persisted key/values (z. B. reboot.notify).
+func (s *Scheduler) SetStateStore(set func(key, value string)) { s.stateSet = set }
 
 // Start loads all enabled routines and begins scheduling; Reload picks up
 // changes after CRUD operations.
@@ -194,10 +199,11 @@ func (s *Scheduler) RunNow(ctx context.Context, routineID int64) {
 	}
 	s.log.Info("routine started", "name", r.Name, "kind", r.Kind)
 	var msg string
+	affected := true
 	if s.maintActive != nil && s.maintActive() {
 		err = errSkipped{reason: "Wartungsfenster aktiv"}
 	} else {
-		msg, err = s.execute(ctx, r)
+		msg, affected, err = s.execute(ctx, r)
 	}
 	run := storage.RoutineRun{RoutineID: r.ID, Time: time.Now(), OK: err == nil, Message: msg}
 	var skipped errSkipped
@@ -229,6 +235,9 @@ func (s *Scheduler) RunNow(ctx context.Context, routineID int64) {
 		})
 	default:
 		s.log.Info("routine finished", "name", r.Name)
+		if !affected {
+			break // niemand war online — leere Nächte bleiben im Discord still
+		}
 		typ := events.TypeRoutineOK
 		if r.Kind == "backup" {
 			typ = events.TypeBackupOK
@@ -245,46 +254,63 @@ func (s *Scheduler) RunNow(ctx context.Context, routineID int64) {
 	}
 }
 
-func (s *Scheduler) execute(ctx context.Context, r storage.Routine) (string, error) {
+// playersAffected reports whether anyone is on the server right now — nur
+// dann werden Erfolgs-Meldungen zu Backup/Neustart gepostet (Nutzerwunsch:
+// leere Nächte bleiben im Discord still; Fehler kommen immer).
+func (s *Scheduler) playersAffected() bool {
+	return s.mcStatus != nil && s.mcStatus().PlayersOnline > 0
+}
+
+// execute returns the outcome message plus whether players were affected
+// (online at chain start) — steuert, ob die Erfolgs-Meldung gepostet wird.
+func (s *Scheduler) execute(ctx context.Context, r storage.Routine) (string, bool, error) {
 	switch r.Kind {
 	case "rcon":
 		if s.rcon == nil {
-			return "", fmt.Errorf("rcon nicht konfiguriert")
+			return "", false, fmt.Errorf("rcon nicht konfiguriert")
 		}
 		out, err := s.rcon.Exec(ctx, r.Payload)
 		if err != nil {
-			return "", fmt.Errorf("rcon %q: %w", r.Payload, err)
+			return "", false, fmt.Errorf("rcon %q: %w", r.Payload, err)
 		}
-		return truncate(out, 200), nil
+		// reine Admin-Aufgabe — Erfolg gehört nicht in den Spieler-Channel
+		return truncate(out, 200), false, nil
 
 	case "restart":
+		affected := s.playersAffected()
 		id, err := s.resolve(r.Payload)
 		if err != nil {
-			return "", err
+			return "", affected, err
 		}
 		if err := s.controller.RestartContainer(ctx, id); err != nil {
-			return "", fmt.Errorf("restart %s: %w", r.Payload, err)
+			return "", affected, fmt.Errorf("restart %s: %w", r.Payload, err)
 		}
-		return "Container neugestartet", nil
+		return "Container neugestartet", affected, nil
 
 	case "announce-restart":
 		// Flag für den Down-Wächter: dieser Ausfall ist gewollt
 		s.expectedDown.Store(true)
 		defer s.expectedDown.Store(false)
-		return s.announceRestart(ctx, r)
+		affected := s.playersAffected()
+		msg, err := s.announceRestart(ctx, r)
+		return msg, affected, err
 
 	case "backup":
 		s.expectedDown.Store(true)
 		defer s.expectedDown.Store(false)
-		return s.backupChain(ctx, r)
+		affected := s.playersAffected()
+		msg, err := s.backupChain(ctx, r)
+		return msg, affected, err
 
 	case "host-reboot":
 		s.expectedDown.Store(true)
 		defer s.expectedDown.Store(false)
-		return s.hostReboot(ctx, r)
+		affected := s.playersAffected()
+		msg, err := s.hostReboot(ctx, r, affected)
+		return msg, affected, err
 
 	default:
-		return "", fmt.Errorf("unbekannter Routinentyp %q", r.Kind)
+		return "", false, fmt.Errorf("unbekannter Routinentyp %q", r.Kind)
 	}
 }
 
@@ -492,7 +518,7 @@ func (s *Scheduler) backupChain(ctx context.Context, r storage.Routine) (string,
 // Reboot führt der systemd-Watcher auf dem Host aus; MSM stirbt dabei mit.
 // Nach dem Boot übernimmt der hostctl-Reconciler (Soll-Zustand + „wieder
 // online"-Meldung — ihr Ausbleiben ist der Alarm).
-func (s *Scheduler) hostReboot(ctx context.Context, r storage.Routine) (string, error) {
+func (s *Scheduler) hostReboot(ctx context.Context, r storage.Routine, affected bool) (string, error) {
 	if s.reboot == nil {
 		return "", fmt.Errorf("host-Reboot nicht verdrahtet (MSM_HOST_SIGNAL_DIR + Host-Watcher prüfen)")
 	}
@@ -540,6 +566,15 @@ func (s *Scheduler) hostReboot(ctx context.Context, r storage.Routine) (string, 
 			return "", fmt.Errorf("stop %s: %w", r.Payload, err)
 		}
 	}
+	// Merker für den Boot-Abgleich: nur wenn Spieler betroffen waren, gibt
+	// es nach dem Boot die „wieder online"-Meldung (übersteht den Reboot)
+	if s.stateSet != nil {
+		val := ""
+		if affected {
+			val = "1"
+		}
+		s.stateSet("reboot.notify", val)
+	}
 	if err := s.reboot.RequestReboot(); err != nil {
 		// Server nicht liegen lassen: ohne Reboot muss er wieder hoch
 		if startErr := s.controller.StartContainer(ctx, id); startErr != nil {
@@ -547,11 +582,13 @@ func (s *Scheduler) hostReboot(ctx context.Context, r storage.Routine) (string, 
 		}
 		return "", fmt.Errorf("%w (Server läuft wieder)", err)
 	}
-	s.bus.Publish(events.Event{
-		Type: events.TypeSystemReboot, Severity: events.SevInfo,
-		Title:   "🔄 Server-Neustart läuft",
-		Message: "Der Server macht seinen geplanten Neustart und ist in wenigen Minuten wieder da. Meldung folgt, sobald er wieder online ist.",
-	})
+	if affected {
+		s.bus.Publish(events.Event{
+			Type: events.TypeSystemReboot, Severity: events.SevInfo,
+			Title:   "🔄 Server-Neustart läuft",
+			Message: "Der Server macht seinen geplanten Neustart und ist in wenigen Minuten wieder da. Meldung folgt, sobald er wieder online ist.",
+		})
+	}
 	return "Reboot angefordert (Signaldatei geschrieben)", nil
 }
 

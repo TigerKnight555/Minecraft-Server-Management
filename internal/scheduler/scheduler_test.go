@@ -135,6 +135,8 @@ func TestReloadSkipsInvalidCronVisibly(t *testing.T) {
 	}
 }
 
+// Discord-Stille-Regel: Erfolge werden nur gepostet, wenn Spieler betroffen
+// waren; rcon-Erfolge nie (Admin-Aufgabe). Fehler kommen IMMER.
 func TestRunPublishesOutcomeEvents(t *testing.T) {
 	s, store, _, _ := setup(t)
 	bus := events.New()
@@ -148,22 +150,20 @@ func TestRunPublishesOutcomeEvents(t *testing.T) {
 	badID, _ := store.CreateRoutine(context.Background(), storage.Routine{
 		Name: "kaputt", Cron: "0 4 * * *", Kind: "unfug", Enabled: true,
 	})
-	s.RunNow(context.Background(), okID)
-	s.RunNow(context.Background(), badID)
+	s.RunNow(context.Background(), okID)  // rcon-Erfolg -> KEIN Event
+	s.RunNow(context.Background(), badID) // Fehler -> immer Event
 
-	var got []events.Event
-	for i := 0; i < 2; i++ {
-		select {
-		case ev := <-ch:
-			got = append(got, ev)
-		case <-time.After(time.Second):
-			t.Fatalf("nur %d events erhalten, want 2", len(got))
+	select {
+	case ev := <-ch:
+		if ev.Type != events.TypeRoutineFailed || ev.Severity != events.SevError || !strings.Contains(ev.Title, "kaputt") {
+			t.Errorf("event = %+v, want routine.failed für 'kaputt'", ev)
 		}
+	case <-time.After(time.Second):
+		t.Fatal("kein Fehler-Event erhalten")
 	}
-	if got[0].Type != events.TypeRoutineOK || !strings.Contains(got[0].Title, "gut") {
-		t.Errorf("event 0 = %+v, want routine.ok für 'gut'", got[0])
-	}
-	if got[1].Type != events.TypeRoutineFailed || got[1].Severity != events.SevError {
-		t.Errorf("event 1 = %+v, want routine.failed mit severity error", got[1])
+	select {
+	case ev := <-ch:
+		t.Errorf("unerwartetes zweites Event: %+v (rcon-Erfolg muss still sein)", ev)
+	case <-time.After(50 * time.Millisecond):
 	}
 }

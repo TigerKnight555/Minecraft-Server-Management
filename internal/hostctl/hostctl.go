@@ -69,6 +69,17 @@ type Reconciler struct {
 	FreshBootMax   time.Duration // uptime below this = "gerade gebootet"
 	OnlineTimeout  time.Duration // watchdog for the online message
 	OnlinePollStep time.Duration
+
+	// optionaler State-Store: die Reboot-Routine hinterlegt dort, ob beim
+	// Stopp Spieler online waren — nur dann gibt es die Erfolgs-Meldung
+	// nach dem Boot (leere Nächte bleiben still; Alarme kommen immer)
+	kvGet func(key string) string
+	kvSet func(key, value string)
+}
+
+// SetStateStore wires the persisted reboot.notify flag.
+func (r *Reconciler) SetStateStore(get func(key string) string, set func(key, value string)) {
+	r.kvGet, r.kvSet = get, set
 }
 
 func NewReconciler(store DesiredStore, controller collector.ContainerController, containers resolver,
@@ -132,23 +143,36 @@ func (r *Reconciler) Run(ctx context.Context) {
 	if !freshBoot {
 		return // MSM-Redeploy o. Ä. — Abgleich ja, Boot-Meldung nein
 	}
+	// Erfolgs-Meldung nur, wenn der Reboot Spieler betroffen hat (Flag von
+	// der Reboot-Routine). Ohne Store: melden (besser einmal zu viel).
+	notify := true
+	if r.kvGet != nil {
+		notify = r.kvGet("reboot.notify") == "1"
+		if r.kvSet != nil {
+			r.kvSet("reboot.notify", "") // Flag verbrauchen
+		}
+	}
 	if !mcDesiredRunning {
-		r.bus.Publish(events.Event{
-			Type: events.TypeSystemOnline, Severity: events.SevInfo,
-			Title:   "🔄 System neu gestartet",
-			Message: "Der Minecraft-Server bleibt gestoppt (war vorher bewusst ausgeschaltet).",
-		})
+		if notify {
+			r.bus.Publish(events.Event{
+				Type: events.TypeSystemOnline, Severity: events.SevInfo,
+				Title:   "🔄 System neu gestartet",
+				Message: "Der Minecraft-Server bleibt gestoppt (war vorher bewusst ausgeschaltet).",
+			})
+		}
 		return
 	}
 	// Watchdog: die Online-Meldung kommt erst, wenn Minecraft antwortet
 	deadline := time.Now().Add(r.OnlineTimeout)
 	for time.Now().Before(deadline) {
 		if st := r.mcStatus(); st.Online {
-			r.bus.Publish(events.Event{
-				Type: events.TypeSystemOnline, Severity: events.SevSuccess,
-				Title:   "✅ Server ist wieder online!",
-				Message: "Neustart abgeschlossen — es kann weitergehen.",
-			})
+			if notify {
+				r.bus.Publish(events.Event{
+					Type: events.TypeSystemOnline, Severity: events.SevSuccess,
+					Title:   "✅ Server ist wieder online!",
+					Message: "Neustart abgeschlossen — es kann weitergehen.",
+				})
+			}
 			return
 		}
 		select {

@@ -189,8 +189,20 @@ func main() {
 		log.Info("no discord webhook configured — notifications disabled")
 	}
 
+	// kleiner persistenter Key/Value-Store (app_state): überlebt Reboots,
+	// genutzt für Ankündigungs-Marken und das reboot.notify-Flag
+	var kvGet func(key string) string
+	var kvSet func(key, value string)
+	if sq, ok := store.(*storage.SQLite); ok {
+		kvGet = func(key string) string { v, _ := sq.GetAppState(ctx, key); return v }
+		kvSet = func(key, value string) { sq.SetAppState(ctx, key, value) }
+	}
+
 	sched := scheduler.New(admin.(scheduler.RoutineStore), rcon, controller, coll, log)
 	sched.SetBus(bus)
+	if kvSet != nil {
+		sched.SetStateStore(kvSet)
+	}
 	mcState := func() collector.MCStatus { return coll.Snapshot().MC }
 	sched.SetMCStatus(mcState)
 
@@ -234,6 +246,9 @@ func main() {
 	mcName := envOr("MSM_MC_CONTAINER", "mc-fabric")
 	if ds, ok := admin.(hostctl.DesiredStore); ok {
 		rec := hostctl.NewReconciler(ds, controller, coll, mcState, hostState, bus, mcName, log)
+		if kvGet != nil {
+			rec.SetStateStore(kvGet, kvSet)
+		}
 		go rec.Run(ctx)
 	}
 
@@ -277,11 +292,8 @@ func main() {
 	sched.SetStagedApplier(modmgr)
 	watcher := mods.NewWatcher(modAPI, modmgr, loader)
 	watcher.SetBus(bus)
-	if sq, ok := store.(*storage.SQLite); ok {
-		watcher.SetAnnounceStore(
-			func(key string) string { v, _ := sq.GetAppState(ctx, key); return v },
-			func(key, value string) { sq.SetAppState(ctx, key, value) },
-		)
+	if kvGet != nil {
+		watcher.SetAnnounceStore(kvGet, kvSet)
 	}
 	go watcher.Run(ctx, func() string {
 		if v := coll.MCVersion(); v != "" {

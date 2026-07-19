@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/storage"
 )
@@ -467,5 +468,88 @@ func TestHostRebootSkipsWhenPlayersOnline(t *testing.T) {
 
 	if sig.calls != 0 || len(docker.ActionLog()) != 0 {
 		t.Fatalf("signaler=%d actions=%v, want übersprungen", sig.calls, docker.ActionLog())
+	}
+}
+
+// --- Discord-Stille bei leerem Server (Nutzerwunsch) ---
+
+func TestBackupChainQuietWhenNoPlayers(t *testing.T) {
+	s, store, _, _ := setup(t)
+	s.containers = &fakeResolver{state: "running"}
+	s.SetBackupRunner(&fakeBackup{msg: "Backup ok"})
+	var players atomic.Int32 // 0 online
+	var online atomic.Bool
+	online.Store(true)
+	s.SetMCStatus(mcState(&players, &online))
+	bus := events.New()
+	ch, cancel := bus.Subscribe(8)
+	defer cancel()
+	s.SetBus(bus)
+
+	id, _ := store.CreateRoutine(context.Background(), backupRoutine(nil))
+	s.RunNow(context.Background(), id)
+
+	select {
+	case ev := <-ch:
+		t.Fatalf("event = %+v, want Stille bei leerem Server", ev)
+	case <-time.After(50 * time.Millisecond):
+	}
+	// Historie hält den Erfolg trotzdem fest — nie stilles Ausfallen
+	runs, _ := store.RecentRuns(context.Background(), 10)
+	if len(runs) != 1 || !runs[0].OK {
+		t.Errorf("runs = %+v, want OK in der Historie", runs)
+	}
+}
+
+func TestBackupChainNotifiesWhenPlayersOnline(t *testing.T) {
+	s, store, _, _ := setup(t)
+	s.containers = &fakeResolver{state: "running"}
+	s.SetBackupRunner(&fakeBackup{msg: "Backup ok"})
+	var players atomic.Int32
+	players.Store(2)
+	var online atomic.Bool
+	online.Store(true)
+	s.SetMCStatus(mcState(&players, &online))
+	bus := events.New()
+	ch, cancel := bus.Subscribe(8)
+	defer cancel()
+	s.SetBus(bus)
+
+	id, _ := store.CreateRoutine(context.Background(), backupRoutine(nil))
+	s.RunNow(context.Background(), id)
+
+	select {
+	case ev := <-ch:
+		if ev.Type != events.TypeBackupOK {
+			t.Errorf("event = %+v, want backup.ok", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("kein Event trotz betroffener Spieler")
+	}
+}
+
+func TestHostRebootPersistsNotifyFlag(t *testing.T) {
+	s, store, _, _ := setup(t)
+	s.containers = &fakeResolver{state: "running"}
+	s.SetRebootSignaler(&fakeSignaler{})
+	var players atomic.Int32
+	players.Store(1)
+	var online atomic.Bool
+	online.Store(true)
+	s.SetMCStatus(mcState(&players, &online))
+	kv := map[string]string{}
+	s.SetStateStore(func(k, v string) { kv[k] = v })
+
+	id, _ := store.CreateRoutine(context.Background(), rebootRoutine(nil))
+	s.RunNow(context.Background(), id)
+	if kv["reboot.notify"] != "1" {
+		t.Errorf("kv = %v, want reboot.notify=1 bei Spielern online", kv)
+	}
+
+	// zweiter Lauf ohne Spieler -> Flag wird geleert
+	players.Store(0)
+	s.RunNow(context.Background(), id)
+	if kv["reboot.notify"] != "" {
+		t.Errorf("kv = %v, want leeres Flag ohne Spieler", kv)
 	}
 }
