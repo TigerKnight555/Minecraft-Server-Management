@@ -42,6 +42,12 @@ type Watcher struct {
 	mu   sync.Mutex
 	last *WatchStatus
 	bus  *events.Bus // optional; nil bus is a safe no-op
+
+	// optionaler Ankündigungs-Speicher: ohne ihn vergisst der Watcher bei
+	// jedem MSM-Neustart (= jedem Nacht-Reboot), was er schon gemeldet hat,
+	// und wiederholt version.new/version.ready täglich (Learning 13)
+	annGet func(key string) string
+	annSet func(key, value string)
 }
 
 func NewWatcher(api ModrinthAPI, mgr *Manager, loader string) *Watcher {
@@ -60,6 +66,11 @@ func (w *Watcher) SetEndpoints(manifest, fabric string) {
 
 // SetBus wires the event bus; version transitions are published there.
 func (w *Watcher) SetBus(b *events.Bus) { w.bus = b }
+
+// SetAnnounceStore wires persistence for "schon angekündigt"-marks.
+func (w *Watcher) SetAnnounceStore(get func(key string) string, set func(key, value string)) {
+	w.annGet, w.annSet = get, set
+}
 
 // Last returns the most recent check result (nil before the first run).
 func (w *Watcher) Last() *WatchStatus {
@@ -113,13 +124,20 @@ func allReady(s *WatchStatus) bool {
 
 // notifyTransitions publishes only state CHANGES, so the daily check does not
 // repeat the same news: a release seen for the first time, and the moment a
-// known release becomes fully ready.
+// known release becomes fully ready. Mit Announce-Store überleben die Marken
+// den MSM-Neustart; ohne (Tests) gilt der In-Memory-Vergleich.
 func (w *Watcher) notifyTransitions(prev, cur *WatchStatus) {
 	if cur == nil || !cur.NewerAvailable {
 		return
 	}
 	newRelease := prev == nil || prev.LatestVersion != cur.LatestVersion
+	if w.annGet != nil {
+		newRelease = w.annGet("version.announced") != cur.LatestVersion
+	}
 	if newRelease {
+		if w.annSet != nil {
+			w.annSet("version.announced", cur.LatestVersion)
+		}
 		ready := "nein"
 		if cur.LoaderReady {
 			ready = "ja"
@@ -137,7 +155,14 @@ func (w *Watcher) notifyTransitions(prev, cur *WatchStatus) {
 			Fields:  fields,
 		})
 	}
-	if allReady(cur) && (newRelease || !allReady(prev)) {
+	readyNew := allReady(cur) && (newRelease || !allReady(prev))
+	if w.annGet != nil {
+		readyNew = allReady(cur) && w.annGet("version.ready.announced") != cur.LatestVersion
+	}
+	if readyNew {
+		if w.annSet != nil {
+			w.annSet("version.ready.announced", cur.LatestVersion)
+		}
 		w.bus.Publish(events.Event{
 			Type: events.TypeVersionReady, Severity: events.SevSuccess,
 			Title:   "Minecraft " + cur.LatestVersion + " — alles bereit für den Umstieg",

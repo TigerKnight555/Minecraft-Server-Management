@@ -53,6 +53,9 @@ services:
     cpus: 0.5
     cpu_shares: 128
     environment:
+      # Zeitzone für Cron-Zeiten, Warte-Fristen und Wartungsfenster —
+      # ohne TZ rechnet der Container in UTC (+2h Versatz im Sommer!)
+      TZ: ${TZ:-Europe/Berlin}
       MSM_DOCKER_HOST: http://socket-proxy:2375
       MSM_DB_PATH: /data/msm.db
       MSM_QUERY_ADDR: ${MSM_QUERY_ADDR:-mc-fabric:25565}

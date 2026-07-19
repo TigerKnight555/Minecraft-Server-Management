@@ -39,6 +39,10 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	// Zeitzonendaten einbetten: TZ=Europe/Berlin funktioniert damit auch im
+	// distroless-Image ohne /usr/share/zoneinfo — Cron-Zeiten, Warte-Fristen
+	// und Wartungsfenster rechnen sonst in UTC (Learning 12)
+	_ "time/tzdata"
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/api"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/auth"
@@ -273,6 +277,12 @@ func main() {
 	sched.SetStagedApplier(modmgr)
 	watcher := mods.NewWatcher(modAPI, modmgr, loader)
 	watcher.SetBus(bus)
+	if sq, ok := store.(*storage.SQLite); ok {
+		watcher.SetAnnounceStore(
+			func(key string) string { v, _ := sq.GetAppState(ctx, key); return v },
+			func(key, value string) { sq.SetAppState(ctx, key, value) },
+		)
+	}
 	go watcher.Run(ctx, func() string {
 		if v := coll.MCVersion(); v != "" {
 			return v

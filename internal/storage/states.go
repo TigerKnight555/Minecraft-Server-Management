@@ -21,7 +21,29 @@ CREATE TABLE IF NOT EXISTS desired_state (
 	container TEXT PRIMARY KEY,
 	state     TEXT NOT NULL,
 	updated   INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS app_state (
+	key   TEXT PRIMARY KEY,
+	value TEXT NOT NULL
 );`)
+	return err
+}
+
+// GetAppState returns a small persisted key/value ("" if unset) — z. B.
+// welche MC-Version schon angekündigt wurde (übersteht den Nacht-Reboot).
+func (s *SQLite) GetAppState(ctx context.Context, key string) (string, error) {
+	var v string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM app_state WHERE key=?`, key).Scan(&v)
+	if err != nil {
+		return "", nil // fehlender Key ist kein Fehler
+	}
+	return v, nil
+}
+
+func (s *SQLite) SetAppState(ctx context.Context, key, value string) error {
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO app_state(key, value) VALUES(?,?)
+ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
 	return err
 }
 

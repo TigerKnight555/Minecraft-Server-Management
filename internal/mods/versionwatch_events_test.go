@@ -82,3 +82,39 @@ func TestEmptyInventoryIsNotReady(t *testing.T) {
 		t.Fatalf("leeres Inventar: events = %+v, want nur version.new", got)
 	}
 }
+
+func TestAnnounceStoreSurvivesRestart(t *testing.T) {
+	mgr, _, _ := setup(t)
+	bus := events.New()
+	ch, cancel := bus.Subscribe(16)
+	defer cancel()
+
+	// persistenter Store, den zwei Watcher-Instanzen teilen (simuliert
+	// MSM-Neustart durch den Nacht-Reboot)
+	kv := map[string]string{}
+	get := func(k string) string { return kv[k] }
+	set := func(k, v string) { kv[k] = v }
+
+	w1 := mods.NewWatcher(mock.NewModrinth(), mgr, "fabric")
+	w1.SetBus(bus)
+	w1.SetAnnounceStore(get, set)
+	w1.SetLast(watchStatus("1.22", true, 3, 3))
+	if got := drain(ch); len(got) != 2 {
+		t.Fatalf("erste Instanz: events = %+v, want version.new + version.ready", got)
+	}
+
+	// "Neustart": frische Instanz, gleicher Store, gleiche Version
+	w2 := mods.NewWatcher(mock.NewModrinth(), mgr, "fabric")
+	w2.SetBus(bus)
+	w2.SetAnnounceStore(get, set)
+	w2.SetLast(watchStatus("1.22", true, 3, 3))
+	if got := drain(ch); len(got) != 0 {
+		t.Fatalf("nach Neustart: events = %+v, want keine Wiederholung", got)
+	}
+
+	// neue Version -> wieder Meldungen
+	w2.SetLast(watchStatus("1.23", true, 3, 3))
+	if got := drain(ch); len(got) != 2 {
+		t.Fatalf("neue Version: events = %+v, want beide Meldungen", got)
+	}
+}
