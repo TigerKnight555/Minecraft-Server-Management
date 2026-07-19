@@ -13,6 +13,7 @@
   import Routines from './lib/Routines.svelte'
   import Audit from './lib/Audit.svelte'
   import Mods from './lib/Mods.svelte'
+  import Settings from './lib/Settings.svelte'
 
   let authChecked = $state(false)
   let tab = $state('dashboard')
@@ -126,6 +127,7 @@
       <button class={tab === 'mods' ? 'active' : ''} onclick={() => (tab = 'mods')}>Mods</button>
       <button class={tab === 'routines' ? 'active' : ''} onclick={() => (tab = 'routines')}>Routinen</button>
       <button class={tab === 'audit' ? 'active' : ''} onclick={() => (tab = 'audit')}>Audit</button>
+      <button class={tab === 'settings' ? 'active' : ''} onclick={() => (tab = 'settings')}>Einstellungen</button>
     </nav>
     <span class="conn-status {$connected ? 'live' : 'dead'}">
       {$connected ? 'live' : 'getrennt'}
@@ -141,6 +143,8 @@
     <div class="panels"><Audit /></div>
   {:else if tab === 'mods'}
     <div class="panels"><Mods /></div>
+  {:else if tab === 'settings'}
+    <div class="panels"><Settings /></div>
   {:else}
 
   <div class="tiles">

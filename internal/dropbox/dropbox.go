@@ -32,7 +32,7 @@ func (c Config) Complete() bool {
 }
 
 type Client struct {
-	cfg  Config
+	cfg  func() Config // Provider: Einstellungen können sich zur Laufzeit ändern
 	http *http.Client
 
 	tokenURL   string // overridable in tests
@@ -42,9 +42,17 @@ type Client struct {
 	mu          sync.Mutex
 	accessToken string
 	tokenUntil  time.Time
+	tokenFor    Config // Credentials, für die der Access-Token gilt
 }
 
+// New wraps a fixed config (Tests, .env-only-Betrieb).
 func New(cfg Config) *Client {
+	return NewDynamic(func() Config { return cfg })
+}
+
+// NewDynamic reads the credentials via provider on every use — der
+// Einstellungen-Tab kann sie ändern, ohne dass MSM neu starten muss.
+func NewDynamic(cfg func() Config) *Client {
 	return &Client{
 		cfg:        cfg,
 		http:       &http.Client{Timeout: 5 * time.Minute},
@@ -54,27 +62,35 @@ func New(cfg Config) *Client {
 	}
 }
 
+// Ready reports whether credentials are currently complete.
+func (c *Client) Ready() bool { return c.cfg().Complete() }
+
 // SetEndpoints overrides the upstream URLs (tests).
 func (c *Client) SetEndpoints(token, api, content string) {
 	c.tokenURL, c.apiURL, c.contentURL = token, api, content
 }
 
-// token returns a valid access token, refreshing it when needed.
+// token returns a valid access token, refreshing it when needed. Ändern
+// sich die Credentials (Einstellungen-Tab), wird der Cache verworfen.
 func (c *Client) token(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.accessToken != "" && time.Now().Before(c.tokenUntil) {
+	cfg := c.cfg()
+	if !cfg.Complete() {
+		return "", fmt.Errorf("dropbox nicht konfiguriert — App-Key/Secret/Refresh-Token im Einstellungen-Tab hinterlegen")
+	}
+	if c.accessToken != "" && time.Now().Before(c.tokenUntil) && cfg == c.tokenFor {
 		return c.accessToken, nil
 	}
 	form := url.Values{
 		"grant_type":    {"refresh_token"},
-		"refresh_token": {c.cfg.RefreshToken},
+		"refresh_token": {cfg.RefreshToken},
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", err
 	}
-	req.SetBasicAuth(c.cfg.AppKey, c.cfg.AppSecret)
+	req.SetBasicAuth(cfg.AppKey, cfg.AppSecret)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -93,6 +109,7 @@ func (c *Client) token(ctx context.Context) (string, error) {
 		return "", err
 	}
 	c.accessToken = tok.AccessToken
+	c.tokenFor = cfg
 	c.tokenUntil = time.Now().Add(time.Duration(tok.ExpiresIn-60) * time.Second)
 	return c.accessToken, nil
 }

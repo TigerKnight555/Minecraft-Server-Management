@@ -37,6 +37,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	// Zeitzonendaten einbetten: TZ=Europe/Berlin funktioniert damit auch im
@@ -63,6 +64,7 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/netcheck"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/notify"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/settings"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/storage"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/upgrade"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/watchers"
@@ -172,22 +174,13 @@ func main() {
 	}, docker, mc, host, wan, store, log)
 	go coll.Run(ctx)
 
-	// Event-Bus + Notifier (Phase 4.1). Ohne konfigurierten Webhook läuft der
-	// Bus trotzdem — Publisher merken davon nichts.
+	// Event-Bus + Notifier (Phase 4.1). Der Notifier läuft immer und liest
+	// die Webhooks über den Einstellungen-Store — Änderungen im Dashboard
+	// wirken sofort, ohne konfigurierten Webhook verpufft die Zustellung.
 	bus := events.New()
-	hooks, err := notify.ParseWebhooks(os.Getenv("MSM_DISCORD_WEBHOOKS"), os.Getenv("MSM_DISCORD_WEBHOOK_URL"))
-	if err != nil {
+	if _, err := notify.ParseWebhooks(os.Getenv("MSM_DISCORD_WEBHOOKS"), os.Getenv("MSM_DISCORD_WEBHOOK_URL")); err != nil {
 		log.Error("discord webhook config invalid", "err", err)
 		os.Exit(1)
-	}
-	var notifier *notify.Discord
-	if len(hooks) > 0 {
-		notifier = notify.NewDiscord(hooks, log)
-		ch, _ := bus.Subscribe(64)
-		go notifier.Run(ctx, ch)
-		log.Info("discord notifier active", "webhooks", len(hooks))
-	} else {
-		log.Info("no discord webhook configured — notifications disabled")
 	}
 
 	// kleiner persistenter Key/Value-Store (app_state): überlebt Reboots,
@@ -199,11 +192,26 @@ func main() {
 		kvSet = func(key, value string) { sq.SetAppState(ctx, key, value) }
 	}
 
+	// Einstellungen-Store: Dashboard-Werte (SQLite) gewinnen gegen die .env.
+	// Im Mock-Modus genügt eine In-Memory-Map.
+	if kvGet == nil {
+		mem := map[string]string{}
+		var memMu sync.Mutex
+		kvGet = func(key string) string { memMu.Lock(); defer memMu.Unlock(); return mem[key] }
+		kvSet = func(key, value string) { memMu.Lock(); defer memMu.Unlock(); mem[key] = value }
+	}
+	cfg := settings.New(kvGet, kvSet)
+
+	notifier := notify.NewDiscord(cfg.DiscordHooks, log)
+	{
+		ch, _ := bus.Subscribe(64)
+		go notifier.Run(ctx, ch)
+	}
+	log.Info("discord notifier running", "webhooks", len(cfg.DiscordHooks()))
+
 	sched := scheduler.New(admin.(scheduler.RoutineStore), rcon, controller, coll, log)
 	sched.SetBus(bus)
-	if kvSet != nil {
-		sched.SetStateStore(kvSet)
-	}
+	sched.SetStateStore(kvSet)
 	mcState := func() collector.MCStatus { return coll.Snapshot().MC }
 	sched.SetMCStatus(mcState)
 
@@ -312,29 +320,24 @@ func main() {
 			watcher, hostctl.NewSignaler(signalDir), bus, mcName, log)
 	}
 
-	// Dropbox (Phase 4.8): nur aktiv, wenn alle drei Credentials da sind
-	var dbx *dropbox.Client
-	dbxCfg := dropbox.Config{
-		AppKey:       os.Getenv("MSM_DROPBOX_APP_KEY"),
-		AppSecret:    os.Getenv("MSM_DROPBOX_APP_SECRET"),
-		RefreshToken: os.Getenv("MSM_DROPBOX_REFRESH_TOKEN"),
-	}
-	if dbxCfg.Complete() {
-		dbx = dropbox.New(dbxCfg)
-		log.Info("dropbox client-pack publishing active")
-		// nach dem Ein-Klick-MC-Update wird das frische Client-Paket
-		// automatisch verteilt (Upload + Discord-Link)
-		if upgrader != nil {
-			var clientDirs map[string]string
-			for _, p := range modProfiles {
-				if p.Name == "client" {
-					clientDirs = p.Dirs
-				}
+	// Dropbox (Phase 4.8): Client liest die Credentials dynamisch aus dem
+	// Einstellungen-Store (.env als Fallback) — konfigurierbar im Dashboard.
+	dbx := dropbox.NewDynamic(cfg.DropboxConfig)
+	{
+		var clientDirs map[string]string
+		for _, p := range modProfiles {
+			if p.Name == "client" {
+				clientDirs = p.Dirs
 			}
-			if clientDirs != nil {
-				upgrader.Publish = func(ctx context.Context) error {
-					return dropbox.Publish(ctx, dbx, clientDirs, bus, log)
+		}
+		if upgrader != nil && clientDirs != nil {
+			// nach dem Ein-Klick-MC-Update das frische Client-Paket
+			// automatisch verteilen — nur wenn Dropbox konfiguriert ist
+			upgrader.Publish = func(ctx context.Context) error {
+				if !dbx.Ready() {
+					return nil // Feature aus — kein Fehler, kein Hinweis nötig
 				}
+				return dropbox.Publish(ctx, dbx, clientDirs, bus, log)
 			}
 		}
 	}
@@ -372,6 +375,7 @@ func main() {
 			},
 			Dropbox:           dbx,
 			Upgrader:          upgrader,
+			Settings:          cfg,
 			MCContainer:       envOr("MSM_MC_CONTAINER", "mc-fabric"),
 			FallbackMCVersion: os.Getenv("MC_VERSION"),
 			Managed:           managed,

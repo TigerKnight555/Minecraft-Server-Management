@@ -177,6 +177,10 @@ func (s *Server) handlePublishClientPack(w http.ResponseWriter, r *http.Request)
 		httpError(w, http.StatusServiceUnavailable, "kein Client-Profil konfiguriert")
 		return
 	}
+	if !s.dropbox.Ready() {
+		httpError(w, http.StatusConflict, "Dropbox nicht konfiguriert — App-Key/Secret/Refresh-Token im Einstellungen-Tab hinterlegen")
+		return
+	}
 	s.audit(r.Context(), "mods.publish", "client-pack upload gestartet")
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)

@@ -18,6 +18,7 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/settings"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/upgrade"
 )
 
@@ -37,6 +38,7 @@ type Server struct {
 	maintActive       func() bool // Wartungsfenster gerade aktiv?
 	dropbox           *dropbox.Client
 	upgrader          *upgrade.Orchestrator
+	settings          *settings.Store
 	mcContainer       string
 	fallbackMCVersion string
 	managed           map[string]bool // allowlist for container actions
@@ -62,6 +64,7 @@ type Deps struct {
 	MaintActive       func() bool // maintenance.Manager.Active
 	Dropbox           *dropbox.Client
 	Upgrader          *upgrade.Orchestrator
+	Settings          *settings.Store
 	MCContainer       string   // name of the minecraft container (mod apply restart)
 	FallbackMCVersion string   // used when query has no version yet
 	Managed           []string // container names allowed for start/stop/restart
@@ -93,6 +96,7 @@ func New(d Deps) *Server {
 		maintActive:       d.MaintActive,
 		dropbox:           d.Dropbox,
 		upgrader:          d.Upgrader,
+		settings:          d.Settings,
 		mcContainer:       d.MCContainer,
 		fallbackMCVersion: d.FallbackMCVersion,
 		managed:           managed,
@@ -149,6 +153,12 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.mcDataDir != "" {
 		mux.HandleFunc("GET /api/backup/players", s.handleListPlayers)
+	}
+	// Einstellungen (Integrationen über das Dashboard konfigurieren)
+	if s.settings != nil {
+		mux.HandleFunc("GET /api/settings", s.handleGetSettings)
+		mux.HandleFunc("PUT /api/settings", s.handleSaveSettings)
+		mux.HandleFunc("POST /api/settings/discord/test", s.handleTestDiscord)
 	}
 	// Phase 4.6
 	if s.admin != nil {

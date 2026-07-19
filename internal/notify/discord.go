@@ -65,7 +65,7 @@ type queued struct {
 // Meldungen in einer begrenzten Offline-Warteschlange und werden nach der
 // Rückkehr nachgeliefert (Konzept: Benachrichtigungen & Integrationen).
 type Discord struct {
-	hooks []Webhook
+	hooks func() []Webhook // Provider: Einstellungen können sich zur Laufzeit ändern
 	http  *http.Client
 	log   *slog.Logger
 
@@ -79,7 +79,9 @@ type Discord struct {
 	QueueMax   int
 }
 
-func NewDiscord(hooks []Webhook, log *slog.Logger) *Discord {
+// NewDiscord takes a webhook provider so runtime changes (Einstellungen-Tab)
+// take effect immediately; für statische Listen: NewDiscordStatic.
+func NewDiscord(hooks func() []Webhook, log *slog.Logger) *Discord {
 	return &Discord{
 		hooks:      hooks,
 		http:       &http.Client{Timeout: 15 * time.Second},
@@ -87,6 +89,11 @@ func NewDiscord(hooks []Webhook, log *slog.Logger) *Discord {
 		RetryEvery: time.Minute,
 		QueueMax:   100,
 	}
+}
+
+// NewDiscordStatic wraps a fixed webhook list (Tests).
+func NewDiscordStatic(hooks []Webhook, log *slog.Logger) *Discord {
+	return NewDiscord(func() []Webhook { return hooks }, log)
 }
 
 // muted reports whether this event should be swallowed right now.
@@ -116,7 +123,7 @@ func (d *Discord) Run(ctx context.Context, ch <-chan events.Event) {
 			if d.muted(ev) {
 				continue
 			}
-			for _, h := range d.hooks {
+			for _, h := range d.hooks() {
 				if !events.Matches(h.Events, ev.Type) {
 					continue
 				}
@@ -158,7 +165,7 @@ func (d *Discord) flushQueue(ctx context.Context) {
 			summary += fmt.Sprintf(" %d weitere gingen wegen voller Warteschlange verloren.", d.dropped)
 			d.dropped = 0
 		}
-		for _, h := range d.hooks {
+		for _, h := range d.hooks() {
 			d.send(ctx, h.URL, events.Event{
 				Type: events.TypeNetOK, Severity: events.SevInfo,
 				Title: "Zustellung nachgeholt", Message: summary, Time: time.Now(),

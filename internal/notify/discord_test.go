@@ -70,7 +70,7 @@ func TestDeliversMatchingEventsAsEmbeds(t *testing.T) {
 	bus := events.New()
 	ch, cancel := bus.Subscribe(16)
 	defer cancel()
-	d := NewDiscord([]Webhook{{Name: "t", URL: srv.URL, Events: []string{"mods."}}}, testLogger())
+	d := NewDiscordStatic([]Webhook{{Name: "t", URL: srv.URL, Events: []string{"mods."}}}, testLogger())
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
 	go d.Run(ctx, ch)
@@ -104,7 +104,7 @@ func TestRetriesOnServerError(t *testing.T) {
 	srv := httptest.NewServer(cap.handler())
 	defer srv.Close()
 
-	d := NewDiscord(nil, testLogger())
+	d := NewDiscordStatic(nil, testLogger())
 	err := d.send(context.Background(), srv.URL, events.Event{
 		Type: events.TypeRoutineFailed, Title: "x", Time: time.Now(),
 	})
@@ -121,7 +121,7 @@ func TestGivesUpAfterThreeAttempts(t *testing.T) {
 	srv := httptest.NewServer(cap.handler())
 	defer srv.Close()
 
-	d := NewDiscord(nil, testLogger())
+	d := NewDiscordStatic(nil, testLogger())
 	err := d.send(context.Background(), srv.URL, events.Event{Title: "x", Time: time.Now()})
 	if err == nil {
 		t.Fatal("send succeeded, want error")

@@ -163,3 +163,8 @@ export const publishClientPack = () => apiFetch('/api/mods/publish', { method: '
 export const startVersionUpgrade = (version) =>
   apiFetch('/api/version-upgrade', { method: 'POST', body: JSON.stringify({ version }) })
 export const versionUpgradeStatus = () => apiFetch('/api/version-upgrade/status')
+
+// --- Einstellungen ---
+export const getSettings = () => apiFetch('/api/settings')
+export const saveSettings = (s) => apiFetch('/api/settings', { method: 'PUT', body: JSON.stringify(s) })
+export const testDiscord = () => apiFetch('/api/settings/discord/test', { method: 'POST' })
