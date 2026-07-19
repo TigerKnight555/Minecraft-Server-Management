@@ -201,6 +201,8 @@ func (s *Scheduler) RunNow(ctx context.Context, routineID int64) {
 	}
 	run := storage.RoutineRun{RoutineID: r.ID, Time: time.Now(), OK: err == nil, Message: msg}
 	var skipped errSkipped
+	// Discord-Texte spielertauglich halten (der Channel ist für alle) —
+	// die technische Meldung bleibt in der Historie und im Details-Feld
 	switch {
 	case errors.As(err, &skipped):
 		// Bedingung griff — kein Fehler, aber sichtbar (nie stilles Ausfallen)
@@ -209,9 +211,8 @@ func (s *Scheduler) RunNow(ctx context.Context, routineID int64) {
 		s.log.Info("routine skipped", "name", r.Name, "reason", skipped.reason)
 		s.bus.Publish(events.Event{
 			Type: events.TypeRoutineSkipped, Severity: events.SevInfo,
-			Title:   "Routine übersprungen: " + r.Name,
-			Message: skipped.reason,
-			Fields:  []events.Field{{Name: "Typ", Value: r.Kind}},
+			Title:   "⏭️ " + r.Name + " verschoben",
+			Message: friendlySkipReason(skipped.reason),
 		})
 	case err != nil:
 		run.Message = err.Error()
@@ -222,9 +223,9 @@ func (s *Scheduler) RunNow(ctx context.Context, routineID int64) {
 		}
 		s.bus.Publish(events.Event{
 			Type: typ, Severity: events.SevError,
-			Title:   "Routine fehlgeschlagen: " + r.Name,
-			Message: err.Error(),
-			Fields:  []events.Field{{Name: "Typ", Value: r.Kind}},
+			Title:   "⚠️ " + r.Name + " fehlgeschlagen",
+			Message: "Der Server sollte trotzdem laufen — Details fürs Admin-Auge unten.",
+			Fields:  []events.Field{{Name: "Details", Value: err.Error()}},
 		})
 	default:
 		s.log.Info("routine finished", "name", r.Name)
@@ -234,9 +235,9 @@ func (s *Scheduler) RunNow(ctx context.Context, routineID int64) {
 		}
 		s.bus.Publish(events.Event{
 			Type: typ, Severity: events.SevSuccess,
-			Title:   "Routine erfolgreich: " + r.Name,
-			Message: msg,
-			Fields:  []events.Field{{Name: "Typ", Value: r.Kind}},
+			Title:   "✅ " + r.Name + " abgeschlossen",
+			Message: friendlyOutcome(r.Kind),
+			Fields:  []events.Field{{Name: "Details", Value: msg}},
 		})
 	}
 	if err := s.store.RecordRun(ctx, run); err != nil {
@@ -548,8 +549,8 @@ func (s *Scheduler) hostReboot(ctx context.Context, r storage.Routine) (string, 
 	}
 	s.bus.Publish(events.Event{
 		Type: events.TypeSystemReboot, Severity: events.SevInfo,
-		Title:   "Host-Reboot angefordert",
-		Message: "Minecraft gestoppt, Signal an den Host-Watcher geschrieben. Die Online-Meldung folgt nach dem Boot — bleibt sie aus, bitte nachsehen!",
+		Title:   "🔄 Server-Neustart läuft",
+		Message: "Der Server macht seinen geplanten Neustart und ist in wenigen Minuten wieder da. Meldung folgt, sobald er wieder online ist.",
 	})
 	return "Reboot angefordert (Signaldatei geschrieben)", nil
 }
@@ -638,6 +639,32 @@ func (s *Scheduler) resolve(name string) (string, error) {
 		return name, nil
 	}
 	return "", fmt.Errorf("kein Container angegeben")
+}
+
+// friendlyOutcome is the player-facing one-liner per routine kind.
+func friendlyOutcome(kind string) string {
+	switch kind {
+	case "backup":
+		return "Backup erstellt, der Server läuft wieder — viel Spaß!"
+	case "announce-restart":
+		return "Neustart fertig, der Server ist wieder da."
+	case "host-reboot":
+		return "Neustart eingeleitet — der Server ist in wenigen Minuten wieder da."
+	default:
+		return "Alles erledigt."
+	}
+}
+
+// friendlySkipReason macht aus dem technischen Skip-Grund einen Spieler-Satz.
+func friendlySkipReason(reason string) string {
+	switch {
+	case strings.Contains(reason, "Spieler online"):
+		return "Es sind gerade Spieler online — der Lauf wurde verschoben, damit niemand rausfliegt."
+	case strings.Contains(reason, "Wartungsfenster"):
+		return "Gerade läuft eine Wartung — der Lauf wurde übersprungen."
+	default:
+		return reason
+	}
 }
 
 func truncate(s string, n int) string {

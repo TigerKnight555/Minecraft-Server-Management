@@ -43,15 +43,15 @@ func WatchFreshness(ctx context.Context, store FreshnessStore, bus *events.Bus, 
 			continue
 		}
 		lastWarned = time.Now()
-		msg := "Noch nie ein erfolgreiches Backup verzeichnet."
+		msg := "Es gibt noch keinen erfolgreichen Backup-Lauf."
 		if found {
 			msg = fmt.Sprintf("Letztes erfolgreiches Backup: %s (vor %s).",
 				last.Format("2006-01-02 15:04"), time.Since(last).Round(time.Hour))
 		}
 		bus.Publish(events.Event{
 			Type: events.TypeBackupStale, Severity: events.SevWarn,
-			Title:   "Backup überfällig",
-			Message: msg + " Bitte Routine und NAS prüfen.",
+			Title:   "⏰ Backup überfällig",
+			Message: msg + " Info für den Admin: Routine und NAS prüfen.",
 		})
 	}
 }

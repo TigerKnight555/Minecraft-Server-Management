@@ -22,7 +22,7 @@ import (
 const (
 	sessionCookie   = "msm_session"
 	sessionLifetime = 12 * time.Hour
-	maxLoginTries   = 5               // per window
+	maxLoginTries   = 5 // per window
 	loginWindow     = 15 * time.Minute
 )
 

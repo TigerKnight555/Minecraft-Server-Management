@@ -127,8 +127,12 @@ func TestCrashSnippetAndNewFileDetection(t *testing.T) {
 	for time.Now().Before(deadline) {
 		evs := drain(ch)
 		if len(evs) > 0 {
-			if evs[0].Type != events.TypeCrash || !strings.Contains(evs[0].Message, "NullPointerException") ||
-				!strings.Contains(evs[0].Title, "crash-neu.txt") {
+			fields := ""
+			for _, f := range evs[0].Fields {
+				fields += f.Name + "=" + f.Value + ";"
+			}
+			if evs[0].Type != events.TypeCrash || !strings.Contains(fields, "NullPointerException") ||
+				!strings.Contains(fields, "crash-neu.txt") {
 				t.Fatalf("event = %+v", evs[0])
 			}
 			return

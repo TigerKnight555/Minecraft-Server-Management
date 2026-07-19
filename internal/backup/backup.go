@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -123,24 +124,30 @@ func superviseJob(ctx context.Context, docker Docker, log *slog.Logger,
 	}
 }
 
-// resticSummary extracts the informative lines from restic output.
+// resticSummary translates restic's output into one plain German line —
+// die rohen Zeilen ("processed 7626 files…", "keep 2 snapshots:") waren im
+// Discord-Embed für Spieler unverständlich.
+var (
+	reProcessed = regexp.MustCompile(`processed (\d+) files, ([\d.]+ \w+) in ([\d:]+)`)
+	reAdded     = regexp.MustCompile(`Added to the repo\w*: ([\d.]+ \w+)`)
+	reSnapshot  = regexp.MustCompile(`snapshot (\w+) saved`)
+)
+
 func resticSummary(logs string) string {
-	var keep []string
-	for _, line := range strings.Split(logs, "\n") {
-		line = strings.TrimSpace(line)
-		switch {
-		case strings.HasPrefix(line, "processed "),
-			strings.HasPrefix(line, "Added to the repo"),
-			strings.HasPrefix(line, "snapshot ") && strings.HasSuffix(line, "saved"),
-			strings.Contains(line, "packs deleted"),
-			strings.HasPrefix(line, "keep "):
-			keep = append(keep, line)
-		}
+	var parts []string
+	if m := reProcessed.FindStringSubmatch(logs); m != nil {
+		parts = append(parts, fmt.Sprintf("%s geprüft (%s Dateien, %s min)", m[2], m[1], m[3]))
 	}
-	if len(keep) == 0 {
+	if m := reAdded.FindStringSubmatch(logs); m != nil {
+		parts = append(parts, m[1]+" neu gesichert")
+	}
+	if m := reSnapshot.FindStringSubmatch(logs); m != nil {
+		parts = append(parts, "Stand "+m[1])
+	}
+	if len(parts) == 0 {
 		return "keine restic-Zusammenfassung im Log gefunden"
 	}
-	return strings.Join(keep, "; ")
+	return strings.Join(parts, ", ")
 }
 
 func tailSummary(logs string, n int) string {

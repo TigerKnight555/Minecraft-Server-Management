@@ -170,14 +170,14 @@ func (m *Manager) begin(ctx context.Context, w storage.MaintenanceWindow) {
 	}
 	m.bus.Publish(events.Event{
 		Type: events.TypeMaintStart, Severity: events.SevWarn,
-		Title:   "Wartungsfenster begonnen: " + w.Name,
-		Message: fmt.Sprintf("Bis voraussichtlich %s. Alarme sind bis dahin stumm.", w.End.Format("15:04")),
+		Title:   "🔧 Wartung läuft: " + w.Name,
+		Message: fmt.Sprintf("Der Server ist offline — voraussichtlich bis %s Uhr. Meldung folgt, sobald er wieder da ist.", w.End.Format("15:04")),
 	})
 }
 
 // finish restarts the server (if the window stopped it) and closes the window.
 func (m *Manager) finish(ctx context.Context, w storage.MaintenanceWindow) {
-	msg := "Server war nicht vom Fenster gestoppt — kein Wiederanlauf nötig."
+	msg := "Der Server war während der Wartung nicht gestoppt — alles läuft normal weiter."
 	sev := events.SevInfo
 	if w.StoppedServer {
 		if id, ok := m.resolve(); ok {
@@ -185,8 +185,9 @@ func (m *Manager) finish(ctx context.Context, w storage.MaintenanceWindow) {
 				m.log.Error("wartung: start fehlgeschlagen", "err", err)
 				m.bus.Publish(events.Event{
 					Type: events.TypeSystemDegraded, Severity: events.SevError,
-					Title:   "Wartungsende: Server-Start FEHLGESCHLAGEN",
-					Message: err.Error(),
+					Title:   "❌ Server-Start nach Wartung fehlgeschlagen",
+					Message: "Der Admin kümmert sich — bitte etwas Geduld.",
+					Fields:  []events.Field{{Name: "Details", Value: err.Error()}},
 				})
 				return // Fenster offen lassen -> nächster Tick versucht es wieder
 			}
@@ -206,10 +207,10 @@ func (m *Manager) finish(ctx context.Context, w storage.MaintenanceWindow) {
 			}
 		}
 		if online {
-			msg = "Server gestartet und wieder erreichbar."
+			msg = "Der Server ist wieder online — viel Spaß!"
 			sev = events.SevSuccess
 		} else {
-			msg = fmt.Sprintf("Server gestartet, antwortete aber innerhalb %s nicht — bitte prüfen!", m.OnlineTimeout)
+			msg = "Der Server wurde gestartet, antwortet aber noch nicht. Der Admin schaut drauf."
 			sev = events.SevError
 		}
 	}
@@ -219,7 +220,7 @@ func (m *Manager) finish(ctx context.Context, w storage.MaintenanceWindow) {
 	delete(m.warned, w.ID)
 	m.bus.Publish(events.Event{
 		Type: events.TypeMaintEnd, Severity: sev,
-		Title:   "Wartungsfenster beendet: " + w.Name,
+		Title:   "✅ Wartung beendet: " + w.Name,
 		Message: msg,
 	})
 }

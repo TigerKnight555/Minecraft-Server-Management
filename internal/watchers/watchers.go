@@ -53,8 +53,9 @@ func (c *Crash) Run(ctx context.Context) {
 			seen[f] = true
 			c.bus.Publish(events.Event{
 				Type: events.TypeCrash, Severity: events.SevError,
-				Title:   "Minecraft-Crash erkannt: " + f,
-				Message: c.snippet(f),
+				Title:   "💥 Der Server ist abgestürzt",
+				Message: "Er sollte gleich automatisch neu starten. Falls nicht: der Admin wurde informiert.",
+				Fields:  []events.Field{{Name: "Report", Value: f}, {Name: "Details", Value: c.snippet(f)}},
 			})
 		}
 	}
@@ -157,8 +158,8 @@ func (d *Down) Run(ctx context.Context) {
 				d.downAlerted = false
 				d.bus.Publish(events.Event{
 					Type: events.TypeServerUp, Severity: events.SevSuccess,
-					Title:   "Minecraft-Server läuft wieder",
-					Message: "Der Container ist wieder im Zustand running.",
+					Title:   "✅ Server läuft wieder",
+					Message: "Alles wieder normal — viel Spaß!",
 				})
 			}
 			continue
@@ -168,8 +169,8 @@ func (d *Down) Run(ctx context.Context) {
 			d.downAlerted = true
 			d.bus.Publish(events.Event{
 				Type: events.TypeServerDown, Severity: events.SevError,
-				Title:   "Minecraft-Server unerwartet gestoppt!",
-				Message: "Container " + d.mcName + " ist aus, ohne dass eine Routine oder ein bewusster Stopp lief. Docker-Restart-Policy sollte ihn neu starten — bitte prüfen.",
+				Title:   "❌ Server ist unerwartet offline",
+				Message: "Er sollte gleich automatisch neu starten — Meldung folgt. Falls nicht, ist der Admin dran.",
 			})
 		}
 	}
@@ -254,15 +255,15 @@ func (n *Net) step(s collector.WANSample) {
 		n.since = time.Now()
 		n.bus.Publish(events.Event{
 			Type: events.TypeNetDegraded, Severity: events.SevWarn,
-			Title:   "Internetverbindung beeinträchtigt",
-			Message: fmt.Sprintf("Ping/Paketverlust seit ~%d min über den Schwellen (Median > %.0f ms oder Verlust > %.0f %%).", n.Sustain*int(n.Interval.Minutes()+0.5), n.MaxRTTMs, n.MaxLossPct),
+			Title:   "🌐 Internet am Server gerade instabil",
+			Message: "Es kann gerade zu Lags oder Verbindungsabbrüchen kommen — liegt nicht an euch.",
 		})
 	case n.degraded && n.goodStreak >= n.Sustain:
 		n.degraded = false
 		n.bus.Publish(events.Event{
 			Type: events.TypeNetOK, Severity: events.SevSuccess,
-			Title:   "Internetverbindung wieder stabil",
-			Message: fmt.Sprintf("Störung dauerte %s.", time.Since(n.since).Round(time.Minute)),
+			Title:   "🌐 Internet wieder stabil",
+			Message: fmt.Sprintf("Die Störung dauerte %s.", time.Since(n.since).Round(time.Minute)),
 		})
 	}
 }
@@ -311,8 +312,8 @@ func (r *Resource) step(h collector.HostSample) {
 			r.diskAlerted = true
 			r.bus.Publish(events.Event{
 				Type: events.TypeResource, Severity: events.SevWarn,
-				Title:   fmt.Sprintf("Festplatte zu %.0f %% voll", pct),
-				Message: "Bitte Platz schaffen — volle Platte gefährdet Welt-Speicherung und Backups.",
+				Title:   fmt.Sprintf("⚠️ Festplatte des Servers zu %.0f %% voll", pct),
+				Message: "Info für den Admin: bitte Platz schaffen, sonst sind Welt-Speicherung und Backups in Gefahr.",
 			})
 		case r.diskAlerted && pct < r.DiskMaxPct-r.rearmMargin:
 			r.diskAlerted = false
@@ -325,8 +326,8 @@ func (r *Resource) step(h collector.HostSample) {
 			r.memAlerted = true
 			r.bus.Publish(events.Event{
 				Type: events.TypeResource, Severity: events.SevWarn,
-				Title:   fmt.Sprintf("RAM zu %.0f %% belegt", pct),
-				Message: "Anhaltend voller Speicher — OOM-Killer-Gefahr für den Minecraft-Server.",
+				Title:   fmt.Sprintf("⚠️ Arbeitsspeicher zu %.0f %% belegt", pct),
+				Message: "Info für den Admin: anhaltend voller Speicher kann den Server abstürzen lassen.",
 			})
 		case r.memAlerted && pct < r.MemMaxPct-r.rearmMargin:
 			r.memAlerted = false

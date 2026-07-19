@@ -363,9 +363,9 @@ func (s *Server) handleRestorePlayer(w http.ResponseWriter, r *http.Request) {
 		s.audit(r.Context(), "backup.restore.failed", "uuid="+req.UUID+" err="+err.Error())
 		s.bus.Publish(events.Event{
 			Type: events.TypeRestoreFailed, Severity: events.SevError,
-			Title:   "Spielerdaten-Restore fehlgeschlagen",
-			Message: err.Error(),
-			Fields:  []events.Field{{Name: "UUID", Value: req.UUID}},
+			Title:   "⚠️ Spielerstand-Wiederherstellung fehlgeschlagen",
+			Message: "Info für den Admin — Details unten.",
+			Fields:  []events.Field{{Name: "UUID", Value: req.UUID}, {Name: "Details", Value: err.Error()}},
 		})
 		httpError(w, http.StatusBadGateway, err.Error())
 		return
@@ -373,9 +373,9 @@ func (s *Server) handleRestorePlayer(w http.ResponseWriter, r *http.Request) {
 	s.audit(r.Context(), "backup.restore", "uuid="+req.UUID)
 	s.bus.Publish(events.Event{
 		Type: events.TypeRestoreOK, Severity: events.SevSuccess,
-		Title:   "Spielerdaten wiederhergestellt",
-		Message: msg,
-		Fields:  []events.Field{{Name: "UUID", Value: req.UUID}},
+		Title:   "♻️ Spielerstand wiederhergestellt",
+		Message: "Ein Spielerstand wurde aus dem Backup zurückgeholt.",
+		Fields:  []events.Field{{Name: "UUID", Value: req.UUID}, {Name: "Details", Value: msg}},
 	})
 	writeJSON(w, http.StatusOK, map[string]string{"message": msg})
 }

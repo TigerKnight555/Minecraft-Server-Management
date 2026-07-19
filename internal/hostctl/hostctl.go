@@ -135,8 +135,8 @@ func (r *Reconciler) Run(ctx context.Context) {
 	if !mcDesiredRunning {
 		r.bus.Publish(events.Event{
 			Type: events.TypeSystemOnline, Severity: events.SevInfo,
-			Title:   "System neu gestartet",
-			Message: "Host ist wieder da. Minecraft bleibt gestoppt (Soll-Zustand).",
+			Title:   "🔄 System neu gestartet",
+			Message: "Der Minecraft-Server bleibt gestoppt (war vorher bewusst ausgeschaltet).",
 		})
 		return
 	}
@@ -146,8 +146,8 @@ func (r *Reconciler) Run(ctx context.Context) {
 		if st := r.mcStatus(); st.Online {
 			r.bus.Publish(events.Event{
 				Type: events.TypeSystemOnline, Severity: events.SevSuccess,
-				Title:   "System neu gestartet — wieder online",
-				Message: "Host-Reboot abgeschlossen, Minecraft-Server antwortet wieder.",
+				Title:   "✅ Server ist wieder online!",
+				Message: "Neustart abgeschlossen — es kann weitergehen.",
 			})
 			return
 		}
@@ -159,7 +159,7 @@ func (r *Reconciler) Run(ctx context.Context) {
 	}
 	r.bus.Publish(events.Event{
 		Type: events.TypeSystemDegraded, Severity: events.SevError,
-		Title:   "System neu gestartet — Minecraft NICHT erreichbar",
-		Message: fmt.Sprintf("Der Host lief nach dem Reboot wieder an, aber der Minecraft-Server antwortete innerhalb von %s nicht. Bitte prüfen!", r.OnlineTimeout),
+		Title:   "❌ Server nach Neustart nicht erreichbar",
+		Message: fmt.Sprintf("Der Rechner läuft wieder, aber Minecraft antwortet seit %s nicht. Der Admin kümmert sich — bitte etwas Geduld.", r.OnlineTimeout),
 	})
 }

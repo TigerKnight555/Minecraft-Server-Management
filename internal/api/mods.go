@@ -109,7 +109,7 @@ func (s *Server) handleModsApply(w http.ResponseWriter, r *http.Request) {
 	s.audit(r.Context(), "mods.apply", fmt.Sprintf("profile=%s count=%d backup=%s", req.Profile, n, label))
 	s.bus.Publish(events.Event{
 		Type: events.TypeModsApplied, Severity: events.SevSuccess,
-		Title: "Mod-Updates eingespielt",
+		Title: "🔧 Server-Mods aktualisiert",
 		Fields: []events.Field{
 			{Name: "Profil", Value: req.Profile},
 			{Name: "Anzahl", Value: fmt.Sprint(n)},
@@ -155,7 +155,7 @@ func (s *Server) handleModsRollback(w http.ResponseWriter, r *http.Request) {
 	s.audit(r.Context(), "mods.rollback", fmt.Sprintf("profile=%s restored=%d", req.Profile, n))
 	s.bus.Publish(events.Event{
 		Type: events.TypeModsRollback, Severity: events.SevWarn,
-		Title: "Mod-Rollback durchgeführt",
+		Title: "↩️ Mod-Update zurückgenommen",
 		Fields: []events.Field{
 			{Name: "Profil", Value: req.Profile},
 			{Name: "Wiederhergestellt", Value: fmt.Sprint(n)},
@@ -202,7 +202,8 @@ func (s *Server) publishClientPack(dirs map[string]string) {
 		s.audit(ctx, "mods.publish.failed", err.Error())
 		s.bus.Publish(events.Event{
 			Type: events.TypeClientPack, Severity: events.SevError,
-			Title: "Client-Paket-Upload fehlgeschlagen", Message: err.Error(),
+			Title: "⚠️ Mod-Paket-Upload fehlgeschlagen", Message: "Info für den Admin — Details unten.",
+			Fields: []events.Field{{Name: "Details", Value: err.Error()}},
 		})
 	}
 	if err := s.dropbox.Upload(ctx, name, pr); err != nil {
@@ -217,7 +218,7 @@ func (s *Server) publishClientPack(dirs map[string]string) {
 	s.audit(ctx, "mods.publish.ok", name)
 	s.bus.Publish(events.Event{
 		Type: events.TypeClientPack, Severity: events.SevSuccess,
-		Title:   "Neues Client-Paket verfügbar!",
+		Title:   "📦 Neues Mod-Paket zum Download!",
 		Message: "Download: " + link + "\nZIP in den bestehenden .minecraft-Ordner entpacken — Karten, Wegpunkte und Configs bleiben erhalten.",
 		Fields: []events.Field{
 			{Name: "Dateien", Value: fmt.Sprint(files)},

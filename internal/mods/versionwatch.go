@@ -122,71 +122,52 @@ func (w *Watcher) Run(ctx context.Context, currentVersion func() string) {
 	}
 }
 
-// allReady means: loader supports the release and every managed mod of every
-// profile has a matching Modrinth version. Zero known mods everywhere means
-// the inventory was never scanned (empty cache) — that is "unknown", not
-// "ready", so no premature all-clear right after startup.
-func allReady(s *WatchStatus) bool {
+// serverReady means: loader supports the release and every managed SERVER
+// mod has a matching Modrinth version — das Update-Kriterium des Nutzers
+// (Client-Nachzügler blockieren die Meldung nicht, werden aber erwähnt).
+// Zero known mods means the inventory was never scanned (empty cache) —
+// that is "unknown", not "ready", so no premature all-clear after startup.
+func serverReady(s *WatchStatus) bool {
 	if s == nil || !s.NewerAvailable || !s.LoaderReady {
 		return false
 	}
-	total := 0
 	for _, p := range s.Profiles {
-		if p.Ready < p.Total {
-			return false
+		if p.Profile == "server" {
+			return p.Total > 0 && p.Ready == p.Total
 		}
-		total += p.Total
 	}
-	return total > 0
+	return false
 }
 
-// notifyTransitions publishes only state CHANGES, so the daily check does not
-// repeat the same news: a release seen for the first time, and the moment a
-// known release becomes fully ready. Mit Announce-Store überleben die Marken
-// den MSM-Neustart; ohne (Tests) gilt der In-Memory-Vergleich.
+// notifyTransitions publishes at most ONE message per release — und zwar
+// erst, wenn alle Server-Mods + der Loader bereit sind (Nutzerwunsch: der
+// Discord-Channel ist für die Spieler; „Version existiert, aber noch nicht
+// nutzbar" sieht der Admin auf der Dashboard-Kachel). Mit Announce-Store
+// überlebt die Marke den MSM-Neustart; ohne (Tests) gilt der
+// In-Memory-Vergleich.
 func (w *Watcher) notifyTransitions(prev, cur *WatchStatus) {
-	if cur == nil || !cur.NewerAvailable {
+	if cur == nil || !serverReady(cur) {
 		return
 	}
-	newRelease := prev == nil || prev.LatestVersion != cur.LatestVersion
+	announce := !serverReady(prev) || (prev != nil && prev.LatestVersion != cur.LatestVersion)
 	if w.annGet != nil {
-		newRelease = w.annGet("version.announced") != cur.LatestVersion
+		announce = w.annGet("version.ready.announced") != cur.LatestVersion
 	}
-	if newRelease {
-		if w.annSet != nil {
-			w.annSet("version.announced", cur.LatestVersion)
-		}
-		ready := "nein"
-		if cur.LoaderReady {
-			ready = "ja"
-		}
-		fields := []events.Field{{Name: "Fabric-Loader bereit", Value: ready}}
-		for _, p := range cur.Profiles {
-			fields = append(fields, events.Field{
-				Name: "Mods " + p.Profile, Value: fmt.Sprintf("%d/%d bereit", p.Ready, p.Total),
-			})
-		}
-		w.bus.Publish(events.Event{
-			Type: events.TypeVersionNew, Severity: events.SevInfo,
-			Title:   "Neue Minecraft-Version: " + cur.LatestVersion,
-			Message: "Aktuell installiert: " + cur.CurrentVersion,
-			Fields:  fields,
-		})
+	if !announce {
+		return
 	}
-	readyNew := allReady(cur) && (newRelease || !allReady(prev))
-	if w.annGet != nil {
-		readyNew = allReady(cur) && w.annGet("version.ready.announced") != cur.LatestVersion
+	if w.annSet != nil {
+		w.annSet("version.ready.announced", cur.LatestVersion)
 	}
-	if readyNew {
-		if w.annSet != nil {
-			w.annSet("version.ready.announced", cur.LatestVersion)
-		}
-		w.bus.Publish(events.Event{
-			Type: events.TypeVersionReady, Severity: events.SevSuccess,
-			Title:   "Minecraft " + cur.LatestVersion + " — alles bereit für den Umstieg",
-			Message: "Fabric-Loader und alle verwalteten Mods beider Profile unterstützen die neue Version.",
-		})
+	msg := "Alle Server-Mods unterstützen die neue Version — das Update kann kommen. Genauer Termin wird angekündigt."
+	if n := len(cur.Stragglers); n > 0 {
+		msg += fmt.Sprintf(" (Hinweis: %d Client-Mod(s) hinken noch hinterher, siehe Mods-Tab.)", n)
 	}
+	w.bus.Publish(events.Event{
+		Type: events.TypeVersionReady, Severity: events.SevSuccess,
+		Title:   "🎉 Minecraft " + cur.LatestVersion + " ist bereit!",
+		Message: msg,
+	})
 }
 
 func (w *Watcher) getJSON(ctx context.Context, url string, out any) error {

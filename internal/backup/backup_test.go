@@ -69,7 +69,7 @@ func TestBackupHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(msg, "Backup ok") || !strings.Contains(msg, "snapshot ab12cd34 saved") {
+	if !strings.Contains(msg, "Backup ok") || !strings.Contains(msg, "Stand ab12cd34") {
 		t.Errorf("msg = %q", msg)
 	}
 }
@@ -106,7 +106,7 @@ func TestBackupTimeout(t *testing.T) {
 func TestResticSummary(t *testing.T) {
 	logs := "irrelevant\nprocessed 100 files, 2 GiB in 0:30\nAdded to the repository: 55 MiB\nsnapshot ab12cd34 saved\n"
 	got := resticSummary(logs)
-	for _, want := range []string{"processed 100 files", "Added to the repo", "snapshot ab12cd34 saved"} {
+	for _, want := range []string{"2 GiB geprüft", "100 Dateien", "55 MiB neu gesichert", "Stand ab12cd34"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("summary %q fehlt %q", got, want)
 		}

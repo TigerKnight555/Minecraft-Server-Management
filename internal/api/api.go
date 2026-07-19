@@ -32,7 +32,7 @@ type Server struct {
 	modmgr            *mods.Manager
 	watcher           *mods.Watcher
 	restore           *backup.Restore
-	mcDataDir         string       // read-only mount of the MC data dir ("" = feature off)
+	mcDataDir         string      // read-only mount of the MC data dir ("" = feature off)
 	maintActive       func() bool // Wartungsfenster gerade aktiv?
 	dropbox           *dropbox.Client
 	mcContainer       string
@@ -59,8 +59,8 @@ type Deps struct {
 	MCDataDir         string      // read-only MC data dir for the player list
 	MaintActive       func() bool // maintenance.Manager.Active
 	Dropbox           *dropbox.Client
-	MCContainer       string // name of the minecraft container (mod apply restart)
-	FallbackMCVersion string // used when query has no version yet
+	MCContainer       string   // name of the minecraft container (mod apply restart)
+	FallbackMCVersion string   // used when query has no version yet
 	Managed           []string // container names allowed for start/stop/restart
 	Bus               *events.Bus
 	Frontend          fs.FS
