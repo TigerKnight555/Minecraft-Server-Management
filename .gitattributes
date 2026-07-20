@@ -1,0 +1,4 @@
+# Shell-Skripte laufen auf dem Linux-Host — IMMER mit LF auschecken,
+# sonst scheitern sie mit "bad interpreter" (CRLF), egal von wo geklont wird.
+*.sh text eol=lf
+Dockerfile text eol=lf
