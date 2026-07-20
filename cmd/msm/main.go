@@ -320,13 +320,10 @@ func main() {
 	updater := selfupdate.New(envOr("MSM_UPDATE_REPO", "TigerKnight555/Minecraft-Server-Management"),
 		os.Getenv("MSM_GITHUB_TOKEN"), version, hostctl.NewSignaler(signalDir))
 	go updater.Run(ctx)
-	// nach einem Selbst-Update einmalig Erfolg melden (Version geändert)
+	// Versionswechsel nur ins Log — Dashboard-Interna gehören nicht in den
+	// Spieler-Channel (Erfolg sieht der Admin an der Versionsanzeige im Tab)
 	if prev := kvGet("msm.version"); prev != "" && prev != version {
-		bus.Publish(events.Event{
-			Type: events.TypeMSMUpdate, Severity: events.SevSuccess,
-			Title:   "✅ Dashboard aktualisiert",
-			Message: "MSM läuft jetzt in Version " + version + " (vorher " + prev + ").",
-		})
+		log.Info("msm aktualisiert", "von", prev, "auf", version)
 	}
 	kvSet("msm.version", version)
 

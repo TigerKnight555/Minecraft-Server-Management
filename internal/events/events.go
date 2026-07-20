@@ -50,9 +50,6 @@ const (
 	TypeNetOK       = "watch.net.ok"       // Entwarnung nach net.degraded
 	TypeResource    = "watch.resource"     // Disk/RAM-Schwellwert gerissen
 
-	// MSM-Selbst-Update (Entscheidung #15)
-	TypeMSMUpdate = "system.msm.update"
-
 	// MC-Versions-Upgrade per Klick (Phase 5-Vorgriff)
 	TypeUpgradeStart  = "system.upgrade.start"
 	TypeUpgradeOK     = "system.upgrade.ok"

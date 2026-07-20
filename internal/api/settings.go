@@ -85,12 +85,10 @@ func (s *Server) handleSelfUpdateApply(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusConflict, err.Error())
 		return
 	}
+	// bewusst KEINE Discord-Meldung: das Dashboard kennen die Spieler nicht,
+	// der Admin sitzt beim Klick ohnehin davor (Audit + Log reichen)
 	s.audit(r.Context(), "system.selfupdate", "tag="+req.Tag)
-	s.bus.Publish(events.Event{
-		Type: events.TypeMSMUpdate, Severity: events.SevInfo,
-		Title:   "🔄 Dashboard-Update läuft",
-		Message: "MSM wird auf " + req.Tag + " aktualisiert und ist gleich kurz nicht erreichbar. Der Minecraft-Server läuft normal weiter.",
-	})
+	s.log.Info("selbst-update angestoßen", "tag", req.Tag)
 	writeJSON(w, http.StatusAccepted, map[string]string{
 		"message": "Update auf " + req.Tag + " angestoßen — das Dashboard ist während des Neubaus (~1–2 min) kurz weg und meldet sich mit der neuen Version zurück.",
 	})
