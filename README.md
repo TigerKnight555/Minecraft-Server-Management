@@ -1,50 +1,107 @@
 # MSM — Minecraft Server Management
 
-Leichtgewichtiges, Docker-basiertes Server-Management-Dashboard für den
-Homeserver.
+Ein leichtgewichtiges Web-Dashboard, das einen selbst gehosteten
+Minecraft-Server (Docker, [itzg/minecraft-server](https://github.com/itzg/docker-minecraft-server))
+komplett verwaltet: Monitoring, Backups, Mod-Updates, Versions-Sprünge,
+Discord-Meldungen — alles per Klick statt per SSH.
 
-**Phase 1 (Sichtbarkeit):** Livedaten aller Container, Host-Metriken,
-Minecraft-Status, WAN-Monitoring, Log-Streaming, RCON-Konsole.
-**Phase 2 (Kontrolle):** Login (Argon2 + Sessions), Container
-Start/Stopp/Restart (Allowlist), Routinen-Scheduler (Cron: RCON-Befehle,
-Neustarts mit Spieler-Vorwarnung), Audit-Log jeder Aktion.
-**Phase 3 (Mod-Verwaltung):** Modrinth-Update-Checks (SHA-512), Staging mit
-Hash-Verifikation, Ein-Klick-Rollback, MC-Versions-Watch.
-**Phase 4 (laufend):** Event-Bus mit Discord-Benachrichtigungen.
+> Dieses Projekt wurde gemeinsam mit **Claude** (Anthropic) entwickelt —
+> Konzept vom Menschen, Code größtenteils vom Modell, getestet im echten
+> Betrieb auf einem Homeserver.
 
-Go-Backend (ein Binary, eingebettetes Svelte-Frontend, SQLite) + Socket-Proxy,
-Deployment per Docker Compose. Ressourcenbudget: < 150 MB RAM gesamt.
+☕ Wenn dir MSM weiterhilft: [buymeacoffee.com/knvt](https://buymeacoffee.com/knvt)
 
-## Architektur
+## Warum gibt es das?
+
+Bei mir lief ein Minecraft-Server für Freunde auf dem Homeserver — und die
+Verwaltung war über die Zeit ein Zoo aus Bash-Skripten geworden: ein
+Cron-Job rebootet nachts den Host, ein Skript rsynct Backups aufs NAS, ein
+drittes fummelt Mod-Updates von Modrinth zusammen, und wenn jemand im
+Discord fragt „ist der Server down?", heißt es erstmal SSH aufmachen.
+
+Das Grundproblem: **alles funktionierte irgendwie, aber nichts war
+sichtbar, nichts war sicher, und alles brauchte mich.** Das Backup-Skript
+löschte z. B. das alte Voll-Backup, *bevor* das neue fertig war — ein
+Stromausfall zur falschen Zeit und die Sicherung wäre weg gewesen.
+Mod-Updates hießen: zehn Modrinth-Seiten durchklicken, JARs runterladen,
+per scp rüberschieben, hoffen dass nichts crasht.
+
+Fertige Panels habe ich mir angeschaut (Pterodactyl, Crafty & Co.) — alle
+zu schwer für den kleinen Server, keins passte zum bestehenden
+Docker-Setup, und die Minecraft-Spezialitäten (Modrinth-Abgleich,
+Welt-konsistente Backups, Client-Mod-Verteilung an die Spieler) kann
+sowieso keins. Also selbst gebaut: ein einzelnes Go-Binary mit eingebautem
+Web-Frontend, unter 150 MB RAM für den ganzen Stack.
+
+Heute läuft die komplette Nacht-Automatik ohne mich: 03:30 Reboot, 04:00
+Backup mit Mod-Updates, Meldung in Discord nur, wenn's jemanden betrifft
+oder etwas schiefgeht. Und wenn eine neue Minecraft-Version rauskommt,
+sagt mir das Dashboard, sobald alle Mods bereit sind — dann ist der
+Versions-Sprung ein Klick.
+
+## Was kann es?
+
+**Sehen:**
+- Live-Dashboard: Server-Status, Spieler, TPS, RAM/CPU, Internet-Qualität,
+  NAS, Container — plus Verlaufs-Charts und Live-Logs
+- RCON-Konsole im Browser
+- Audit-Log über jede Aktion
+
+**Automatisieren:**
+- Routinen per Cron: Backups, Host-Reboots, angekündigte Neustarts mit
+  Spieler-Countdown, beliebige RCON-Befehle — mit Bedingungen wie
+  „überspringen, wenn Spieler online" oder „auf leeren Server warten"
+- **Backups mit restic** aufs NAS: laufen bei gestopptem Server (garantiert
+  konsistent), dedupliziert (Nächte dauern Sekunden), verschlüsselt, mit
+  Integritäts-Check vor jedem Aufräumen — und Einzeldatei-Restore für
+  Spielerstände per Dropdown
+- Nächtlicher Host-Reboot mit automatischem Wiederanlauf und
+  Soll-Zustand-Abgleich
+- Wartungsfenster: ankündigen (Discord: 1 h + 5 min vorher), automatisch
+  stoppen/starten, Alarme solange stumm
+
+**Mods & Updates:**
+- Mod-Verwaltung über Modrinth: Update-Check per Datei-Hash, Staging mit
+  Verifikation, Ein-Klick-Rollback — getrennte Profile für Server und
+  Client-Paket
+- **MC-Versions-Update per Klick**: Button erscheint, sobald Loader + alle
+  Server-Mods die neue Version unterstützen; Ablauf komplett automatisch
+  inkl. Pflicht-Backup als Rollback-Punkt
+- Client-Mod-Paket als ZIP zu Dropbox, Download-Link automatisch in den
+  Discord-Channel
+- **MSM aktualisiert sich selbst** aus dem Dashboard, sobald hier ein neuer
+  Release-Tag erscheint
+
+**Bescheid wissen:**
+- Discord-Meldungen, bewusst spielertauglich formuliert („✅ Server ist
+  wieder online!") — Technik-Details stecken im Detail-Feld
+- Stille-Regel: Erfolgs-Meldungen nur, wenn Spieler betroffen waren; Fehler
+  und Alarme immer
+- Wächter für Crashes (mit Report-Ausschnitt), unerwartete Ausfälle,
+  Internet-Störungen (entprellt) und volle Platte/RAM
+
+**Sicherheit als Prinzip:** MSM selbst hat keine Host-Rechte. Docker läuft
+über einen Socket-Proxy mit minimaler Allowlist, und die drei privilegierten
+Aktionen (Host-Reboot, MC-Versionswechsel, Selbst-Update) erledigen winzige
+systemd-Watcher mit je genau einer Fähigkeit. Dashboard ist LAN-only mit
+Login, ersetzte Dateien werden nie gelöscht.
+
+## Architektur (Kurzfassung)
 
 ```
-Browser ──SSE/REST──▶ msm (Go, :8080, LAN-only)
-                       │
-                       ├──▶ socket-proxy ──▶ /var/run/docker.sock (ro)
-                       ├──▶ mc-fabric:25565 (Query, UDP)
-                       ├──▶ mc-fabric:25575 (RCON, TCP)
-                       ├──▶ /host/proc (ro)  Host-Metriken
-                       └──▶ 1.1.1.1 / 9.9.9.9 / Gateway (ICMP)
+Browser ──REST/SSE──▶ msm (Go + Svelte, ein Binary, :8080 LAN-only)
+                       ├──▶ socket-proxy ──▶ docker.sock (nur lesen + start/stop/restart)
+                       ├──▶ Minecraft (Query/RCON)  ├──▶ /proc (Host-Metriken)
+                       ├──▶ Modrinth / Mojang / Discord / Dropbox / GitHub
+                       └──▶ Signaldateien ──▶ systemd-Watcher (Reboot/Upgrade/Selbst-Update)
+                       + vordefinierte restic-Container für Backup & Restore
 ```
 
-## Voraussetzungen auf dem Minecraft-Server (itzg/minecraft-server)
-
-In der Container-Umgebung von `mc-fabric` müssen gesetzt sein:
-
-| Env-Var | Wert | Zweck |
-|---|---|---|
-| `ENABLE_QUERY` | `true` | Spielerzahl/-liste, Version, MOTD |
-| `ENABLE_RCON` | `true` (Default beim itzg-Image) | Konsole, TPS |
-| `RCON_PASSWORD` | starkes Passwort | gleiches Passwort in MSM `.env` |
-
-Für TPS/MSPT muss der Mod [spark](https://spark.lucko.me/) installiert sein
-(`spark tps` via RCON). Query- und RCON-Ports **nicht** nach außen freigeben —
-nur im Docker-Netz bzw. LAN erreichbar machen.
+Go-Backend, eingebettetes Svelte-Frontend, SQLite — Deployment per Docker
+Compose. Konfiguration übers Dashboard (Tab „Einstellungen"), Setup-Werte
+über ein interaktives Installationsskript.
 
 ## Installation
-
-Voraussetzungen: Linux-Host mit Docker + Docker Compose v2, User in der
-`docker`-Gruppe. Dann:
 
 ```sh
 git clone https://github.com/TigerKnight555/Minecraft-Server-Management.git ~/Minecraft-Server-Management
@@ -52,236 +109,25 @@ cd ~/Minecraft-Server-Management
 bash install.sh
 ```
 
-Das Skript fragt alle nötigen Werte **interaktiv** ab (mit Erklärung, woher
-jeder Wert kommt), erkennt so viel wie möglich automatisch, generiert
-Passwörter, baut den Stack und startet ihn. Es ist idempotent — bei
-Änderungen einfach erneut ausführen, vorhandene Werte sind die Vorgabe.
+Das Skript fragt alles Nötige ab und erklärt zu jedem Wert, woher er kommt.
+Ausführliche Anleitung, Backups-Einrichtung, Sicherheit, Fehlersuche:
+**[INSTALL.md](INSTALL.md)**
 
-**Alles Weitere passiert im Dashboard** (`http://<LAN-IP>:8080`):
-Discord-Webhook und Dropbox unter „Einstellungen" (Anleitungen stehen
-direkt im Tab), Backup-/Reboot-Routinen unter „Routinen", MSM-Updates per
-Klick unter „Einstellungen → MSM-Version".
+## Mitmachen / Entwicklung
 
-### Woher kommt welcher Wert?
+Gitflow: `feature/*`-Branches von `develop`, Releases über `release/*` nach
+`main` mit semver-Tag (`vX.Y.Z`), Notfall-Fixes über `hotfix/*`.
+Entwicklungs-Setup (inkl. Mock-Modus ohne Docker/Minecraft) steht in
+[INSTALL.md](INSTALL.md#entwicklung).
 
-| Wert | Abgefragt von | Woher nehmen |
-|---|---|---|
-| Zeitzone (`TZ`) | install.sh | automatisch erkannt (`/etc/timezone`) |
-| MC-Datenpfad (`MC_DATA_PATH`) | install.sh | Verzeichnis mit `world/` + `mods/`; bei Neuinstallation Wunschpfad |
-| MC-Version (`MC_VERSION`) | install.sh | automatisch aus `logs/latest.log` erraten; sonst im Spiel-Menü unten links. **Exakt angeben — höhere Version upgradet die Welt unumkehrbar!** |
-| Client-Paket-Pfad | install.sh | Wunschpfad; Ordnerstruktur wird angelegt |
-| LAN-IP (`MSM_BIND_ADDR`) | install.sh | automatisch erkannt (`hostname -I`) |
-| RCON-Passwort | install.sh | automatisch generiert (nur intern) |
-| Dashboard-Passwort | install.sh | frei wählen — der Web-Login |
-| NAS-Pfad (`MSM_NAS_PATH`) | install.sh, optional | fstab-Automount-Mountpoint, siehe Abschnitt „Backups"; leer = Backups später |
-| restic-Passwort | install.sh (generiert) | **in den Passwort-Manager!** Ohne = Backups unlesbar |
-| `DOCKER_GID`, `MC_GID`, Signal-Pfad | install.sh | vollautomatisch |
-| Discord-Webhook | Dashboard → Einstellungen | Discord-Channel → ⚙️ → Integrationen → Webhooks |
-| Dropbox App-Key/Secret/Refresh-Token | Dashboard → Einstellungen | Anleitung aufklappbar direkt im Tab |
-| GitHub-Token (`MSM_GITHUB_TOKEN`) | `.env`, nur private Repos | github.com → Settings → Developer settings → Tokens |
+## Lizenz
 
-Manuelle Installation ohne Skript: `.env.example` nach `.env` kopieren und
-ausfüllen (jede Variable ist dort kommentiert), dann die Abschnitte unten.
+**MIT mit Commons Clause** — siehe [LICENSE](LICENSE). Auf Deutsch:
 
-Dashboard: `http://<host-lan-ip>:8080` (Bind-Adresse über `MSM_BIND_ADDR`).
+- ✅ frei nutzen, verändern, weitergeben — privat **und** kommerziell
+  (z. B. für den Server deiner Firma oder Community)
+- ❌ nicht erlaubt ist, MSM selbst zu **verkaufen** — also die Software oder
+  einen Dienst, dessen Wert im Wesentlichen aus MSM besteht, gegen Geld
+  anzubieten (verkauftes Hosting-Panel, bezahltes „MSM as a Service" o. ä.)
 
-**Sicherheit:**
-- Ohne `MSM_ADMIN_PASSWORD_HASH` läuft das Dashboard **ohne Login** — nur für
-  Entwicklung akzeptabel, im Log erscheint eine Warnung.
-- Nur an die LAN-Adresse binden, keine Port-Weiterleitung im Router.
-- Steuerbar sind ausschließlich Container aus `MSM_MANAGED_CONTAINERS`.
-- Für TLS den auskommentierten Caddy-Service in der Compose-Datei aktivieren
-  (interne CA, `https://<host>:8443`).
-- Jede Aktion (RCON, Start/Stopp, Routinen-Änderung) landet im Audit-Log.
-
-### Routinen
-
-Tab „Routinen" im Dashboard. Typen: `rcon` (beliebiger Konsolenbefehl),
-`restart` (Container-Neustart), `announce-restart` (Countdown-Warnungen an
-die Spieler per `say`, dann Neustart). Cron-Syntax, 5 Felder — Beispiel
-täglich 04:30: `30 4 * * *`. Jede Ausführung wird protokolliert, Fehler sind
-im UI sichtbar — Routinen scheitern nie still.
-
-Der angekündigte Neustart ist eine Schrittkette (Bedingungen → Warnungen →
-`save-all` → Stop → Start → Watchdog) mit Optionen:
-- **Überspringen, wenn Spieler online** — Lauf wird sichtbar als
-  „übersprungen" protokolliert
-- **Auf leeren Server warten (max. bis HH:MM)** — bei Fristablauf wird
-  trotzdem neugestartet
-- **Gestagte Mod-Updates einspielen** — Stop → Tausch → Start; schlägt der
-  Tausch fehl, startet der Server trotzdem wieder (alter Stand)
-- **Watchdog (Min.)** — Routine gilt erst als erfolgreich, wenn der Server
-  wieder online meldet; Timeout ergibt einen sichtbaren Fehler
-
-### Backups (restic → NAS)
-
-Routine vom Typ „Backup (restic)", Payload = Minecraft-Container. Das
-Backup läuft bei **gestopptem Server** — so finden während des Snapshots
-garantiert keine Dateiänderungen statt, und der integrierte Start ersetzt
-zugleich den nächtlichen Neustart (keine separate Restart-Routine nötig).
-
-Kette bei laufendem Server: Bedingungen (Spieler online?) → Warnungen →
-`save-all` → Stop → Snapshot (restic: backup → check → forget, `forget`
-nur nach erfolgreichem check) → optional gestagte Mod-Updates → Start →
-Watchdog. Der Server wird **immer** wieder gestartet, auch wenn Backup
-oder Update-Tausch fehlschlagen. Ist der Server beim Start der Routine
-bereits (bewusst) gestoppt, läuft nur der Snapshot — MSM startet nichts,
-was jemand absichtlich ausgeschaltet hat.
-
-Ergebnis inkl. restic-Zusammenfassung landet in Historie + Discord
-(`backup.ok`/`backup.failed`); bleibt ein erfolgreiches Backup > 26 h aus,
-warnt `backup.stale`.
-
-Einmalige Einrichtung:
-
-```sh
-# 1. NAS-Automount auf dem Host (fstab, mountet nur bei Zugriff):
-#    //NAS-IP/share /mnt/mc-backups cifs credentials=/etc/nas_credentials,uid=1000,gid=1000,vers=3.1.1,noauto,x-systemd.automount,x-systemd.idle-timeout=300,_netdev 0 0
-sudo systemctl daemon-reload && sudo systemctl restart remote-fs.target
-
-# 2. RESTIC_PASSWORD und MSM_NAS_PATH in .env setzen (Passwort zusätzlich
-#    im Passwort-Manager sichern — ohne Passwort sind Backups unlesbar!)
-
-# 3. Job-Verzeichnis fürs Einzeldatei-Restore anlegen (MSM schreibt hier
-#    die Restore-Skripte hinein; Gruppe = MC_GID aus .env):
-mkdir -m 775 -p ~/minecraft/fabric_server/.msm-restore
-
-# 4. Backup- und Restore-Container anlegen (NICHT starten — das macht MSM):
-docker compose --profile backup up -d --no-start mc-backup mc-restore
-```
-
-**Einzeldatei-Restore (Spielerdaten):** Tab „Routinen" →
-„Spielerdaten wiederherstellen": Spieler-UUID eingeben →
-`playerdata/<UUID>.dat` wird aus dem letzten Snapshot wiederhergestellt.
-Der Spieler muss offline sein; die aktuelle Datei wird vorher als
-`.pre-restore-<Zeitstempel>` gesichert (nie gelöscht). Ersetzt
-`restore_player_inventory.sh`.
-
-Das restic-Repo legt der erste Lauf automatisch an. Das alte
-Nachtbackup-Skript läuft parallel weiter, bis der erste Restore-Test aus
-dem restic-Repo gelungen ist (Migrationsregel: nie weniger Sicherung als
-vorher).
-
-### Nächtlicher Host-Reboot (Phase 4.5)
-
-Routine vom Typ „Host-Reboot", Payload = Minecraft-Container. MSM selbst hat
-keine Host-Rechte: Warnungen → `save-all` → Container-Stopp → **Signaldatei**
-nach `/host-signal` (Host: `~/minecraft/msm-host/`). Ein winziger
-systemd-Path-Watcher auf dem Host reagiert darauf — seine einzige Fähigkeit
-ist `systemctl reboot`; veraltete Signaldateien (> 10 min) werden ignoriert
-(Schutz vor Reboot-Schleifen).
-
-Nach dem Boot: Docker startet MSM und mc-fabric (`restart: always`), der
-**Soll-Zustand-Abgleich** korrigiert Abweichungen (bewusst gestoppte
-Container bleiben gestoppt — der Soll-Zustand wird bei jedem Start/Stopp im
-Dashboard persistiert) und meldet „System neu gestartet — wieder online"
-nach Discord, sobald Minecraft antwortet. Kommt die Meldung nicht
-(`system.degraded` bzw. gar nichts), ist das der Alarm.
-
-Watcher einmalig installieren:
-
-```sh
-cd ~/Minecraft-Server-Management/deploy/host-watcher
-sudo bash install.sh
-```
-
-### Client-Paket zu Dropbox (Phase 4.8)
-
-Mods-Tab, Profil „client" → „Client-Paket veröffentlichen": das komplette
-Client-Profil (mods/, shaderpacks/, resourcepacks/) wird als ZIP gestreamt
-zu Dropbox hochgeladen (Upload-Session, beliebige Größe, kein Temp-File)
-und der Shared Link als Discord-Embed gepostet. Vorher einmal die
-Mod-Lizenzen prüfen, wenn der Link öffentlich geteilt wird!
-
-Einmalige Einrichtung (alle Werte in `.env`, GEHEIM):
-
-```sh
-# 1. Scoped App: https://www.dropbox.com/developers/apps  → Create App
-#    Scopes: files.content.write, files.content.read, sharing.write
-# 2. Autorisierungscode holen (Browser, KEY ersetzen):
-#    https://www.dropbox.com/oauth2/authorize?client_id=KEY&response_type=code&token_access_type=offline
-# 3. Refresh-Token tauschen (CODE/KEY/SECRET ersetzen):
-curl https://api.dropbox.com/oauth2/token -d code=CODE -d grant_type=authorization_code -u KEY:SECRET
-# -> "refresh_token" aus der Antwort in MSM_DROPBOX_REFRESH_TOKEN
-```
-
-### Discord-Benachrichtigungen
-
-Ereignisse (Routine ok/fehlgeschlagen, Mod-Updates eingespielt, Rollback,
-neue MC-Version/Umstiegsbereitschaft) laufen über einen internen Event-Bus
-und werden als Discord-Embeds zugestellt. Einrichtung: im Discord-Channel
-unter Einstellungen → Integrationen → Webhooks eine URL erzeugen und als
-`MSM_DISCORD_WEBHOOK_URL` in die `.env` eintragen (URL geheim halten!).
-Mehrere Webhooks mit Event-Filtern: `MSM_DISCORD_WEBHOOKS` als JSON-Liste,
-Details in [.env.example](.env.example). Zustellfehler werden geloggt und
-mit Backoff bis zu 3× versucht; ohne konfigurierten Webhook ist der
-Notifier komplett inaktiv.
-
-### mc-fabric ist Teil des Stacks
-
-Der Minecraft-Server ist als Service `mc-fabric` in der Compose-Datei
-definiert (Version über `MC_VERSION` in `.env` gepinnt, Daten-Pfad über
-`MC_DATA_PATH`). Damit entfällt jedes manuelle `docker network connect`.
-
-**Wichtig:** `docker compose down` stoppt auch den Minecraft-Server!
-Für MSM-Updates gezielt `docker compose up -d --build msm` verwenden.
-
-Migration von einem bestehenden `docker run`-Container: alten Container
-stoppen und entfernen (`docker stop mc-fabric && docker rm mc-fabric`),
-dann `docker compose up -d` — die Welt liegt im Bind-Mount und bleibt
-unangetastet. Ein eventuell vorhandenes Boot-/Autostart-Skript danach
-deaktivieren (`restart: unless-stopped` übernimmt).
-
-### ICMP-Hinweis
-
-Das WAN-Monitoring pingt per ICMP über unprivilegierte Ping-Sockets — die
-Compose-Datei setzt dafür das namespaced Sysctl `net.ipv4.ping_group_range`
-im Container. Keine Capability nötig (`CAP_NET_RAW` kollidiert auf manchen
-Hosts mit AppArmor).
-
-### Socket-Proxy
-
-`wollomatic/socket-proxy` lässt nur das Nötigste durch: lesend
-Container-Liste/Stats/Logs, schreibend ausschließlich
-`start|stop|restart`. `DOCKER_GID` in `.env` muss der docker-Gruppe des
-Hosts entsprechen: `getent group docker | cut -d: -f3`.
-
-## Entwicklung
-
-```sh
-# Frontend bauen (wird per go:embed ins Binary eingebettet)
-cd web && npm install && npm run build && cd ..
-
-# Backend bauen und testen
-go build ./...
-go test ./...
-
-# Lokal ohne Docker/Minecraft starten (Fake-Daten):
-go run ./cmd/msm -mock -addr 127.0.0.1:8080
-```
-
-Frontend-Entwicklung mit Hot-Reload: `cd web && npm run dev` (proxied `/api`
-auf `localhost:8080`, dort das Backend im Mock-Modus laufen lassen).
-
-## API
-
-| Endpoint | Beschreibung |
-|---|---|
-| `GET /api/snapshot` | Momentaufnahme: Container, Stats, Host, MC, WAN |
-| `GET /api/containers` | Container-Liste |
-| `GET /api/history?series=host.cpu&hours=24` | Zeitreihe (roh ≤ 48 h, Minutenmittel ≤ 30 d) |
-| `GET /api/stream/stats` | SSE: Events `snapshot`, `container`, `host`, `mc`, `wan` |
-| `GET /api/stream/logs?container=mc-fabric&tail=200` | SSE-Log-Stream |
-| `POST /api/rcon` | `{"command":"list"}` → `{"response":"..."}` |
-| `GET /healthz` | Health-Check |
-
-## Konfiguration
-
-Alle Optionen als Env-Vars, siehe [.env.example](.env.example) und den
-Kopfkommentar in [cmd/msm/main.go](cmd/msm/main.go).
-
-## Roadmap
-
-Konzept und Fahrplan (Phasen 1–6) liegen in der privaten Knowledgebase.
-Phase 2: Start/Stopp/Restart, Scheduler, Login. Phase 3: Mod-Updates via
-Modrinth. Phase 4: Backups (restic), Discord-Benachrichtigungen.
+Keine Gewährleistung — Betrieb auf eigene Verantwortung. Backups testen!
