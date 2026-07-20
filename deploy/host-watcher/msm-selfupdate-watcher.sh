@@ -2,8 +2,8 @@
 # MSM Host-Watcher: aktualisiert MSM selbst auf einen Release-Tag.
 # Fähigkeiten: git fetch/checkout im Repo + docker compose up --build msm.
 # Schlägt der Build fehl, läuft der alte Container unverändert weiter.
-SIGNAL_FILE="${MSM_SIGNAL_FILE:-/home/knvt/minecraft/msm-host/selfupdate.request}"
-REPO_DIR="${MSM_REPO_DIR:-/home/knvt/Minecraft-Server-Management}"
+SIGNAL_FILE="${MSM_SIGNAL_FILE:?nicht gesetzt — kommt aus dem systemd-Unit (deploy/host-watcher/install.sh)}"
+REPO_DIR="${MSM_REPO_DIR:?nicht gesetzt — kommt aus dem systemd-Unit (deploy/host-watcher/install.sh)}"
 
 [ -f "$SIGNAL_FILE" ] || exit 0
 
