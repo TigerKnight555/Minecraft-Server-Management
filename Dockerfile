@@ -8,12 +8,18 @@ RUN npm run build
 
 # --- Backend build ---
 FROM golang:1.26-alpine AS backend
+# git für den Versionsstempel (git describe braucht .git im Build-Kontext)
+RUN apk add --no-cache git
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=frontend /src/web/dist ./web/dist
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /msm ./cmd/msm
+# Version ins Binary: Tag (v1.2.3), sonst Kurz-Hash, sonst "dev" —
+# Grundlage fürs Selbst-Update (Vergleich mit dem neuesten GitHub-Tag)
+RUN VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev) && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath \
+    -ldflags="-s -w -X main.version=${VERSION}" -o /msm ./cmd/msm
 # leeres /data-Skelett, damit das Named Volume die Ownership des
 # nonroot-Users (65532) erbt — sonst gehört es root und SQLite kann
 # nicht schreiben ("unable to open database file")

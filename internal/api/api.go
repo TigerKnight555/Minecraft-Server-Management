@@ -18,6 +18,7 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/selfupdate"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/settings"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/upgrade"
 )
@@ -39,6 +40,7 @@ type Server struct {
 	dropbox           *dropbox.Client
 	upgrader          *upgrade.Orchestrator
 	settings          *settings.Store
+	selfupdate        *selfupdate.Checker
 	mcContainer       string
 	fallbackMCVersion string
 	managed           map[string]bool // allowlist for container actions
@@ -65,6 +67,7 @@ type Deps struct {
 	Dropbox           *dropbox.Client
 	Upgrader          *upgrade.Orchestrator
 	Settings          *settings.Store
+	SelfUpdate        *selfupdate.Checker
 	MCContainer       string   // name of the minecraft container (mod apply restart)
 	FallbackMCVersion string   // used when query has no version yet
 	Managed           []string // container names allowed for start/stop/restart
@@ -97,6 +100,7 @@ func New(d Deps) *Server {
 		dropbox:           d.Dropbox,
 		upgrader:          d.Upgrader,
 		settings:          d.Settings,
+		selfupdate:        d.SelfUpdate,
 		mcContainer:       d.MCContainer,
 		fallbackMCVersion: d.FallbackMCVersion,
 		managed:           managed,
@@ -159,6 +163,11 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 		mux.HandleFunc("PUT /api/settings", s.handleSaveSettings)
 		mux.HandleFunc("POST /api/settings/discord/test", s.handleTestDiscord)
+	}
+	// MSM-Selbst-Update
+	if s.selfupdate != nil {
+		mux.HandleFunc("GET /api/system/update", s.handleSelfUpdateStatus)
+		mux.HandleFunc("POST /api/system/update", s.handleSelfUpdateApply)
 	}
 	// Phase 4.6
 	if s.admin != nil {

@@ -64,12 +64,16 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/netcheck"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/notify"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/selfupdate"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/settings"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/storage"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/upgrade"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/watchers"
 	"github.com/TigerKnight555/Minecraft-Server-Management/web"
 )
+
+// version wird beim Docker-Build via ldflags gesetzt (git describe --tags).
+var version = "dev"
 
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
@@ -311,6 +315,21 @@ func main() {
 		return os.Getenv("MC_VERSION")
 	})
 
+	// MSM-Selbst-Update (Entscheidung #15): Checker fragt GitHub nach dem
+	// neuesten Release-Tag; der Klick geht als Signaldatei an den Host-Helfer
+	updater := selfupdate.New(envOr("MSM_UPDATE_REPO", "TigerKnight555/Minecraft-Server-Management"),
+		os.Getenv("MSM_GITHUB_TOKEN"), version, hostctl.NewSignaler(signalDir))
+	go updater.Run(ctx)
+	// nach einem Selbst-Update einmalig Erfolg melden (Version geändert)
+	if prev := kvGet("msm.version"); prev != "" && prev != version {
+		bus.Publish(events.Event{
+			Type: events.TypeMSMUpdate, Severity: events.SevSuccess,
+			Title:   "✅ Dashboard aktualisiert",
+			Message: "MSM läuft jetzt in Version " + version + " (vorher " + prev + ").",
+		})
+	}
+	kvSet("msm.version", version)
+
 	// Ein-Klick-MC-Upgrade: MSM orchestriert, der Host-Helfer erledigt den
 	// privilegierten Schritt (MC_VERSION setzen + Container neu erstellen)
 	var upgrader *upgrade.Orchestrator
@@ -376,6 +395,7 @@ func main() {
 			Dropbox:           dbx,
 			Upgrader:          upgrader,
 			Settings:          cfg,
+			SelfUpdate:        updater,
 			MCContainer:       envOr("MSM_MC_CONTAINER", "mc-fabric"),
 			FallbackMCVersion: os.Getenv("MC_VERSION"),
 			Managed:           managed,
@@ -392,7 +412,7 @@ func main() {
 		srv.Shutdown(shutdownCtx)
 	}()
 
-	log.Info("msm listening", "addr", *addr, "mock", *mockMode, "login", authmgr.Enabled())
+	log.Info("msm listening", "addr", *addr, "version", version, "mock", *mockMode, "login", authmgr.Enabled())
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Error("http server failed", "err", err)
 		os.Exit(1)

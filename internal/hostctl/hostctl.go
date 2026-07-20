@@ -63,6 +63,26 @@ func (s *Signaler) RequestUpgrade(version string) error {
 	return nil
 }
 
+// selfUpdateTagRe: derselbe strenge Schnitt wie beim Host-Helfer — der Wert
+// landet via Signaldatei in git-Kommandos.
+var selfUpdateTagRe = regexp.MustCompile(`^v?[0-9A-Za-z][0-9A-Za-z._-]{0,63}$`)
+
+// RequestSelfUpdate signals the host helper to check out the given release
+// tag and rebuild the msm container (git checkout + compose up --build msm).
+func (s *Signaler) RequestSelfUpdate(tag string) error {
+	if s.dir == "" {
+		return fmt.Errorf("kein Signal-Verzeichnis konfiguriert (MSM_HOST_SIGNAL_DIR)")
+	}
+	if !selfUpdateTagRe.MatchString(tag) {
+		return fmt.Errorf("ungültiger Tag %q", tag)
+	}
+	path := filepath.Join(s.dir, "selfupdate.request")
+	if err := os.WriteFile(path, []byte(tag+"\n"), 0o664); err != nil {
+		return fmt.Errorf("signaldatei schreiben (%s): %w — Host-Watcher installiert?", path, err)
+	}
+	return nil
+}
+
 // DesiredStore is the persistence subset the reconciler needs
 // (storage.SQLite and mock.Store satisfy it).
 type DesiredStore interface {

@@ -168,3 +168,8 @@ export const versionUpgradeStatus = () => apiFetch('/api/version-upgrade/status'
 export const getSettings = () => apiFetch('/api/settings')
 export const saveSettings = (s) => apiFetch('/api/settings', { method: 'PUT', body: JSON.stringify(s) })
 export const testDiscord = () => apiFetch('/api/settings/discord/test', { method: 'POST' })
+
+// --- MSM-Selbst-Update ---
+export const selfUpdateStatus = (check) => apiFetch(`/api/system/update${check ? '?check=1' : ''}`)
+export const selfUpdateApply = (tag) =>
+  apiFetch('/api/system/update', { method: 'POST', body: JSON.stringify({ tag }) })

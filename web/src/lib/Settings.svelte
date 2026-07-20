@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte'
-  import { getSettings, saveSettings, testDiscord } from './stream.js'
+  import { getSettings, saveSettings, testDiscord, selfUpdateStatus, selfUpdateApply } from './stream.js'
 
   let view = $state(null)
   let error = $state('')
@@ -55,6 +55,35 @@
     if (!m?.set) return 'nicht gesetzt'
     return `Quelle: ${m.source === 'env' ? '.env' : 'Dashboard'}`
   }
+
+  // --- MSM-Selbst-Update ---
+  let upd = $state(null)
+  let updBusy = $state(false)
+
+  async function loadUpdate(force) {
+    try {
+      upd = await selfUpdateStatus(force)
+    } catch {
+      upd = null
+    }
+  }
+  onMount(() => loadUpdate(false))
+
+  async function applyUpdate() {
+    if (!upd?.latest) return
+    if (!confirm(`MSM auf ${upd.latest} aktualisieren?
+
+Das Dashboard ist während des Neubaus (~1-2 min) kurz nicht erreichbar. Der Minecraft-Server läuft normal weiter.`)) return
+    updBusy = true
+    try {
+      const res = await selfUpdateApply(upd.latest)
+      info = res.message
+    } catch (err) {
+      error = err.message
+    } finally {
+      updBusy = false
+    }
+  }
 </script>
 
 <div class="panel wide">
@@ -92,6 +121,25 @@
     </div>
 
     <button class="btn accent" onclick={save}>Speichern</button>
+
+    <h3>MSM-Version (Selbst-Update)</h3>
+    {#if upd}
+      <p class="dim">
+        Läuft: <strong>{upd.current}</strong>
+        {#if upd.latest} · Neuester Release-Tag: <strong>{upd.latest}</strong>{/if}
+        {#if upd.error} · <span style="color:var(--err)">{upd.error}</span>{/if}
+      </p>
+      <div class="row">
+        {#if upd.newer}
+          <button class="btn accent" onclick={applyUpdate} disabled={updBusy}>Auf {upd.latest} aktualisieren</button>
+        {:else if upd.latest}
+          <span class="dim">✔ aktuell</span>
+        {/if}
+        <button class="btn" onclick={() => loadUpdate(true)}>Jetzt prüfen</button>
+      </div>
+    {:else}
+      <p class="dim">Versions-Check nicht verfügbar.</p>
+    {/if}
 
     <details class="howto">
       <summary>📖 Anleitung: Dropbox-Zugangsdaten beschaffen (einmalig, ~5 Minuten)</summary>

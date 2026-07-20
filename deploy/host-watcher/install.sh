@@ -15,17 +15,20 @@ chmod 775 "$SIGNAL_DIR"
 echo "[2/4] Watcher-Skripte nach /usr/local/bin"
 install -m 755 "$HERE/msm-reboot-watcher.sh" /usr/local/bin/msm-reboot-watcher.sh
 install -m 755 "$HERE/msm-upgrade-watcher.sh" /usr/local/bin/msm-upgrade-watcher.sh
+install -m 755 "$HERE/msm-selfupdate-watcher.sh" /usr/local/bin/msm-selfupdate-watcher.sh
 
 echo "[3/4] systemd-Units"
 install -m 644 "$HERE/msm-reboot.path" /etc/systemd/system/msm-reboot.path
 install -m 644 "$HERE/msm-reboot.service" /etc/systemd/system/msm-reboot.service
 install -m 644 "$HERE/msm-upgrade.path" /etc/systemd/system/msm-upgrade.path
 install -m 644 "$HERE/msm-upgrade.service" /etc/systemd/system/msm-upgrade.service
+install -m 644 "$HERE/msm-selfupdate.path" /etc/systemd/system/msm-selfupdate.path
+install -m 644 "$HERE/msm-selfupdate.service" /etc/systemd/system/msm-selfupdate.service
 systemctl daemon-reload
-systemctl enable --now msm-reboot.path msm-upgrade.path
+systemctl enable --now msm-reboot.path msm-upgrade.path msm-selfupdate.path
 
 echo "[4/4] Status"
-systemctl status msm-reboot.path msm-upgrade.path --no-pager | head -12
+systemctl status msm-reboot.path msm-upgrade.path msm-selfupdate.path --no-pager | head -18
 
 echo
 echo "Fertig. Test (löst NACH 10 s einen echten Reboot aus — nur wenn gewollt!):"

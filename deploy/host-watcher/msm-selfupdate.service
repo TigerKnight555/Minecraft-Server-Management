@@ -1,0 +1,6 @@
+[Unit]
+Description=MSM Host-Watcher: führt angefordertes Selbst-Update aus
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/msm-selfupdate-watcher.sh
