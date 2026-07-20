@@ -25,7 +25,7 @@ services:
       - "25565:25565"
       - "24454:24454/udp" # Simple Voice Chat — nie entfernen!
     volumes:
-      - ${MC_DATA_PATH:-/home/knvt/minecraft/fabric_server}:/data
+      - ${MC_DATA_PATH:?MC_DATA_PATH in .env setzen}:/data
     mem_limit: 13g # Notbremse oberhalb der 12G Heap (Konzept Kap. 8)
     stop_grace_period: 90s # Weltspeicherung nie abwürgen
     networks:
@@ -88,17 +88,17 @@ services:
     volumes:
       - msm-data:/data
       - /proc:/host/proc:ro
-      - ${MC_DATA_PATH:-/home/knvt/minecraft/fabric_server}/mods:/mc/mods
-      - ${MC_CLIENT_PACK_PATH:-/home/knvt/minecraft/client-pack}:/mc/client-pack
+      - ${MC_DATA_PATH:?MC_DATA_PATH in .env setzen}/mods:/mc/mods
+      - ${MC_CLIENT_PACK_PATH:?MC_CLIENT_PACK_PATH in .env setzen}:/mc/client-pack
       # Job-Verzeichnis fürs Einzeldatei-Restore (Skript-Übergabe an
       # mc-restore); muss auf dem Host existieren und g+w sein (README)
-      - ${MC_DATA_PATH:-/home/knvt/minecraft/fabric_server}/.msm-restore:/job
+      - ${MC_DATA_PATH:?MC_DATA_PATH in .env setzen}/.msm-restore:/job
       # MC-Daten read-only: Spielerliste (playerdata + usercache.json)
       # fürs Restore-Dropdown
-      - ${MC_DATA_PATH:-/home/knvt/minecraft/fabric_server}:/mc/data:ro
+      - ${MC_DATA_PATH:?MC_DATA_PATH in .env setzen}:/mc/data:ro
       # Host-Reboot-Signaldatei (Phase 4.5): der systemd-Watcher auf dem
       # Host reagiert darauf (deploy/host-watcher/install.sh)
-      - ${MSM_HOST_SIGNAL_PATH:-/home/knvt/minecraft/msm-host}:/host-signal
+      - ${MSM_HOST_SIGNAL_PATH:?MSM_HOST_SIGNAL_PATH in .env setzen}:/host-signal
     ports:
       # LAN-only: an die LAN-Adresse des Hosts binden, nie 0.0.0.0 ohne Firewall
       - "${MSM_BIND_ADDR:-127.0.0.1}:8080:8080"
@@ -142,7 +142,7 @@ services:
       RESTIC_PASSWORD: ${RESTIC_PASSWORD:-}
       RESTIC_CACHE_DIR: /cache
     volumes:
-      - ${MC_DATA_PATH:-/home/knvt/minecraft/fabric_server}:/data:ro
+      - ${MC_DATA_PATH:?MC_DATA_PATH in .env setzen}:/data:ro
       - restic-cache:/cache
       # NAS-Automount: rslave, damit ein Host-Mount nach Container-Erstellung
       # im Container ankommt (systemd-Automount mountet erst bei Zugriff)
@@ -169,8 +169,8 @@ services:
       RESTIC_PASSWORD: ${RESTIC_PASSWORD:-}
       RESTIC_CACHE_DIR: /cache
     volumes:
-      - ${MC_DATA_PATH:-/home/knvt/minecraft/fabric_server}:/data # rw: stellt Dateien wieder her
-      - ${MC_DATA_PATH:-/home/knvt/minecraft/fabric_server}/.msm-restore:/job:ro
+      - ${MC_DATA_PATH:?MC_DATA_PATH in .env setzen}:/data # rw: stellt Dateien wieder her
+      - ${MC_DATA_PATH:?MC_DATA_PATH in .env setzen}/.msm-restore:/job:ro
       - restic-cache:/cache
       - type: bind
         source: ${MSM_NAS_PATH:-/mnt/mc-backups}

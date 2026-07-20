@@ -2,7 +2,7 @@
 # MSM Host-Watcher: führt einen von MSM angeforderten Reboot aus.
 # Einzige Berechtigung dieses Mechanismus: systemctl reboot.
 # Wird von msm-reboot.path getriggert, sobald die Signaldatei erscheint.
-SIGNAL_FILE="${MSM_SIGNAL_FILE:-/home/knvt/minecraft/msm-host/reboot.request}"
+SIGNAL_FILE="${MSM_SIGNAL_FILE:?nicht gesetzt — kommt aus dem systemd-Unit (deploy/host-watcher/install.sh)}"
 
 [ -f "$SIGNAL_FILE" ] || exit 0
 

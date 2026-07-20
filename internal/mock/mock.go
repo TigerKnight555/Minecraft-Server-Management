@@ -224,7 +224,7 @@ func (w *WAN) Check(context.Context) (collector.WANSample, error) {
 	return collector.WANSample{
 		Time: time.Now(),
 		Targets: []collector.PingResult{
-			mk("1.1.1.1", 12), mk("9.9.9.9", 18), mk("192.168.178.1", 0.6),
+			mk("1.1.1.1", 12), mk("9.9.9.9", 18), mk("192.168.1.1", 0.6),
 		},
 	}, nil
 }
