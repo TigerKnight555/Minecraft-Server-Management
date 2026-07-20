@@ -1,9 +1,0 @@
-[Unit]
-Description=MSM Host-Watcher: wartet auf Selbst-Update-Signaldatei
-
-[Path]
-PathExists=/home/knvt/minecraft/msm-host/selfupdate.request
-Unit=msm-selfupdate.service
-
-[Install]
-WantedBy=multi-user.target

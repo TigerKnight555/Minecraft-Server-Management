@@ -41,18 +41,47 @@ Für TPS/MSPT muss der Mod [spark](https://spark.lucko.me/) installiert sein
 (`spark tps` via RCON). Query- und RCON-Ports **nicht** nach außen freigeben —
 nur im Docker-Netz bzw. LAN erreichbar machen.
 
-## Setup
+## Installation
+
+Voraussetzungen: Linux-Host mit Docker + Docker Compose v2, User in der
+`docker`-Gruppe. Dann:
 
 ```sh
-cp .env.example .env   # Werte anpassen, insbesondere MSM_RCON_PASSWORD
-
-# Login-Hash erzeugen und in .env eintragen ($ muss für Compose als $$
-# escaped werden — das erledigt diese Zeile automatisch):
-HASH=$(docker compose run --rm --no-deps msm -hash-password 'DEIN_PASSWORT')
-sed -i "s|^MSM_ADMIN_PASSWORD_HASH=.*|MSM_ADMIN_PASSWORD_HASH=${HASH//$/\$\$}|" .env
-
-docker compose up -d --build
+git clone https://github.com/TigerKnight555/Minecraft-Server-Management.git ~/Minecraft-Server-Management
+cd ~/Minecraft-Server-Management
+bash install.sh
 ```
+
+Das Skript fragt alle nötigen Werte **interaktiv** ab (mit Erklärung, woher
+jeder Wert kommt), erkennt so viel wie möglich automatisch, generiert
+Passwörter, baut den Stack und startet ihn. Es ist idempotent — bei
+Änderungen einfach erneut ausführen, vorhandene Werte sind die Vorgabe.
+
+**Alles Weitere passiert im Dashboard** (`http://<LAN-IP>:8080`):
+Discord-Webhook und Dropbox unter „Einstellungen" (Anleitungen stehen
+direkt im Tab), Backup-/Reboot-Routinen unter „Routinen", MSM-Updates per
+Klick unter „Einstellungen → MSM-Version".
+
+### Woher kommt welcher Wert?
+
+| Wert | Abgefragt von | Woher nehmen |
+|---|---|---|
+| Zeitzone (`TZ`) | install.sh | automatisch erkannt (`/etc/timezone`) |
+| MC-Datenpfad (`MC_DATA_PATH`) | install.sh | Verzeichnis mit `world/` + `mods/`; bei Neuinstallation Wunschpfad |
+| MC-Version (`MC_VERSION`) | install.sh | automatisch aus `logs/latest.log` erraten; sonst im Spiel-Menü unten links. **Exakt angeben — höhere Version upgradet die Welt unumkehrbar!** |
+| Client-Paket-Pfad | install.sh | Wunschpfad; Ordnerstruktur wird angelegt |
+| LAN-IP (`MSM_BIND_ADDR`) | install.sh | automatisch erkannt (`hostname -I`) |
+| RCON-Passwort | install.sh | automatisch generiert (nur intern) |
+| Dashboard-Passwort | install.sh | frei wählen — der Web-Login |
+| NAS-Pfad (`MSM_NAS_PATH`) | install.sh, optional | fstab-Automount-Mountpoint, siehe Abschnitt „Backups"; leer = Backups später |
+| restic-Passwort | install.sh (generiert) | **in den Passwort-Manager!** Ohne = Backups unlesbar |
+| `DOCKER_GID`, `MC_GID`, Signal-Pfad | install.sh | vollautomatisch |
+| Discord-Webhook | Dashboard → Einstellungen | Discord-Channel → ⚙️ → Integrationen → Webhooks |
+| Dropbox App-Key/Secret/Refresh-Token | Dashboard → Einstellungen | Anleitung aufklappbar direkt im Tab |
+| GitHub-Token (`MSM_GITHUB_TOKEN`) | `.env`, nur private Repos | github.com → Settings → Developer settings → Tokens |
+
+Manuelle Installation ohne Skript: `.env.example` nach `.env` kopieren und
+ausfüllen (jede Variable ist dort kommentiert), dann die Abschnitte unten.
 
 Dashboard: `http://<host-lan-ip>:8080` (Bind-Adresse über `MSM_BIND_ADDR`).
 

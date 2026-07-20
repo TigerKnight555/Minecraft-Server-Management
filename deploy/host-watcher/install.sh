@@ -1,15 +1,33 @@
 #!/bin/bash
-# Installiert den MSM Host-Watcher (Phase 4.5): ein systemd-Path-Trigger,
-# der auf die Signaldatei von MSM reagiert und das System neu startet.
+# Installiert die MSM Host-Watcher (systemd-Path-Units). MSM selbst hat keine
+# Host-Rechte — diese drei winzigen Watcher führen je genau eine Aktion aus,
+# sobald MSM die passende Signaldatei schreibt:
+#   reboot.request     -> systemctl reboot
+#   upgrade.request    -> MC_VERSION in .env setzen + compose up -d mc-fabric
+#   selfupdate.request -> git checkout <tag> + compose up -d --build msm
+# Pfade werden automatisch abgeleitet (kein Hardcoding) und in die Units
+# geschrieben. Idempotent — bei Updates einfach erneut ausführen.
 # Aufruf: sudo bash install.sh   (im Verzeichnis deploy/host-watcher)
 set -euo pipefail
 
-SIGNAL_DIR="/home/knvt/minecraft/msm-host"
-HERE="$(cd "$(dirname "$0")" && pwd)"
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Bitte mit sudo ausführen: sudo bash install.sh" >&2
+  exit 1
+fi
 
-echo "[1/4] Signal-Verzeichnis $SIGNAL_DIR (Gruppe schreibberechtigt für MSM)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$(cd "$HERE/../.." && pwd)"
+OWNER="${SUDO_USER:-$(stat -c '%U' "$REPO_DIR")}"
+OWNER_HOME="$(eval echo "~$OWNER")"
+SIGNAL_DIR="${MSM_HOST_SIGNAL_PATH:-$OWNER_HOME/minecraft/msm-host}"
+
+echo "Repo:              $REPO_DIR"
+echo "Besitzer:          $OWNER"
+echo "Signal-Verzeichnis: $SIGNAL_DIR"
+
+echo "[1/4] Signal-Verzeichnis (Gruppe schreibberechtigt für MSM)"
 mkdir -p "$SIGNAL_DIR"
-chown knvt:knvt "$SIGNAL_DIR"
+chown "$OWNER:$OWNER" "$SIGNAL_DIR"
 chmod 775 "$SIGNAL_DIR"
 
 echo "[2/4] Watcher-Skripte nach /usr/local/bin"
@@ -17,19 +35,39 @@ install -m 755 "$HERE/msm-reboot-watcher.sh" /usr/local/bin/msm-reboot-watcher.s
 install -m 755 "$HERE/msm-upgrade-watcher.sh" /usr/local/bin/msm-upgrade-watcher.sh
 install -m 755 "$HERE/msm-selfupdate-watcher.sh" /usr/local/bin/msm-selfupdate-watcher.sh
 
-echo "[3/4] systemd-Units"
-install -m 644 "$HERE/msm-reboot.path" /etc/systemd/system/msm-reboot.path
-install -m 644 "$HERE/msm-reboot.service" /etc/systemd/system/msm-reboot.service
-install -m 644 "$HERE/msm-upgrade.path" /etc/systemd/system/msm-upgrade.path
-install -m 644 "$HERE/msm-upgrade.service" /etc/systemd/system/msm-upgrade.service
-install -m 644 "$HERE/msm-selfupdate.path" /etc/systemd/system/msm-selfupdate.path
-install -m 644 "$HERE/msm-selfupdate.service" /etc/systemd/system/msm-selfupdate.service
+echo "[3/4] systemd-Units generieren (mit lokalen Pfaden)"
+unit() { # $1=name  $2=beschreibung  $3=signaldatei
+  cat > "/etc/systemd/system/msm-$1.path" <<EOF
+[Unit]
+Description=MSM Host-Watcher: wartet auf $3
+
+[Path]
+PathExists=$SIGNAL_DIR/$3
+Unit=msm-$1.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  cat > "/etc/systemd/system/msm-$1.service" <<EOF
+[Unit]
+Description=MSM Host-Watcher: $2
+
+[Service]
+Type=oneshot
+Environment=MSM_SIGNAL_FILE=$SIGNAL_DIR/$3
+Environment=MSM_REPO_DIR=$REPO_DIR
+ExecStart=/usr/local/bin/msm-$1-watcher.sh
+EOF
+}
+unit reboot "führt angeforderten Reboot aus" reboot.request
+unit upgrade "führt angeforderten MC-Versionssprung aus" upgrade.request
+unit selfupdate "führt angefordertes MSM-Selbst-Update aus" selfupdate.request
+
 systemctl daemon-reload
 systemctl enable --now msm-reboot.path msm-upgrade.path msm-selfupdate.path
 
 echo "[4/4] Status"
-systemctl status msm-reboot.path msm-upgrade.path msm-selfupdate.path --no-pager | head -18
+systemctl is-active msm-reboot.path msm-upgrade.path msm-selfupdate.path
 
 echo
-echo "Fertig. Test (löst NACH 10 s einen echten Reboot aus — nur wenn gewollt!):"
-echo "  touch $SIGNAL_DIR/reboot.request"
+echo "Fertig. In der .env muss stehen: MSM_HOST_SIGNAL_PATH=$SIGNAL_DIR"

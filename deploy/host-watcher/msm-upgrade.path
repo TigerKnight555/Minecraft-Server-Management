@@ -1,9 +1,0 @@
-[Unit]
-Description=MSM Host-Watcher: wartet auf MC-Upgrade-Signaldatei
-
-[Path]
-PathExists=/home/knvt/minecraft/msm-host/upgrade.request
-Unit=msm-upgrade.service
-
-[Install]
-WantedBy=multi-user.target
