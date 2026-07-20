@@ -1,0 +1,11 @@
+.env
+*.db
+*.db-wal
+*.db-shm
+/msm
+/msm.exe
+node_modules/
+web/dist/*
+!web/dist/.gitkeep
+.idea/
+.vscode/

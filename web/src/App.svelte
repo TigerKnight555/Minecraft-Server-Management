@@ -1,0 +1,304 @@
+<script>
+  import { onMount } from 'svelte'
+  import {
+    connect, connected, containers, stats, host, mc, wan,
+    authRequired, authenticated, checkAuth, logout, versionWatch,
+    startVersionUpgrade, versionUpgradeStatus,
+  } from './lib/stream.js'
+  import Chart from './lib/Chart.svelte'
+  import LogViewer from './lib/LogViewer.svelte'
+  import RconConsole from './lib/RconConsole.svelte'
+  import Login from './lib/Login.svelte'
+  import Containers from './lib/Containers.svelte'
+  import Routines from './lib/Routines.svelte'
+  import Audit from './lib/Audit.svelte'
+  import Mods from './lib/Mods.svelte'
+  import Settings from './lib/Settings.svelte'
+
+  let authChecked = $state(false)
+  let tab = $state('dashboard')
+  let watch = $state(null) // letzter Versions-Watch (läuft serverseitig täglich)
+
+  let upgradeStatus = $state('')
+  let upgradeError = $state('')
+
+  async function loadWatch() {
+    try {
+      const w = await versionWatch()
+      watch = w?.checked ? w : null
+    } catch {
+      watch = null
+    }
+    try {
+      const s = await versionUpgradeStatus()
+      upgradeStatus = s.status
+    } catch {
+      upgradeStatus = ''
+    }
+  }
+
+  async function doUpgrade() {
+    const v = watch?.latestVersion
+    if (!v) return
+    if (!confirm(
+      `Minecraft-Update auf ${v} starten?\n\n` +
+      `Ablauf: Spieler-Warnung (5 min) → Backup → Server-Mods → Server-Neuerstellung → Client-Mods.\n` +
+      `Das Welt-Upgrade ist UNUMKEHRBAR (Rollback nur übers Backup). Dauer: mehrere Minuten.`
+    )) return
+    upgradeError = ''
+    try {
+      await startVersionUpgrade(v)
+      upgradeStatus = 'gestartet…'
+      const t = setInterval(async () => {
+        try {
+          const s = await versionUpgradeStatus()
+          upgradeStatus = s.status
+          if (!s.status) { clearInterval(t); loadWatch() }
+        } catch { /* Server ist während des Updates zeitweise weg */ }
+      }, 5000)
+    } catch (err) {
+      upgradeError = err.message
+    }
+  }
+
+  onMount(async () => {
+    try {
+      await checkAuth()
+    } catch {
+      // backend without auth endpoints (old build) — run open
+    }
+    authChecked = true
+    loadWatch()
+    const t = setInterval(loadWatch, 5 * 60 * 1000)
+    return () => clearInterval(t)
+  })
+
+  // Update-Bereitschaft: neue Version + Loader ok + ALLE Server-Mods bereit
+  let srvReady = $derived(watch?.profiles?.find((p) => p.profile === 'server'))
+  let updateReady = $derived(
+    watch?.newerAvailable && watch?.loaderReady && srvReady && srvReady.total > 0 && srvReady.ready === srvReady.total
+  )
+
+  // (re)connect the SSE stream whenever we are authenticated
+  $effect(() => {
+    if (authChecked && $authenticated) connect()
+  })
+
+  const GiB = 1024 * 1024 * 1024
+
+  function fmtGiB(bytes) {
+    return bytes != null ? (bytes / GiB).toFixed(1) + ' GiB' : '—'
+  }
+  function fmtUptime(sec) {
+    if (sec == null) return '—'
+    const d = Math.floor(sec / 86400)
+    const h = Math.floor((sec % 86400) / 3600)
+    return d > 0 ? `${d}d ${h}h` : `${h}h ${Math.floor((sec % 3600) / 60)}m`
+  }
+
+  let mcStats = $derived($stats['mc-fabric'])
+  let wanWorst = $derived(
+    $wan?.targets?.filter((t) => t.target !== gateway($wan))
+      .reduce((worst, t) => (!t.reached || t.rttMs > (worst?.rttMs ?? -1) ? t : worst), null)
+  )
+  function gateway(w) {
+    // last target is the auto-appended gateway when present
+    const priv = w?.targets?.find((t) => t.target.startsWith('192.168.') || t.target.startsWith('10.'))
+    return priv?.target
+  }
+
+  let tpsClass = $derived($mc?.tps >= 19 ? 'ok' : $mc?.tps >= 15 ? 'warn' : 'err')
+  let wanClass = $derived(
+    !wanWorst || !wanWorst.reached ? 'err' : wanWorst.lossPct > 0 || wanWorst.rttMs > 80 ? 'warn' : 'ok'
+  )
+</script>
+
+{#if !authChecked}
+  <div class="container"><p class="empty">Lade …</p></div>
+{:else if $authRequired && !$authenticated}
+  <Login />
+{:else}
+<div class="container">
+  <header>
+    <h1>MSM</h1>
+    <span class="sub">Minecraft Server Management</span>
+    <nav class="tabs">
+      <button class={tab === 'dashboard' ? 'active' : ''} onclick={() => (tab = 'dashboard')}>Dashboard</button>
+      <button class={tab === 'mods' ? 'active' : ''} onclick={() => (tab = 'mods')}>Mods</button>
+      <button class={tab === 'routines' ? 'active' : ''} onclick={() => (tab = 'routines')}>Routinen</button>
+      <button class={tab === 'audit' ? 'active' : ''} onclick={() => (tab = 'audit')}>Audit</button>
+      <button class={tab === 'settings' ? 'active' : ''} onclick={() => (tab = 'settings')}>Einstellungen</button>
+    </nav>
+    <span class="conn-status {$connected ? 'live' : 'dead'}">
+      {$connected ? 'live' : 'getrennt'}
+    </span>
+    {#if $authRequired}
+      <button class="logout" onclick={logout}>Abmelden</button>
+    {/if}
+  </header>
+
+  {#if tab === 'routines'}
+    <div class="panels"><Routines /></div>
+  {:else if tab === 'audit'}
+    <div class="panels"><Audit /></div>
+  {:else if tab === 'mods'}
+    <div class="panels"><Mods /></div>
+  {:else if tab === 'settings'}
+    <div class="panels"><Settings /></div>
+  {:else}
+
+  <div class="tiles">
+    <div class="tile {$mc?.online ? 'ok' : 'err'}">
+      <div class="label">Minecraft</div>
+      <div class="value">{$mc?.online ? 'Online' : 'Offline'}</div>
+      <div class="detail">{$mc?.version ?? ''} {$mc?.motd ? '· ' + $mc.motd : ''}</div>
+    </div>
+
+    <div class="tile">
+      <div class="label">Spieler</div>
+      <div class="value">{$mc?.playersOnline ?? '—'}<span style="font-size:0.8rem;color:var(--text-dim)">/{$mc?.playersMax ?? '—'}</span></div>
+    </div>
+
+    <div class="tile {tpsClass}">
+      <div class="label">TPS</div>
+      <div class="value">{$mc?.tps ? $mc.tps.toFixed(1) : '—'}</div>
+      <div class="detail">{$mc?.mspt ? $mc.mspt.toFixed(1) + ' ms/Tick' : ''}</div>
+    </div>
+
+    <div class="tile">
+      <div class="label">RAM Minecraft</div>
+      <div class="value">{fmtGiB(mcStats?.memUsage)}</div>
+      <div class="detail">von {fmtGiB(mcStats?.memLimit)}</div>
+    </div>
+
+    <div class="tile">
+      <div class="label">RAM Host</div>
+      <div class="value">{fmtGiB($host?.memUsed)}</div>
+      <div class="detail">von {fmtGiB($host?.memTotal)}</div>
+    </div>
+
+    <div class="tile">
+      <div class="label">CPU Host</div>
+      <div class="value">{$host?.cpuPercent != null ? $host.cpuPercent.toFixed(0) + '%' : '—'}</div>
+      <div class="detail">Load {$host?.load1?.toFixed(2) ?? '—'}</div>
+    </div>
+
+    <div class="tile {wanClass}">
+      <div class="label">Internet</div>
+      <div class="value">{wanWorst?.reached ? wanWorst.rttMs.toFixed(0) + ' ms' : 'gestört'}</div>
+      <div class="detail">{wanWorst ? wanWorst.target + (wanWorst.lossPct ? ` · ${wanWorst.lossPct.toFixed(0)}% Verlust` : '') : ''}</div>
+    </div>
+
+    <div class="tile {$host?.nasOnline ? 'ok' : 'err'}">
+      <div class="label">NAS</div>
+      <div class="value">{$host?.nasOnline ? 'erreichbar' : 'offline'}</div>
+    </div>
+
+    <div class="tile">
+      <div class="label">Host-Uptime</div>
+      <div class="value" style="font-size:1.1rem">{fmtUptime($host?.uptimeSec)}</div>
+    </div>
+
+    <div class="tile {watch?.newerAvailable ? (updateReady ? 'ok' : 'warn') : ''}">
+      <div class="label">MC-Update</div>
+      {#if !watch}
+        <div class="value" style="font-size:1.1rem">—</div>
+        <div class="detail">Versions-Watch läuft noch</div>
+      {:else if !watch.newerAvailable}
+        <div class="value" style="font-size:1.1rem">aktuell</div>
+        <div class="detail">{watch.currentVersion}</div>
+      {:else}
+        <div class="value" style="font-size:1.1rem">{watch.latestVersion} verfügbar</div>
+        <div class="detail">
+          {#if upgradeStatus}
+            ⏳ {upgradeStatus}
+          {:else if updateReady}
+            ✔ alle Server-Mods bereit ({srvReady.ready}/{srvReady.total})
+            <button class="upgrade-btn" onclick={doUpgrade}>Jetzt updaten</button>
+          {:else}
+            Server-Mods {srvReady ? `${srvReady.ready}/${srvReady.total}` : '–'} bereit{watch.loaderReady ? '' : ' · Loader fehlt'} — warten
+          {/if}
+          {#if upgradeError}<div style="color:var(--err)">{upgradeError}</div>{/if}
+        </div>
+      {/if}
+    </div>
+
+    <div class="tile">
+      <div class="label">Container</div>
+      <div class="value">{$containers.filter((c) => c.state === 'running').length}/{$containers.length}</div>
+      <div class="detail">laufen</div>
+    </div>
+  </div>
+
+  <div class="panels">
+    <div class="panel">
+      <h2>CPU (%)</h2>
+      <Chart
+        unit="%"
+        series={[
+          { key: 'host.cpu', label: 'Host', color: '#60a5fa' },
+          { key: 'container.mc-fabric.cpu', label: 'mc-fabric', color: '#4ade80' },
+        ]}
+      />
+    </div>
+
+    <div class="panel">
+      <h2>RAM (GiB)</h2>
+      <Chart
+        unit="GiB"
+        series={[
+          { key: 'host.mem', label: 'Host', color: '#60a5fa' },
+          { key: 'container.mc-fabric.mem', label: 'mc-fabric', color: '#4ade80' },
+        ]}
+      />
+    </div>
+
+    <div class="panel">
+      <h2>TPS</h2>
+      <Chart
+        unit="TPS"
+        series={[{ key: 'mc.tps', label: 'TPS', color: '#4ade80' }]}
+      />
+    </div>
+
+    <div class="panel">
+      <h2>Internet-Latenz (ms)</h2>
+      <Chart
+        unit="ms"
+        series={[
+          { key: 'wan.1.1.1.1.rtt', label: '1.1.1.1', color: '#f59e0b' },
+          { key: 'wan.9.9.9.9.rtt', label: '9.9.9.9', color: '#a78bfa' },
+        ]}
+      />
+    </div>
+
+    <div class="panel">
+      <h2>Spieler online</h2>
+      {#if $mc?.players?.length}
+        <ul class="player-list">
+          {#each $mc.players as p (p)}
+            <li>{p}</li>
+          {/each}
+        </ul>
+      {:else}
+        <div class="empty">Niemand online</div>
+      {/if}
+    </div>
+
+    <RconConsole />
+
+    <Containers />
+
+    <LogViewer />
+  </div>
+  {/if}
+</div>
+{/if}
+
+<style>
+  .upgrade-btn {
+    display: block; margin-top: 0.3rem;
+    background: var(--accent); color: #0f1419; border: none; border-radius: 5px;
+    padding: 0.25rem 0.7rem; font-weight: 600; cursor: pointer; font-size: 0.75rem;
+  }
+</style>

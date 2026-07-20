@@ -1,0 +1,236 @@
+# MSM-Stack: Dashboard + Socket-Proxy + Minecraft-Server.
+#
+# ACHTUNG: `docker compose down` stoppt auch den Minecraft-Server!
+# Für MSM-Updates stattdessen gezielt:  docker compose up -d --build msm
+# Einzelne Dienste stoppen:             docker compose stop msm
+services:
+  mc-fabric:
+    image: itzg/minecraft-server
+    container_name: mc-fabric
+    # always statt unless-stopped: das Nacht-Backup stoppt den Container
+    # explizit vor dem Host-Reboot — er muss danach trotzdem wieder starten
+    # (ersetzt den alten systemd-Service mc-fabric.service)
+    restart: always
+    environment:
+      EULA: "TRUE"
+      TYPE: fabric
+      # exakt die laufende Version pinnen — eine höhere Version beim
+      # Neuerstellen upgradet die Welt unumkehrbar!
+      VERSION: ${MC_VERSION:?MC_VERSION in .env setzen}
+      MEMORY: 12G
+      ENABLE_QUERY: "true"
+      ENABLE_RCON: "true"
+      RCON_PASSWORD: ${MSM_RCON_PASSWORD:?MSM_RCON_PASSWORD in .env setzen}
+    ports:
+      - "25565:25565"
+      - "24454:24454/udp" # Simple Voice Chat — nie entfernen!
+    volumes:
+      - ${MC_DATA_PATH:-/home/knvt/minecraft/fabric_server}:/data
+    mem_limit: 13g # Notbremse oberhalb der 12G Heap (Konzept Kap. 8)
+    stop_grace_period: 90s # Weltspeicherung nie abwürgen
+    networks:
+      - default
+
+  msm:
+    build: .
+    image: msm:latest
+    container_name: msm
+    restart: unless-stopped
+    read_only: true
+    user: "65532:65532"
+    # no-new-privileges entfernt: Docker 29 + AppArmor verweigert damit den
+    # Container-Start ("exec: operation not permitted"). Risiko akzeptabel:
+    # distroless enthält keine setuid-Binaries, non-root + cap_drop ALL aktiv.
+    cap_drop:
+      - ALL
+    # ICMP-Ping ohne CAP_NET_RAW: unprivilegierte Ping-Sockets für alle GIDs
+    # freigeben (namespaced Sysctl, wirkt nur in diesem Container).
+    # cap_add NET_RAW kollidiert mit no-new-privileges bei Non-Root-User
+    # ("exec: operation not permitted").
+    sysctls:
+      net.ipv4.ping_group_range: "0 2147483647"
+    mem_limit: 200m
+    cpus: 0.5
+    cpu_shares: 128
+    environment:
+      # Zeitzone für Cron-Zeiten, Warte-Fristen und Wartungsfenster —
+      # ohne TZ rechnet der Container in UTC (+2h Versatz im Sommer!)
+      TZ: ${TZ:-Europe/Berlin}
+      MSM_DOCKER_HOST: http://socket-proxy:2375
+      MSM_DB_PATH: /data/msm.db
+      MSM_QUERY_ADDR: ${MSM_QUERY_ADDR:-mc-fabric:25565}
+      MSM_RCON_ADDR: ${MSM_RCON_ADDR:-mc-fabric:25575}
+      MSM_RCON_PASSWORD: ${MSM_RCON_PASSWORD:-}
+      MSM_NAS_PATH: ${MSM_NAS_PATH:-}
+      MSM_PING_TARGETS: ${MSM_PING_TARGETS:-1.1.1.1,9.9.9.9}
+      MSM_HOST_PROC: /host/proc
+      # Login (Phase 2): Hash erzeugen mit `docker compose run --rm --no-deps msm -hash-password 'DEIN_PASSWORT'`
+      MSM_ADMIN_PASSWORD_HASH: ${MSM_ADMIN_PASSWORD_HASH:-}
+      # Nur diese Container dürfen über das Dashboard gesteuert werden
+      MSM_MANAGED_CONTAINERS: ${MSM_MANAGED_CONTAINERS:-mc-fabric}
+      # Fallback-Version für Mod-Checks, solange der MC-Server (neu)startet
+      MC_VERSION: ${MC_VERSION:-}
+      # Discord-Benachrichtigungen (Phase 4): Webhook-URL ist ein Geheimnis,
+      # gehört nur in die .env. Leer = Benachrichtigungen aus.
+      MSM_DISCORD_WEBHOOK_URL: ${MSM_DISCORD_WEBHOOK_URL:-}
+      # Optional feiner: JSON-Liste mit Event-Filtern je Webhook, gewinnt
+      # gegenüber der Einzel-URL (Format siehe cmd/msm/main.go)
+      MSM_DISCORD_WEBHOOKS: ${MSM_DISCORD_WEBHOOKS:-}
+      # Dropbox-Veröffentlichung des Client-Pakets (Phase 4.8, optional).
+      # Alle drei GEHEIM; leer = Feature aus.
+      MSM_DROPBOX_APP_KEY: ${MSM_DROPBOX_APP_KEY:-}
+      MSM_DROPBOX_APP_SECRET: ${MSM_DROPBOX_APP_SECRET:-}
+      MSM_DROPBOX_REFRESH_TOKEN: ${MSM_DROPBOX_REFRESH_TOKEN:-}
+    # Zugriff auf die mods-Verzeichnisse (Phase 3): MSM läuft als 65532 und
+    # schreibt über die Gruppe des Host-Users (Verzeichnisse sind g+w).
+    group_add:
+      - "${MC_GID:-1000}"
+    volumes:
+      - msm-data:/data
+      - /proc:/host/proc:ro
+      - ${MC_DATA_PATH:-/home/knvt/minecraft/fabric_server}/mods:/mc/mods
+      - ${MC_CLIENT_PACK_PATH:-/home/knvt/minecraft/client-pack}:/mc/client-pack
+      # Job-Verzeichnis fürs Einzeldatei-Restore (Skript-Übergabe an
+      # mc-restore); muss auf dem Host existieren und g+w sein (README)
+      - ${MC_DATA_PATH:-/home/knvt/minecraft/fabric_server}/.msm-restore:/job
+      # MC-Daten read-only: Spielerliste (playerdata + usercache.json)
+      # fürs Restore-Dropdown
+      - ${MC_DATA_PATH:-/home/knvt/minecraft/fabric_server}:/mc/data:ro
+      # Host-Reboot-Signaldatei (Phase 4.5): der systemd-Watcher auf dem
+      # Host reagiert darauf (deploy/host-watcher/install.sh)
+      - ${MSM_HOST_SIGNAL_PATH:-/home/knvt/minecraft/msm-host}:/host-signal
+    ports:
+      # LAN-only: an die LAN-Adresse des Hosts binden, nie 0.0.0.0 ohne Firewall
+      - "${MSM_BIND_ADDR:-127.0.0.1}:8080:8080"
+    networks:
+      - msm-internal
+      - default
+    depends_on:
+      - socket-proxy
+      - mc-fabric
+    healthcheck:
+      # distroless hat kein curl — das Binary prüft sich selbst über /healthz
+      test: ["CMD", "/msm", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Backup-Job (Phase 4.3): restic als vordefinierter, NICHT laufender
+  # Container. MSM startet ihn über die Docker-API (der Socket-Proxy erlaubt
+  # nur start/stop/restart — deshalb kein docker run/exec) und überwacht den
+  # Exit-Code. Profil "backup" hält ihn aus dem normalen `up -d` heraus;
+  # einmalig anlegen mit:  docker compose --profile backup up -d --no-start mc-backup
+  mc-backup:
+    image: restic/restic:0.18.1
+    container_name: mc-backup
+    profiles: ["backup"]
+    restart: "no"
+    network_mode: bridge # nur Repo auf dem NAS-Mount, kein MSM-Netz nötig
+    entrypoint: ["/bin/sh", "-c"]
+    # Läuft bei GESTOPPTEM mc-fabric (der Scheduler stoppt/startet drumherum).
+    # Repo beim allerersten Lauf automatisch anlegen; forget läuft NUR nach
+    # erfolgreichem check (Konzept: Datenintegrität)
+    command:
+      - >
+        restic cat config >/dev/null 2>&1 || restic init;
+        restic backup /data --host mc-fabric
+        --exclude /data/mods/.msm-staging --exclude /data/.msm-restore
+        && restic check --read-data-subset=5%
+        && restic forget --host mc-fabric --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune
+    environment:
+      RESTIC_REPOSITORY: /nas/restic
+      RESTIC_PASSWORD: ${RESTIC_PASSWORD:-}
+      RESTIC_CACHE_DIR: /cache
+    volumes:
+      - ${MC_DATA_PATH:-/home/knvt/minecraft/fabric_server}:/data:ro
+      - restic-cache:/cache
+      # NAS-Automount: rslave, damit ein Host-Mount nach Container-Erstellung
+      # im Container ankommt (systemd-Automount mountet erst bei Zugriff)
+      - type: bind
+        source: ${MSM_NAS_PATH:-/mnt/mc-backups}
+        target: /nas
+        bind:
+          propagation: rslave
+
+  # Einzeldatei-Restore (Phase 4.4): gleiches Muster wie mc-backup — MSM
+  # schreibt das Job-Skript nach <MC_DATA_PATH>/.msm-restore/run.sh und
+  # startet diesen Container. Anlegen zusammen mit mc-backup:
+  #   docker compose --profile backup up -d --no-start mc-restore
+  mc-restore:
+    image: restic/restic:0.18.1
+    container_name: mc-restore
+    profiles: ["backup"]
+    restart: "no"
+    network_mode: bridge
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["sh /job/run.sh"]
+    environment:
+      RESTIC_REPOSITORY: /nas/restic
+      RESTIC_PASSWORD: ${RESTIC_PASSWORD:-}
+      RESTIC_CACHE_DIR: /cache
+    volumes:
+      - ${MC_DATA_PATH:-/home/knvt/minecraft/fabric_server}:/data # rw: stellt Dateien wieder her
+      - ${MC_DATA_PATH:-/home/knvt/minecraft/fabric_server}/.msm-restore:/job:ro
+      - restic-cache:/cache
+      - type: bind
+        source: ${MSM_NAS_PATH:-/mnt/mc-backups}
+        target: /nas
+        bind:
+          propagation: rslave
+
+  socket-proxy:
+    image: wollomatic/socket-proxy:1
+    container_name: msm-socket-proxy
+    restart: unless-stopped
+    read_only: true
+    # no-new-privileges entfernt — siehe Kommentar beim msm-Service
+    mem_limit: 64m
+    user: "65534:${DOCKER_GID:-988}" # Gruppe muss auf docker-GID des Hosts zeigen
+    command:
+      - -loglevel=info
+      - -listenip=0.0.0.0
+      # nur Anfragen aus dem internen MSM-Netz zulassen (Default wäre nur
+      # 127.0.0.1 — damit würde jede MSM-Anfrage abgelehnt)
+      - -allowfrom=172.28.97.0/24
+      # Lesend: Container-Liste, Stats, Logs
+      - -allowGET=/v1\..{1,2}/(containers/.*|version|info|events.*)
+      # Phase 2: ausschließlich start/stop/restart — kein Create/Delete/Exec,
+      # kein Image-Pull, keine Volumes (Konzept: alles andere bleibt gesperrt)
+      - -allowPOST=/v1\..{1,2}/containers/[a-zA-Z0-9_.-]+/(start|stop|restart)
+      - -watchdoginterval=300
+      - -stoponwatchdog
+      - -shutdowngracetime=5
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - msm-internal
+
+  # Optional (empfohlen sobald Login aktiv ist): TLS-Terminierung via Caddy.
+  # Einkommentieren und MSM-Port-Mapping oben entfernen — dann läuft alles
+  # über https://<host>:8443 mit Caddys interner CA (Zertifikatswarnung im
+  # Browser einmalig akzeptieren oder Caddy-Root-CA im LAN verteilen).
+  # caddy:
+  #   image: caddy:2-alpine
+  #   container_name: msm-caddy
+  #   restart: unless-stopped
+  #   command: caddy reverse-proxy --from https://:8443 --to http://msm:8080 --internal-certs
+  #   ports:
+  #     - "${MSM_BIND_ADDR:-127.0.0.1}:8443:8443"
+  #   volumes:
+  #     - caddy-data:/data
+  #   networks:
+  #     - default
+
+networks:
+  # internes Netz: nur MSM und der Socket-Proxy, kein Weg nach außen.
+  # Festes Subnetz, damit -allowfrom beim Proxy greifen kann.
+  msm-internal:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.28.97.0/24
+
+volumes:
+  msm-data:
+  restic-cache:
+  # caddy-data:   # einkommentieren zusammen mit dem caddy-Service
