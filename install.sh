@@ -14,16 +14,46 @@ bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 note() { printf '  \033[2m%s\033[0m\n' "$*"; }
 die()  { printf 'FEHLER: %s\n' "$*" >&2; exit 1; }
 
-# ask VAR "Frage" "Default" "Erklärung..."
+# ask VAR "Frage" "Default" "Erklärung..." — Pflichtfeld: fragt erneut,
+# bis ein Wert da ist (Default zählt als Wert).
 ask() {
   local var="$1" prompt="$2" def="$3"; shift 3
   echo
   bold "$prompt"
-  local line
+  local line input result
   for line in "$@"; do note "$line"; done
-  local input
-  read -r -p "  [$def] > " input
+  while true; do
+    read -r -p "  [${def:-Pflichtfeld}] > " input
+    result="${input:-$def}"
+    [ -n "$result" ] && break
+    note "Bitte einen Wert eingeben."
+  done
+  printf -v "$var" '%s' "$result"
+}
+
+# ask_opt: wie ask, aber leer ist erlaubt (optionale Werte).
+ask_opt() {
+  local var="$1" prompt="$2" def="$3"; shift 3
+  echo
+  bold "$prompt"
+  local line input
+  for line in "$@"; do note "$line"; done
+  read -r -p "  [${def:-leer}] > " input
   printf -v "$var" '%s' "${input:-$def}"
+}
+
+# ask_path: wie ask, akzeptiert nur ABSOLUTE Pfade — fängt Tippfehler wie
+# ein versehentliches 'ls' ab, bevor irgendwo Verzeichnisse entstehen.
+ask_path() {
+  local var="$1"; shift
+  while true; do
+    ask "$var" "$@"
+    local v; eval "v=\$$var"
+    case "$v" in
+      /*) break ;;
+      *) note "'$v' ist kein absoluter Pfad (muss mit / beginnen) — nochmal:" ;;
+    esac
+  done
 }
 
 # set_env KEY VALUE — ersetzt oder ergänzt in .env
@@ -37,7 +67,12 @@ set_env() {
   fi
 }
 
-env_or() { grep -s "^$1=" .env | head -n1 | cut -d= -f2- || true; }
+# env_or KEY DEFAULT — Wert aus .env, sonst DEFAULT
+env_or() {
+  local v
+  v="$(grep -s "^$1=" .env | head -n1 | cut -d= -f2-)"
+  printf '%s' "${v:-${2:-}}"
+}
 
 # ---------- Vorbedingungen ----------
 bold "== MSM-Installation =="
@@ -52,13 +87,11 @@ echo "OK: Docker $(docker --version | grep -oE '[0-9]+\.[0-9]+' | head -1), .env
 
 # ---------- Fragen ----------
 DEF_TZ="$(cat /etc/timezone 2>/dev/null || timedatectl show -p Timezone --value 2>/dev/null || echo Europe/Berlin)"
-ask TZ_VAL "Zeitzone (für Routinen-Zeiten, Wartungsfenster)" "$(env_or TZ || true)" \
+ask TZ_VAL "Zeitzone (für Routinen-Zeiten, Wartungsfenster)" "$(env_or TZ "$DEF_TZ")" \
   "Format: Region/Stadt. Automatisch erkannt vom System."
-: "${TZ_VAL:=$DEF_TZ}"
-[ -n "$TZ_VAL" ] || TZ_VAL="$DEF_TZ"
 
-ask MC_DATA "Pfad der Minecraft-Serverdaten (Welt, mods/, server.properties)" \
-  "$(env_or MC_DATA_PATH || echo "$HOME/minecraft/fabric_server")" \
+ask_path MC_DATA "Pfad der Minecraft-Serverdaten (Welt, mods/, server.properties)" \
+  "$(env_or MC_DATA_PATH "$HOME/minecraft/fabric_server")" \
   "Bestehender Server: das Verzeichnis mit world/ und mods/." \
   "Neuer Server: Wunschpfad — wird angelegt, itzg/minecraft-server richtet alles ein."
 mkdir -p "$MC_DATA"
@@ -68,19 +101,25 @@ DEF_VER="$(env_or MC_VERSION)"
 if [ -z "$DEF_VER" ] && [ -f "$MC_DATA/logs/latest.log" ]; then
   DEF_VER="$(grep -oE 'Starting minecraft server version [0-9][0-9A-Za-z.]*' "$MC_DATA/logs/latest.log" | head -1 | awk '{print $NF}')"
 fi
-ask MC_VER "Minecraft-Version — EXAKT die laufende Version!" "${DEF_VER:-1.21.11}" \
-  "WARNUNG: eine höhere Version upgradet die Welt beim ersten Start UNUMKEHRBAR." \
-  "Nachsehen: im Spiel unten links im Menü, oder in $MC_DATA/logs/latest.log" \
-  "('Starting minecraft server version …'). Spätere Sprünge macht MSM per Klick."
+while true; do
+  ask MC_VER "Minecraft-Version — EXAKT die laufende Version!" "${DEF_VER:-}" \
+    "WARNUNG: eine höhere Version upgradet die Welt beim ersten Start UNUMKEHRBAR." \
+    "Nachsehen: im Spiel unten links im Menü, oder in $MC_DATA/logs/latest.log" \
+    "('Starting minecraft server version …'). Spätere Sprünge macht MSM per Klick."
+  case "$MC_VER" in
+    [0-9]*.*) break ;;
+    *) note "'$MC_VER' sieht nicht nach einer Minecraft-Version aus (z. B. 1.21.11) — nochmal:" ;;
+  esac
+done
 
-ask CLIENT_PACK "Pfad des Client-Pakets (Mods/Shader für die Spieler)" \
-  "$(env_or MC_CLIENT_PACK_PATH || echo "$HOME/minecraft/client-pack")" \
+ask_path CLIENT_PACK "Pfad des Client-Pakets (Mods/Shader für die Spieler)" \
+  "$(env_or MC_CLIENT_PACK_PATH "$HOME/minecraft/client-pack")" \
   "Wird angelegt, falls nicht vorhanden. Befüllen später per scp (siehe README)."
 mkdir -p "$CLIENT_PACK"/{mods,shaderpacks,resourcepacks}
 
 DEF_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 ask BIND "LAN-IP dieses Servers (Dashboard-Adresse — NIEMALS öffentlich!)" \
-  "$(env_or MSM_BIND_ADDR || echo "${DEF_IP:-127.0.0.1}")" \
+  "$(env_or MSM_BIND_ADDR "${DEF_IP:-127.0.0.1}")" \
   "Automatisch erkannt. Das Dashboard ist danach unter http://<IP>:8080 erreichbar." \
   "Keine Port-Weiterleitung im Router einrichten — LAN/VPN only."
 
@@ -92,10 +131,11 @@ else
   echo; bold "RCON-Passwort: vorhandenes wird beibehalten."
 fi
 
-ask NAS "NAS-Mountpoint für Backups (leer = Backups später einrichten)" \
+ask_opt NAS "NAS-Mountpoint für Backups (leer = Backups später einrichten)" \
   "$(env_or MSM_NAS_PATH)" \
   "Ein per fstab gemounteter Pfad (z. B. /mnt/mc-backups). Anleitung für den" \
   "systemd-Automount steht im README, Abschnitt 'Backups'. Kann leer bleiben."
+case "$NAS" in ''|/*) ;; *) die "NAS-Pfad muss absolut sein (mit / beginnen)";; esac
 
 RESTIC_PW="$(env_or RESTIC_PASSWORD)"
 if [ -n "$NAS" ] && [ -z "$RESTIC_PW" ]; then
