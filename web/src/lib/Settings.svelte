@@ -1,18 +1,22 @@
 <script>
   import { onMount } from 'svelte'
-  import { getSettings, saveSettings, testDiscord, revealSetting } from './stream.js'
+  import { getSettings, saveSettings, testDiscord } from './stream.js'
 
   let view = $state(null)
   let error = $state('')
   let info = $state('')
-  // Eingabefelder: leer lassen = unverändert; „Anzeigen" holt den aktuellen
-  // Wert ins Feld (zum Prüfen/Kopieren/Ändern)
+  // Felder zeigen immer die aktuell wirksamen Werte (Nutzer-Entscheidung:
+  // konfigurierte Werte sind sichtbar). Leeren + Speichern = löschen.
   let fields = $state({ discordWebhook: '', dropboxKey: '', dropboxSecret: '', dropboxToken: '' })
-  let shown = $state({}) // field -> true, wenn der echte Wert im Feld steht
+
+  function apply(res) {
+    view = res.view
+    fields = { ...fields, ...res.values }
+  }
 
   async function refresh() {
     try {
-      view = await getSettings()
+      apply(await getSettings())
       error = ''
     } catch (err) {
       error = err.message
@@ -20,43 +24,18 @@
   }
   onMount(refresh)
 
-  async function reveal(field) {
-    error = ''
-    try {
-      const res = await revealSetting(field)
-      fields[field] = res.value
-      shown[field] = true
-    } catch (err) {
-      error = err.message
-    }
-  }
-
   async function save() {
     error = ''
     info = ''
-    const payload = {}
-    for (const [k, v] of Object.entries(fields)) {
-      if (v.trim()) payload[k] = v.trim()
-    }
-    if (Object.keys(payload).length === 0) {
-      info = 'Nichts eingegeben — nichts geändert.'
-      return
-    }
+    // alle Felder senden: Wert = setzen, leer = löschen (.env-Fallback greift)
     try {
-      view = await saveSettings(payload)
-      fields = { discordWebhook: '', dropboxKey: '', dropboxSecret: '', dropboxToken: '' }
-      shown = {}
+      apply(await saveSettings({
+        discordWebhook: fields.discordWebhook.trim(),
+        dropboxKey: fields.dropboxKey.trim(),
+        dropboxSecret: fields.dropboxSecret.trim(),
+        dropboxToken: fields.dropboxToken.trim(),
+      }))
       info = 'Gespeichert — wirkt sofort, kein Neustart nötig.'
-    } catch (err) {
-      error = err.message
-    }
-  }
-
-  async function clearField(field) {
-    if (!confirm('Wert löschen? Danach gilt wieder der Wert aus der .env (falls vorhanden).')) return
-    try {
-      view = await saveSettings({ [field]: '' })
-      info = 'Gelöscht.'
     } catch (err) {
       error = err.message
     }
@@ -74,15 +53,15 @@
 
   function status(m) {
     if (!m?.set) return 'nicht gesetzt'
-    return `gesetzt (${m.source === 'env' ? '.env' : 'Dashboard'}, endet auf ${m.hint})`
+    return `Quelle: ${m.source === 'env' ? '.env' : 'Dashboard'}`
   }
 </script>
 
 <div class="panel wide">
   <h2>Grundeinstellungen</h2>
   <p class="dim">
-    Zugangsdaten für Integrationen — gespeichert auf dem Server, wirksam ohne Neustart. Anzeige standardmäßig
-    maskiert; „Anzeigen" holt den aktuellen Wert ins Feld (wird im Audit-Log vermerkt). Leere Felder bleiben unverändert.
+    Zugangsdaten für Integrationen — gespeichert auf dem Server, wirksam sofort ohne Neustart.
+    Feld leeren + Speichern löscht den Wert (dann gilt wieder die .env, falls dort einer steht).
   </p>
   {#if error}<div class="err-msg">{error}</div>{/if}
   {#if info}<div class="ok-msg">{info}</div>{/if}
@@ -91,32 +70,25 @@
     <h3>Discord-Benachrichtigungen</h3>
     <p class="dim">
       Webhook erstellen: Discord-Channel → ⚙️ → Integrationen → Webhooks → „Neuer Webhook" → URL kopieren.
-      Status: <strong>{status(view.discordWebhook)}</strong>
+      <strong>{status(view.discordWebhook)}</strong>
     </p>
     <div class="row">
-      <input type={shown.discordWebhook ? 'text' : 'password'} bind:value={fields.discordWebhook}
-        placeholder="https://discord.com/api/webhooks/…" style="min-width: 26rem" />
+      <input type="text" bind:value={fields.discordWebhook}
+        placeholder="https://discord.com/api/webhooks/…" style="min-width: 28rem" />
       {#if view.discordWebhook?.set}
-        <button class="btn" onclick={() => reveal('discordWebhook')}>👁 Anzeigen</button>
         <button class="btn" onclick={doTest}>Testnachricht senden</button>
-      {/if}
-      {#if view.discordWebhook?.source === 'dashboard'}
-        <button class="btn danger" onclick={() => clearField('discordWebhook')}>löschen</button>
       {/if}
     </div>
 
     <h3>Dropbox (Client-Paket-Verteilung)</h3>
     <p class="dim">Status: <strong>{view.dropboxReady ? '✔ einsatzbereit' : 'unvollständig — Anleitung unten'}</strong></p>
     <div class="grid">
-      {#each [['dropboxKey', 'App-Key', view.dropboxKey], ['dropboxSecret', 'App-Secret', view.dropboxSecret], ['dropboxToken', 'Refresh-Token', view.dropboxToken]] as [key, label, m] (key)}
-        <label>{label} <span class="dim">({status(m)})</span>
-          <span class="row">
-            <input type={shown[key] ? 'text' : 'password'} bind:value={fields[key]} placeholder="neuer Wert" style="flex:1" />
-            {#if m?.set}<button class="btn" onclick={() => reveal(key)}>👁</button>{/if}
-            {#if m?.source === 'dashboard'}<button class="btn danger" onclick={() => clearField(key)}>löschen</button>{/if}
-          </span>
-        </label>
-      {/each}
+      <label>App-Key <span class="dim">({status(view.dropboxKey)})</span>
+        <input type="text" bind:value={fields.dropboxKey} /></label>
+      <label>App-Secret <span class="dim">({status(view.dropboxSecret)})</span>
+        <input type="text" bind:value={fields.dropboxSecret} /></label>
+      <label>Refresh-Token <span class="dim">({status(view.dropboxToken)})</span>
+        <input type="text" bind:value={fields.dropboxToken} /></label>
     </div>
 
     <button class="btn accent" onclick={save}>Speichern</button>
@@ -146,19 +118,19 @@
 <style>
   h3 { margin: 1.1rem 0 0.3rem; font-size: 0.95rem; }
   .dim { color: var(--text-dim); font-size: 0.8rem; }
-  .row { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+  .row { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.4rem; }
   .grid { display: flex; flex-direction: column; gap: 0.6rem; max-width: 34rem; margin-bottom: 0.9rem; }
   .grid label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.8rem; color: var(--text-dim); }
   input {
     background: var(--panel); border: 1px solid var(--panel-border);
     border-radius: 5px; color: var(--text); padding: 0.4rem 0.6rem; font-size: 0.85rem;
+    font-family: ui-monospace, monospace;
   }
   .btn {
     background: var(--panel-border); border: none; border-radius: 5px;
     color: var(--text); padding: 0.4rem 0.9rem; cursor: pointer; font-size: 0.8rem;
   }
   .btn.accent { background: var(--accent); color: #0f1419; font-weight: 600; }
-  .btn.danger:hover { background: var(--err); color: #0f1419; }
   .err-msg { color: var(--err); font-size: 0.85rem; margin: 0.4rem 0; }
   .ok-msg { color: var(--accent); font-size: 0.85rem; margin: 0.4rem 0; }
   .howto { margin-top: 1.2rem; font-size: 0.85rem; }

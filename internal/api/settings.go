@@ -10,10 +10,14 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/settings"
 )
 
-// handleGetSettings returns the redacted overview — Werte verlassen den
-// Server nie im Klartext, nur gesetzt/Quelle/Endung.
+// handleGetSettings returns status AND plaintext values — bewusste
+// Nutzer-Entscheidung: konfigurierte Werte sind im Dashboard immer sichtbar
+// (LAN-only, hinter Login). Der Status liefert weiterhin die Quelle.
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.settings.View())
+	writeJSON(w, http.StatusOK, map[string]any{
+		"view":   s.settings.View(),
+		"values": s.settings.Values(),
+	})
 }
 
 // handleSaveSettings persists changed fields. Konvention: Feld fehlt (null)
@@ -47,26 +51,10 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	set(req.DropboxKey, settings.KeyDropboxKey, "app-key")
 	set(req.DropboxSecret, settings.KeyDropboxSecret, "app-secret")
 	set(req.DropboxToken, settings.KeyDropboxToken, "refresh-token")
-	writeJSON(w, http.StatusOK, s.settings.View())
-}
-
-// handleRevealSetting returns one plaintext value on explicit request —
-// bewusster Klick im Dashboard, immer auditiert (ohne den Wert).
-func (s *Server) handleRevealSetting(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Field string `json:"field"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); err != nil {
-		httpError(w, http.StatusBadRequest, "invalid json")
-		return
-	}
-	v := s.settings.Reveal(req.Field)
-	if v == "" {
-		httpError(w, http.StatusNotFound, "kein Wert gesetzt")
-		return
-	}
-	s.audit(r.Context(), "settings.reveal", "feld="+req.Field)
-	writeJSON(w, http.StatusOK, map[string]string{"value": v})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"view":   s.settings.View(),
+		"values": s.settings.Values(),
+	})
 }
 
 // handleTestDiscord sends a test embed to the currently effective webhook.

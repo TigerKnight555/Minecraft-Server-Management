@@ -159,7 +159,6 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 		mux.HandleFunc("PUT /api/settings", s.handleSaveSettings)
 		mux.HandleFunc("POST /api/settings/discord/test", s.handleTestDiscord)
-		mux.HandleFunc("POST /api/settings/reveal", s.handleRevealSetting)
 	}
 	// Phase 4.6
 	if s.admin != nil {

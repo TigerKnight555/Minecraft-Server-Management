@@ -111,24 +111,21 @@ func (s *Store) View() View {
 	}
 }
 
-// Reveal returns the effective plaintext value of one field (DB vor .env) —
-// nur für den bewussten „Anzeigen"-Klick im Dashboard; jeder Abruf wird vom
-// API-Handler auditiert. Unbekanntes Feld -> "".
-func (s *Store) Reveal(field string) string {
-	switch field {
-	case "discordWebhook":
-		if v := s.value(KeyDiscordWebhook); v != "" {
-			return v
-		}
-		return strings.TrimSpace(os.Getenv("MSM_DISCORD_WEBHOOK_URL"))
-	case "dropboxKey":
-		return s.DropboxConfig().AppKey
-	case "dropboxSecret":
-		return s.DropboxConfig().AppSecret
-	case "dropboxToken":
-		return s.DropboxConfig().RefreshToken
+// Values returns the effective plaintext values (DB vor .env) für die
+// Anzeige im Einstellungen-Tab. Bewusste Nutzer-Entscheidung: konfigurierte
+// Werte sind im Dashboard immer sichtbar (LAN-only + Login).
+func (s *Store) Values() map[string]string {
+	webhook := s.value(KeyDiscordWebhook)
+	if webhook == "" {
+		webhook = strings.TrimSpace(os.Getenv("MSM_DISCORD_WEBHOOK_URL"))
 	}
-	return ""
+	dbx := s.DropboxConfig()
+	return map[string]string{
+		"discordWebhook": webhook,
+		"dropboxKey":     dbx.AppKey,
+		"dropboxSecret":  dbx.AppSecret,
+		"dropboxToken":   dbx.RefreshToken,
+	}
 }
 
 func tail(v string) string {

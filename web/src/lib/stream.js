@@ -168,5 +168,3 @@ export const versionUpgradeStatus = () => apiFetch('/api/version-upgrade/status'
 export const getSettings = () => apiFetch('/api/settings')
 export const saveSettings = (s) => apiFetch('/api/settings', { method: 'PUT', body: JSON.stringify(s) })
 export const testDiscord = () => apiFetch('/api/settings/discord/test', { method: 'POST' })
-export const revealSetting = (field) =>
-  apiFetch('/api/settings/reveal', { method: 'POST', body: JSON.stringify({ field }) })
