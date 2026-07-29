@@ -99,6 +99,15 @@ func (o *Orchestrator) Status() string {
 	return o.status
 }
 
+// Active meldet, ob gerade ein Versionssprung läuft. Der Down-Wächter muss
+// währenddessen schweigen — ein geplantes Update ist nie „unerwartet offline"
+// (Learning 15: das gescheiterte 26.2-Update erzeugte 6 Fehlalarme).
+func (o *Orchestrator) Active() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.running
+}
+
 func (o *Orchestrator) setStatus(s string) {
 	o.mu.Lock()
 	o.status = s

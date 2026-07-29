@@ -292,7 +292,8 @@ func main() {
 		}
 		return false
 	}
-	go watchers.NewDown(coll, mcName, sched.ExpectedDown, desiredStopped, bus).Run(ctx)
+	// NewDown startet weiter unten — er braucht den Upgrade-Orchestrator,
+	// um während eines Versionssprungs zu schweigen.
 	go watchers.NewNet(func() collector.WANSample { return coll.Snapshot().WAN }, bus).Run(ctx)
 	go watchers.NewResource(hostState, bus).Run(ctx)
 	if err := sched.Start(ctx); err != nil {
@@ -335,6 +336,17 @@ func main() {
 		upgrader = upgrade.New(rcon, controller, coll, mcState, bkRunner, modmgr,
 			watcher, hostctl.NewSignaler(signalDir), bus, mcName, log)
 	}
+
+	// Down-Wächter erst jetzt: er muss den Upgrade-Zustand kennen, sonst
+	// meldet er ein geplantes Update als „unerwartet offline". Und er urteilt
+	// nach echter Minecraft-Erreichbarkeit, nicht nach Container-Status —
+	// sonst gibt es Entwarnungen mitten in einer Absturzschleife.
+	upgradeActive := func() bool { return upgrader != nil && upgrader.Active() }
+	go watchers.NewDown(coll, mcName,
+		func() bool { return sched.ExpectedDown() || upgradeActive() },
+		desiredStopped, bus).
+		WithMCOnline(func() bool { return mcState().Online }).
+		Run(ctx)
 
 	// Dropbox (Phase 4.8): Client liest die Credentials dynamisch aus dem
 	// Einstellungen-Store (.env als Fallback) — konfigurierbar im Dashboard.

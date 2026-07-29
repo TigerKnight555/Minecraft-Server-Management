@@ -110,14 +110,23 @@ type resolver interface {
 
 // Down alerts when the MC container is exited although nobody intended that:
 // keine laufende Routine (expectedDown) und Soll-Zustand nicht "stopped".
+//
+// „Wieder da" heißt: Minecraft antwortet — nicht bloß „Container läuft".
+// Beim gescheiterten 26.2-Update meldete der Wächter sechsmal Entwarnung,
+// weil der Container in der Absturzschleife immer wieder kurz auf "running"
+// stand, während die JVM hochfuhr und Sekunden später starb (Learning 16).
 type Down struct {
 	containers   resolver
 	mcName       string
-	expectedDown func() bool // scheduler: gerade absichtlich gestoppt?
+	mcOnline     func() bool // antwortet Minecraft wirklich? (nil = nur Container-Status)
+	expectedDown func() bool // scheduler/upgrade: gerade absichtlich unterwegs?
 	desiredStop  func() bool // soll-zustand: bewusst aus?
 	bus          *events.Bus
 	Interval     time.Duration
 	Grace        int // aufeinanderfolgende Down-Messungen bis Alarm
+	// StartGrace gilt, solange der Container läuft, Minecraft aber (noch)
+	// nicht antwortet — Start und Welt-Laden brauchen Zeit.
+	StartGrace int
 
 	downAlerted bool
 }
@@ -126,8 +135,15 @@ func NewDown(containers resolver, mcName string, expectedDown, desiredStop func(
 	return &Down{
 		containers: containers, mcName: mcName,
 		expectedDown: expectedDown, desiredStop: desiredStop, bus: bus,
-		Interval: 30 * time.Second, Grace: 2,
+		Interval: 30 * time.Second, Grace: 2, StartGrace: 10,
 	}
+}
+
+// WithMCOnline lets the watcher judge by actual Minecraft availability
+// instead of the container state alone.
+func (d *Down) WithMCOnline(f func() bool) *Down {
+	d.mcOnline = f
+	return d
 }
 
 func (d *Down) Run(ctx context.Context) {
@@ -152,7 +168,10 @@ func (d *Down) Run(ctx context.Context) {
 			misses = 0
 			continue
 		}
-		if running {
+		// Erreichbar = Container läuft UND Minecraft antwortet. Ohne
+		// mcOnline-Prüfer bleibt es beim reinen Container-Status.
+		reachable := running && (d.mcOnline == nil || d.mcOnline())
+		if reachable {
 			misses = 0
 			if d.downAlerted {
 				d.downAlerted = false
@@ -164,8 +183,14 @@ func (d *Down) Run(ctx context.Context) {
 			}
 			continue
 		}
+		// Container läuft, Minecraft schweigt noch: großzügiger sein, das
+		// ist der normale Start- bzw. Welt-Ladevorgang.
+		grace := d.Grace
+		if running {
+			grace = d.StartGrace
+		}
 		misses++
-		if misses >= d.Grace && !d.downAlerted {
+		if misses >= grace && !d.downAlerted {
 			d.downAlerted = true
 			d.bus.Publish(events.Event{
 				Type: events.TypeServerDown, Severity: events.SevError,
