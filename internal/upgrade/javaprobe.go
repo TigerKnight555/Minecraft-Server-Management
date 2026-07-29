@@ -24,6 +24,17 @@ type Inspector interface {
 // aus dem Tail-Fenster rutscht.
 var javaEnvRe = regexp.MustCompile(`(?i)^JAVA_VERSION=\D*(\d+)`)
 
+// ResolveID liefert die Container-ID zum Namen (Fallback: der Name selbst,
+// den die Docker-API ebenfalls akzeptiert).
+func ResolveID(containers resolver, mcName string) string {
+	for _, c := range containers.Containers() {
+		if c.Name == mcName {
+			return c.ID
+		}
+	}
+	return mcName
+}
+
 // NewImageJavaProbe liest die Java-Hauptversion des Minecraft-Containers.
 // 0 = unbekannt — dann blockiert der Guard bewusst nicht.
 func NewImageJavaProbe(insp Inspector, containers resolver, mcName string) func(context.Context) int {
@@ -31,13 +42,7 @@ func NewImageJavaProbe(insp Inspector, containers resolver, mcName string) func(
 		if insp == nil {
 			return 0
 		}
-		id := mcName
-		for _, c := range containers.Containers() {
-			if c.Name == mcName {
-				id = c.ID
-				break
-			}
-		}
+		id := ResolveID(containers, mcName)
 		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 		det, err := insp.InspectContainer(ctx, id)

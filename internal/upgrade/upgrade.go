@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -79,6 +80,16 @@ type Orchestrator struct {
 	// läuft in eine Neustart-Schleife (Learning 15, 26.2 braucht Java 25).
 	JavaProbe func(ctx context.Context) int
 
+	// Inspect/Tail sind optional und dienen dem Watchdog: Absturzschleifen
+	// früh erkennen (RestartCount) und die Ursache aus dem Log lesen, statt
+	// 25 Minuten stumm zu warten und dann „bitte Logs prüfen" zu melden
+	// (Learning 17/18).
+	Inspect  func(ctx context.Context) (collector.ContainerDetail, error)
+	TailLogs func(ctx context.Context, lines int) (string, error)
+	// CrashLimit: so viele Neustarts während des Watchdogs gelten als
+	// Absturzschleife -> sofortiger Abbruch mit Diagnose.
+	CrashLimit int
+
 	mu      sync.Mutex
 	running bool
 	status  string
@@ -95,6 +106,7 @@ func New(rcon collector.RCONClient, controller collector.ContainerController, co
 		WarnStep:      time.Minute,
 		OnlineTimeout: 25 * time.Minute,
 		PollStep:      10 * time.Second,
+		CrashLimit:    3,
 	}
 }
 
@@ -258,9 +270,22 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 	// Welt-Upgrade und darf dauern
 	o.setStatus("warte auf Server mit " + version + " (Welt-Upgrade kann dauern)")
 	deadline := time.Now().Add(o.OnlineTimeout)
+	baseRestarts := -1 // Startwert erst beim ersten erfolgreichen Inspect
 	for time.Now().Before(deadline) {
 		if st := o.mcStatus(); st.Online && st.Version == version {
 			return o.finish(ctx, version)
+		}
+		// Absturzschleife? Dann nicht bis zum Timeout warten — der Server
+		// startet reproduzierbar nicht (Learning 18).
+		if o.Inspect != nil && o.CrashLimit > 0 {
+			if det, err := o.Inspect(ctx); err == nil {
+				if baseRestarts < 0 {
+					baseRestarts = det.RestartCount
+				} else if det.RestartCount-baseRestarts >= o.CrashLimit {
+					return fmt.Errorf("server startet nicht (%d Fehlversuche in Folge): %s",
+						det.RestartCount-baseRestarts, o.explain(ctx))
+				}
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -268,7 +293,25 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 		case <-time.After(o.PollStep):
 		}
 	}
-	return fmt.Errorf("server meldete sich nach %s nicht mit Version %s — bitte Logs prüfen (Welt-Upgrade kann bei großen Welten länger dauern; der Watchdog gibt nur die Meldung auf, der Server startet ggf. trotzdem fertig)", o.OnlineTimeout, version)
+	return fmt.Errorf("server meldete sich nach %s nicht mit Version %s: %s",
+		o.OnlineTimeout, version, o.explain(ctx))
+}
+
+// explain liest das Container-Log und übersetzt bekannte Startfehler in
+// Klartext. Ohne Log-Zugriff bleibt es beim bisherigen Hinweis.
+func (o *Orchestrator) explain(ctx context.Context) string {
+	fallback := "bitte Logs prüfen (bei großen Welten kann das Welt-Upgrade länger dauern; der Server startet ggf. trotzdem fertig)"
+	if o.TailLogs == nil {
+		return fallback
+	}
+	logText, err := o.TailLogs(ctx, 400)
+	if err != nil || strings.TrimSpace(logText) == "" {
+		return fallback
+	}
+	if d := Diagnose(logText); d != "" {
+		return d
+	}
+	return fallback + "\nLetzte Logzeilen:\n" + LastLines(logText, 8)
 }
 
 // finish updates the client profile and celebrates.

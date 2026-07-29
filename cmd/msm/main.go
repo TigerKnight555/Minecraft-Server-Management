@@ -340,6 +340,18 @@ func main() {
 		// Schleife zu laufen (Learning 15).
 		if insp, ok := docker.(upgrade.Inspector); ok {
 			upgrader.JavaProbe = upgrade.NewImageJavaProbe(insp, coll, mcName)
+			// Watchdog: Absturzschleife früh erkennen statt 25 min zu warten
+			upgrader.Inspect = func(ctx context.Context) (collector.ContainerDetail, error) {
+				return insp.InspectContainer(ctx, upgrade.ResolveID(coll, mcName))
+			}
+		}
+		// Watchdog-Diagnose: Ursache aus dem Container-Log lesen
+		if lt, ok := docker.(interface {
+			TailLogs(context.Context, string, int) (string, error)
+		}); ok {
+			upgrader.TailLogs = func(ctx context.Context, lines int) (string, error) {
+				return lt.TailLogs(ctx, upgrade.ResolveID(coll, mcName), lines)
+			}
 		}
 	}
 
