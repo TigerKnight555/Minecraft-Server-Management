@@ -76,10 +76,12 @@ type PingResult struct {
 // ContainerDetail is the inspect subset MSM needs (exit codes for
 // short-lived job containers like the backup runner).
 type ContainerDetail struct {
-	Running    bool
-	ExitCode   int
-	StartedAt  time.Time
-	FinishedAt time.Time
+	Running      bool
+	ExitCode     int
+	StartedAt    time.Time
+	FinishedAt   time.Time
+	RestartCount int      // erkennt Absturzschleifen
+	Env          []string // Container-Umgebung, z. B. "JAVA_VERSION=jdk-21.0.8+9"
 }
 
 // DockerClient reads container information through the socket proxy.

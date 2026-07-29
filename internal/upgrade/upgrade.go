@@ -73,6 +73,12 @@ type Orchestrator struct {
 	// optional; läuft automatisch nach erfolgreichem Client-Mod-Update
 	Publish func(ctx context.Context) error
 
+	// JavaProbe meldet die Java-Hauptversion des laufenden Container-Images
+	// (0 = unbekannt). Neuere Minecraft-Versionen verlangen neueres Java;
+	// mit einem zu alten Image startet der Server gar nicht erst, sondern
+	// läuft in eine Neustart-Schleife (Learning 15, 26.2 braucht Java 25).
+	JavaProbe func(ctx context.Context) int
+
 	mu      sync.Mutex
 	running bool
 	status  string
@@ -142,6 +148,17 @@ func (o *Orchestrator) Start(version string) error {
 		if p.Profile == "server" && (p.Total == 0 || p.Ready < p.Total) {
 			o.mu.Unlock()
 			return fmt.Errorf("noch nicht alle Server-Mods für %s bereit (%d/%d)", version, p.Ready, p.Total)
+		}
+	}
+	// Java-Guard: das Image muss die Java-Version der Zielversion mitbringen.
+	// Ohne diese Prüfung lief die Kette komplett durch (Backup, Mod-Update,
+	// Container-Neubau) und der Server landete in einer Neustart-Schleife.
+	// Nur blocken, wenn beide Werte bekannt sind — sonst lieber durchlassen.
+	if last.RequiredJava > 0 && o.JavaProbe != nil {
+		if have := o.JavaProbe(context.Background()); have > 0 && have < last.RequiredJava {
+			o.mu.Unlock()
+			return fmt.Errorf("minecraft %s benötigt Java %d, das Container-Image liefert nur Java %d — Image aktualisieren: docker compose pull mc-fabric",
+				version, last.RequiredJava, have)
 		}
 	}
 	o.running = true

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -22,6 +23,10 @@ type WatchStatus struct {
 	LoaderReady    bool              `json:"loaderReady"`
 	Profiles       []ProfileReady    `json:"profiles"`
 	Stragglers     map[string]string `json:"stragglers"` // mod name -> profile
+	// RequiredJava ist die Java-Hauptversion, die die Zielversion verlangt
+	// (0 = unbekannt). MC 26.2 braucht Java 25 — mit einem Java-21-Image
+	// startet der Server gar nicht erst (Learning 15).
+	RequiredJava int `json:"requiredJava"`
 }
 
 type ProfileReady struct {
@@ -41,7 +46,8 @@ type Watcher struct {
 
 	mu   sync.Mutex
 	last *WatchStatus
-	bus  *events.Bus // optional; nil bus is a safe no-op
+	bus  *events.Bus  // optional; nil bus is a safe no-op
+	log  *slog.Logger // optional; nil = still
 
 	// optionaler Ankündigungs-Speicher: ohne ihn vergisst der Watcher bei
 	// jedem MSM-Neustart (= jedem Nacht-Reboot), was er schon gemeldet hat,
@@ -64,6 +70,12 @@ func (w *Watcher) SetEndpoints(manifest, fabric string) {
 	w.manifest, w.fabric = manifest, fabric
 }
 
+// WithLogger attaches a logger for best-effort diagnostics.
+func (w *Watcher) WithLogger(l *slog.Logger) *Watcher {
+	w.log = l
+	return w
+}
+
 // SetBus wires the event bus; version transitions are published there.
 func (w *Watcher) SetBus(b *events.Bus) { w.bus = b }
 
@@ -77,6 +89,13 @@ func (w *Watcher) Last() *WatchStatus {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.last
+}
+
+// logJavaLookupFailed hält den Fehlschlag fest, ohne den Check zu kippen.
+func (w *Watcher) logJavaLookupFailed(version string, err error) {
+	if w.log != nil {
+		w.log.Warn("java-anforderung nicht ermittelbar", "version", version, "err", err)
+	}
 }
 
 // SetLast stores a manually triggered check result.
@@ -203,6 +222,10 @@ func (w *Watcher) Check(ctx context.Context, currentVersion string) (*WatchStatu
 		Latest struct {
 			Release string `json:"release"`
 		} `json:"latest"`
+		Versions []struct {
+			ID  string `json:"id"`
+			URL string `json:"url"`
+		} `json:"versions"`
 	}
 	if err := w.getJSON(ctx, w.manifest, &manifest); err != nil {
 		return nil, fmt.Errorf("mojang manifest: %w", err)
@@ -211,6 +234,25 @@ func (w *Watcher) Check(ctx context.Context, currentVersion string) (*WatchStatu
 	status.NewerAvailable = manifest.Latest.Release != "" && manifest.Latest.Release != currentVersion
 	if !status.NewerAvailable {
 		return status, nil
+	}
+
+	// 1b. Java-Anforderung der Zielversion (best effort — ein Fehler hier
+	// darf den Check nicht kippen, RequiredJava bleibt dann 0 = unbekannt)
+	for _, v := range manifest.Versions {
+		if v.ID != status.LatestVersion || v.URL == "" {
+			continue
+		}
+		var meta struct {
+			JavaVersion struct {
+				MajorVersion int `json:"majorVersion"`
+			} `json:"javaVersion"`
+		}
+		if err := w.getJSON(ctx, v.URL, &meta); err != nil {
+			w.logJavaLookupFailed(status.LatestVersion, err)
+		} else {
+			status.RequiredJava = meta.JavaVersion.MajorVersion
+		}
+		break
 	}
 
 	// 2. fabric loader support

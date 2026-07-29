@@ -335,6 +335,12 @@ func main() {
 		bkRunner := backup.New(bd, coll, envOr("MSM_BACKUP_CONTAINER", "mc-backup"), log)
 		upgrader = upgrade.New(rcon, controller, coll, mcState, bkRunner, modmgr,
 			watcher, hostctl.NewSignaler(signalDir), bus, mcName, log)
+		// Java-Guard: Zielversion verlangt Java N, Image liefert Java M —
+		// passt es nicht, bricht die Kette ab, statt in eine Neustart-
+		// Schleife zu laufen (Learning 15).
+		if insp, ok := docker.(upgrade.Inspector); ok {
+			upgrader.JavaProbe = upgrade.NewImageJavaProbe(insp, coll, mcName)
+		}
 	}
 
 	// Down-Wächter erst jetzt: er muss den Upgrade-Zustand kennen, sonst

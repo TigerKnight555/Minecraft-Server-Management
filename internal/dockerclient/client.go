@@ -94,15 +94,21 @@ func (c *Client) InspectContainer(ctx context.Context, id string) (collector.Con
 			StartedAt  time.Time `json:"StartedAt"`
 			FinishedAt time.Time `json:"FinishedAt"`
 		} `json:"State"`
+		RestartCount int `json:"RestartCount"`
+		Config       struct {
+			Env []string `json:"Env"`
+		} `json:"Config"`
 	}
 	if err := c.get(ctx, "/containers/"+url.PathEscape(id)+"/json", &raw); err != nil {
 		return collector.ContainerDetail{}, err
 	}
 	return collector.ContainerDetail{
-		Running:    raw.State.Running,
-		ExitCode:   raw.State.ExitCode,
-		StartedAt:  raw.State.StartedAt,
-		FinishedAt: raw.State.FinishedAt,
+		Running:      raw.State.Running,
+		ExitCode:     raw.State.ExitCode,
+		StartedAt:    raw.State.StartedAt,
+		FinishedAt:   raw.State.FinishedAt,
+		RestartCount: raw.RestartCount,
+		Env:          raw.Config.Env,
 	}, nil
 }
 

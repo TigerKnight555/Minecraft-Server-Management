@@ -88,6 +88,7 @@
           {#each watch.profiles as p (p.profile)}
             · {p.profile}-Mods {p.ready}/{p.total}
           {/each}
+          {#if watch.requiredJava}· braucht Java {watch.requiredJava}{/if}
         </div>
         {#if Object.keys(watch.stragglers ?? {}).length}
           <div class="stragglers">
