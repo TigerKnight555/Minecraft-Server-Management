@@ -32,6 +32,15 @@ sed -i "s|^MC_VERSION=.*|MC_VERSION=$VERSION|" .env
 chown "$OWNER" .env
 logger -t msm-host-watcher "MC_VERSION=$VERSION gesetzt, erstelle mc-fabric neu"
 
+# Image vorher aktualisieren: neuere Minecraft-Versionen verlangen oft ein
+# neueres Java (26.2 braucht Java 25). Ein veraltetes Image startet dann gar
+# nicht — "UnsupportedClassVersionError" in einer Neustart-Schleife.
+# Fehlschlag ist nicht fatal (z. B. kein Netz): dann läuft der Versuch mit
+# dem vorhandenen Image weiter, MSM erkennt das Problem im Watchdog.
+docker compose pull mc-fabric >>/var/log/msm-upgrade.log 2>&1 \
+  && logger -t msm-host-watcher "Image für mc-fabric aktualisiert" \
+  || logger -t msm-host-watcher "WARNUNG: docker compose pull fehlgeschlagen — fahre mit vorhandenem Image fort"
+
 # nur mc-fabric — MSM und der Rest des Stacks bleiben unangetastet
 docker compose up -d mc-fabric >>/var/log/msm-upgrade.log 2>&1
 logger -t msm-host-watcher "mc-fabric mit Version $VERSION neu erstellt (exit $?)"
