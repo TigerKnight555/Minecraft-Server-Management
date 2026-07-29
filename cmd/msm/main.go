@@ -353,6 +353,9 @@ func main() {
 				return lt.TailLogs(ctx, upgrade.ResolveID(coll, mcName), lines)
 			}
 		}
+		// Rückfall auf die alte Version, wenn der Sprung scheitert und die
+		// Welt nachweislich unangetastet ist (Learning 19)
+		upgrader.ModRollback = modmgr.Rollback
 	}
 
 	// Down-Wächter erst jetzt: er muss den Upgrade-Zustand kennen, sonst

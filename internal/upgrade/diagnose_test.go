@@ -92,6 +92,8 @@ func TestWatchdogAbortsOnCrashLoopWithDiagnosis(t *testing.T) {
 	o.OnlineTimeout = 10 * time.Second // groß — der Abbruch muss vorher kommen
 	o.PollStep = time.Millisecond
 	o.CrashLimit = 3
+	// dieser Test prüft die Diagnose, nicht den Rückfall
+	o.AutoRollback = false
 
 	restarts := 0
 	o.Inspect = func(context.Context) (collector.ContainerDetail, error) {

@@ -90,6 +90,14 @@ type Orchestrator struct {
 	// Absturzschleife -> sofortiger Abbruch mit Diagnose.
 	CrashLimit int
 
+	// AutoRollback setzt den Server nach einem gescheiterten Sprung selbst
+	// auf die alte Version zurück — aber nur, wenn die Welt nachweislich
+	// nicht geöffnet wurde (Learning 19). ModRollback holt die zur alten
+	// Version passenden Mods zurück (mods.Manager.Rollback).
+	AutoRollback    bool
+	RollbackTimeout time.Duration
+	ModRollback     func(profile string) (int, error)
+
 	mu      sync.Mutex
 	running bool
 	status  string
@@ -107,6 +115,9 @@ func New(rcon collector.RCONClient, controller collector.ContainerController, co
 		OnlineTimeout: 25 * time.Minute,
 		PollStep:      10 * time.Second,
 		CrashLimit:    3,
+
+		AutoRollback:    true,
+		RollbackTimeout: 10 * time.Minute,
 	}
 }
 
@@ -205,6 +216,14 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 		Message: fmt.Sprintf("Der Server geht gleich für das Update offline (Warnung läuft, ca. %d min). Meldung folgt, sobald alles fertig ist.", o.WarnMinutes),
 	})
 
+	// Ausgangsversion merken — Rückfallziel, falls der Sprung scheitert
+	prevVersion := o.mcStatus().Version
+	if prevVersion == "" {
+		if last := o.watch.Last(); last != nil {
+			prevVersion = last.CurrentVersion
+		}
+	}
+
 	// 1. Spieler warnen (nur wenn der Server läuft)
 	id, running := o.resolve()
 	if running && o.rcon != nil {
@@ -282,8 +301,8 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 				if baseRestarts < 0 {
 					baseRestarts = det.RestartCount
 				} else if det.RestartCount-baseRestarts >= o.CrashLimit {
-					return fmt.Errorf("server startet nicht (%d Fehlversuche in Folge): %s",
-						det.RestartCount-baseRestarts, o.explain(ctx))
+					return o.recover(ctx, prevVersion, fmt.Errorf("server startet nicht (%d Fehlversuche in Folge): %s",
+						det.RestartCount-baseRestarts, o.explain(ctx)))
 				}
 			}
 		}
@@ -293,8 +312,8 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 		case <-time.After(o.PollStep):
 		}
 	}
-	return fmt.Errorf("server meldete sich nach %s nicht mit Version %s: %s",
-		o.OnlineTimeout, version, o.explain(ctx))
+	return o.recover(ctx, prevVersion, fmt.Errorf("server meldete sich nach %s nicht mit Version %s: %s",
+		o.OnlineTimeout, version, o.explain(ctx)))
 }
 
 // explain liest das Container-Log und übersetzt bekannte Startfehler in
