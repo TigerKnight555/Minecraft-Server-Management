@@ -212,8 +212,12 @@ func (o *Orchestrator) Start(version string) error {
 func (o *Orchestrator) run(ctx context.Context, version string) error {
 	o.bus.Publish(events.Event{
 		Type: events.TypeUpgradeStart, Severity: events.SevWarn,
-		Title:   "⬆️ Minecraft-Update auf " + version + " startet",
-		Message: fmt.Sprintf("Der Server geht gleich für das Update offline (Warnung läuft, ca. %d min). Meldung folgt, sobald alles fertig ist.", o.WarnMinutes),
+		Title: "⬆️ Minecraft-Update auf " + version + " startet",
+		// Ehrliche Zeitangabe: die „ca. 5 min" waren nur die Vorwarnung —
+		// beim 26.2-Versuch warteten die Spieler dann über eine halbe Stunde
+		// (Learning 20). Backup, Mod-Update und das erste Hochfahren mit
+		// Welt-Konvertierung brauchen ein Vielfaches davon.
+		Message: fmt.Sprintf("In %d Minuten geht der Server offline. Das Update selbst dauert erfahrungsgemäß 15–30 Minuten (Backup, Mods, Welt-Umstellung) — Meldung folgt, sobald er wieder da ist.", o.WarnMinutes),
 	})
 
 	// Ausgangsversion merken — Rückfallziel, falls der Sprung scheitert
