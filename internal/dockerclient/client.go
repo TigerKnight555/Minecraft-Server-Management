@@ -18,7 +18,10 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
 )
 
-const apiVersion = "v1.43"
+// Docker 29 lehnt alles unter API 1.44 ab ("client version 1.43 is too
+// old") — dann sieht MSM keinen Container mehr und Stop/Start/Backup/Update
+// scheitern. 1.44 = Docker 25+, also auch ältere Server.
+const apiVersion = "v1.44"
 
 type Client struct {
 	base string // e.g. http://socket-proxy:2375
