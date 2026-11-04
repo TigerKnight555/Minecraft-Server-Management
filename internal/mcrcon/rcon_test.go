@@ -3,6 +3,7 @@ package mcrcon
 import (
 	"context"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -24,6 +25,7 @@ func fakeRCONServer(t *testing.T, password, response string) string {
 		conn.SetDeadline(time.Now().Add(5 * time.Second))
 
 		// auth
+		var typ int32
 		id, _, payload, err := readPacket(conn)
 		if err != nil {
 			return
@@ -34,19 +36,13 @@ func fakeRCONServer(t *testing.T, password, response string) string {
 		}
 		writePacket(conn, id, typeAuthResponse, "")
 
-		// command
-		id, _, _, err = readPacket(conn)
-		if err != nil {
+		// command — wie echtes Minecraft: nur Typ 2 wird ausgeführt, jeder
+		// andere Typ beendet die Verbindung
+		id, typ, _, err = readPacket(conn)
+		if err != nil || typ != typeExecCommand {
 			return
 		}
-		writePacket(conn, id, typeResponse, response)
-
-		// sentinel
-		sid, _, _, err := readPacket(conn)
-		if err != nil {
-			return
-		}
-		writePacket(conn, sid, typeResponse, "")
+		writeResponse(conn, id, response)
 	}()
 	return ln.Addr().String()
 }
@@ -69,5 +65,41 @@ func TestExecWrongPassword(t *testing.T) {
 	c := New(addr, "wrong")
 	if _, err := c.Exec(context.Background(), "list"); err == nil {
 		t.Fatal("expected auth error, got nil")
+	}
+}
+
+// writeResponse antwortet wie Minecraft: lange Antworten in Stücken zu
+// maxChunk Bytes, alle mit der ID des Befehls.
+func writeResponse(conn net.Conn, id int32, response string) {
+	for {
+		n := len(response)
+		if n > maxChunk {
+			n = maxChunk
+		}
+		writePacket(conn, id, typeResponse, response[:n])
+		response = response[n:]
+		if n < maxChunk {
+			return
+		}
+	}
+}
+
+// Lange Antworten (z. B. "help") kommen in mehreren Stücken und werden
+// vollständig zusammengesetzt.
+func TestExecLongResponse(t *testing.T) {
+	for _, n := range []int{2*maxChunk + 123, 2 * maxChunk} {
+		long := strings.Repeat("x", n)
+		addr := fakeRCONServer(t, "secret", long)
+		start := time.Now()
+		out, err := New(addr, "secret").Exec(context.Background(), "help")
+		if err != nil {
+			t.Fatalf("%d Bytes: %v", n, err)
+		}
+		if out != long {
+			t.Errorf("Antwort %d Bytes, want %d", len(out), n)
+		}
+		if time.Since(start) > 2*time.Second {
+			t.Errorf("%d Bytes: Antwort dauerte %s", n, time.Since(start))
+		}
 	}
 }

@@ -89,23 +89,37 @@ func (c *Client) execOnce(ctx context.Context, command string) (string, error) {
 	if err := writePacket(conn, 2, typeExecCommand, command); err != nil {
 		return "", fmt.Errorf("exec write: %w", err)
 	}
-	// Responses can be fragmented; send a sentinel and read until its echo.
-	if err := writePacket(conn, 3, typeResponse, ""); err != nil {
-		return "", fmt.Errorf("sentinel write: %w", err)
-	}
-	var body string
+	// KEIN Sentinel-Paket: der übliche Trick (leeres Typ-0-Paket als
+	// Endmarke) lässt Minecraft (getestet 1.21.11) die Verbindung schließen,
+	// OHNE den Befehl auszuführen — alle say-Warnungen und save-all fielen
+	// still aus. Minecraft teilt lange Antworten in Stücke zu maxChunk
+	// Bytes; ein kürzeres Stück ist das letzte.
+	var body strings.Builder
 	for {
-		id, _, payload, err := readPacket(conn)
+		_, _, payload, err := readPacket(conn)
 		if err != nil {
+			// Antwort genau ein Vielfaches von maxChunk: es kommt kein
+			// kürzeres Schlussstück — nach kurzer Wartezeit ist sie komplett
+			var ne net.Error
+			if body.Len() > 0 && errors.As(err, &ne) && ne.Timeout() {
+				break
+			}
 			return "", fmt.Errorf("exec read: %w", err)
 		}
-		if id == 3 {
+		body.WriteString(payload)
+		if len(payload) < maxChunk {
 			break
 		}
-		body += payload
+		conn.SetReadDeadline(time.Now().Add(followUpWait))
 	}
-	return body, nil
+	return body.String(), nil
 }
+
+// followUpWait: so lange wird auf ein weiteres Antwort-Stück gewartet.
+const followUpWait = 300 * time.Millisecond
+
+// maxChunk ist die Stückgröße, in der Minecraft RCON-Antworten aufteilt.
+const maxChunk = 4096
 
 func writePacket(w io.Writer, id int32, ptype int32, payload string) error {
 	length := int32(4 + 4 + len(payload) + 2)

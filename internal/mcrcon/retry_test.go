@@ -37,16 +37,14 @@ func flakyRCONServer(t *testing.T, password, response string) (string, *atomic.I
 					return
 				}
 				writePacket(conn, id, typeAuthResponse, "")
-				id, _, _, err = readPacket(conn)
-				if err != nil {
+				var typ int32
+				// command — wie echtes Minecraft: nur Typ 2 wird ausgeführt, jeder
+				// andere Typ beendet die Verbindung
+				id, typ, _, err = readPacket(conn)
+				if err != nil || typ != typeExecCommand {
 					return
 				}
-				writePacket(conn, id, typeResponse, response)
-				sid, _, _, err := readPacket(conn)
-				if err != nil {
-					return
-				}
-				writePacket(conn, sid, typeResponse, "")
+				writeResponse(conn, id, response)
 			}()
 		}
 	}()
