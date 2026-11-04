@@ -2,6 +2,7 @@ package upgrade
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -180,6 +181,31 @@ func TestRollbackLeavesModsAloneWhenNothingWasApplied(t *testing.T) {
 	}
 	if rf.modRolled.Load() {
 		t.Error("Mods zurückgerollt, obwohl der Sprung keine getauscht hat")
+	}
+}
+
+// Scheitert das Einspielen der Server-Mods mittendrin, werden die schon
+// getauschten zurückgerollt, bevor der alte Server wieder startet.
+func TestPartialModApplyIsRolledBack(t *testing.T) {
+	o, rf, _ := newRollbackOrch(t, logWorldUntouched, "1.21.11")
+	rf.fakes.applyErr = errors.New("disk full")
+	rf.fakes.version.Store("1.21.11")
+	rf.fakes.online.Store(true)
+
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+
+	if !rf.modRolled.Load() {
+		t.Error("teilweise getauschte Mods nicht zurückgerollt")
+	}
+	if got, _ := rf.signalled.Load().(string); got != "" {
+		t.Errorf("Host-Signal trotz Mod-Fehler: %q", got)
+	}
+	steps := rf.fakes.list()
+	if steps[len(steps)-1] != "start" {
+		t.Errorf("alter Server nicht wieder gestartet: %v", steps)
 	}
 }
 

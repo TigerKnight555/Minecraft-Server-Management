@@ -28,8 +28,9 @@ type fakes struct {
 	applyErr error
 	// clientCheckErr lässt den Client-Mod-Check nach dem Sprung scheitern
 	clientCheckErr error
-	version  atomic.Value // string: was der "Server" nach dem Upgrade meldet
-	online   atomic.Bool
+	emptyClient    bool         // Client-Paket ohne Dateien
+	version        atomic.Value // string: was der "Server" nach dem Upgrade meldet
+	online         atomic.Bool
 }
 
 func (f *fakes) rec(s string) {
@@ -79,7 +80,13 @@ func (f *fakes) Run(context.Context) (string, error) {
 func (f *fakes) CheckUpdates(_ context.Context, profile, v string) ([]mods.Entry, error) {
 	f.rec("check:" + profile + "@" + v)
 	if profile == "client" {
-		return nil, f.clientCheckErr
+		if f.clientCheckErr != nil {
+			return nil, f.clientCheckErr
+		}
+		if f.emptyClient {
+			return nil, nil
+		}
+		return []mods.Entry{{Profile: "client", Filename: "sodium.jar"}}, nil
 	}
 	return nil, nil
 }
@@ -298,4 +305,57 @@ func TestClientStragglersAreNamed(t *testing.T) {
 		return
 	}
 	t.Fatal("keine Erfolgsmeldung")
+}
+
+// Ein leeres Client-Paket ist kein Fehler — kein Stage, kein Fehlalarm.
+func TestEmptyClientPackIsNoError(t *testing.T) {
+	f := &fakes{backupOK: true, emptyClient: true}
+	f.online.Store(true)
+	bus := events.New()
+	ch, cancel := bus.Subscribe(16)
+	defer cancel()
+	o := newOrch(f, bus)
+
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+
+	for _, s := range f.list() {
+		if s == "stage:client" {
+			t.Error("Stage für leeres Client-Paket aufgerufen")
+		}
+	}
+	for _, ev := range drain(ch) {
+		if ev.Type == events.TypeUpgradeOK && (strings.Contains(ev.Message, "konnten nicht") || len(ev.Fields) > 0) {
+			t.Errorf("Fehlalarm bei leerem Client-Paket: %q %+v", ev.Message, ev.Fields)
+		}
+	}
+}
+
+// Nachzügler aus einem Watch-Lauf für eine andere Version werden ignoriert.
+func TestStaleStragglersIgnored(t *testing.T) {
+	f := &fakes{backupOK: true}
+	st := readyFor("26.2", 0)
+	st.Stragglers = map[string]string{"Xaero's Minimap": "client"}
+	o := New(f, f, f, f.mcStatus, f, f, fixedReadiness{st}, f, events.New(), "mc-fabric", testLogger())
+	if got := o.clientStragglers("26.3", nil); len(got) != 0 {
+		t.Errorf("Nachzügler einer anderen Zielversion übernommen: %v", got)
+	}
+	if got := o.clientStragglers("26.2", nil); len(got) != 1 {
+		t.Errorf("Nachzügler der Zielversion fehlen: %v", got)
+	}
+}
+
+// Hat der Client-Check gerade einen Build zur Zielversion gefunden, ist der
+// Mod kein Nachzügler mehr — auch wenn der ältere Watch-Lauf das behauptet.
+func TestFreshlyUpdatedModIsNoStraggler(t *testing.T) {
+	f := &fakes{backupOK: true}
+	st := readyFor("26.2", 0)
+	st.Stragglers = map[string]string{"Xaero's Minimap": "client", "Iris": "client"}
+	o := New(f, f, f, f.mcStatus, f, f, fixedReadiness{st}, f, events.New(), "mc-fabric", testLogger())
+	got := o.clientStragglers("26.2", map[string]bool{"Iris": true})
+	if fmt.Sprint(got) != "[Xaero's Minimap]" {
+		t.Errorf("Nachzügler = %v, want nur Xaero's Minimap", got)
+	}
 }

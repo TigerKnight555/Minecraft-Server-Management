@@ -285,7 +285,15 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 	// beim Rückfall zurückgerollt werden, nie ein älteres Mod-Update
 	modLabel := ""
 	if label, n, err := o.modmgr.ApplyStaged("server"); err != nil && !errors.Is(err, mods.ErrNothingStaged) {
-		return restartOld(fmt.Errorf("mods einspielen: %w", err))
+		// Teil-Tausch: was schon getauscht ist, muss zurück — sonst startet
+		// der alte Server mit einem Mix aus alten und neuen Mods
+		cause := fmt.Errorf("mods einspielen: %w", err)
+		if label != "" && o.ModRollback != nil {
+			if _, rbErr := o.ModRollback("server", label); rbErr != nil {
+				cause = fmt.Errorf("%w; Zurückrollen der teilweise getauschten Mods ebenfalls fehlgeschlagen: %v", cause, rbErr)
+			}
+		}
+		return restartOld(cause)
 	} else if err == nil {
 		modLabel = label
 		o.log.Info("server-mods für zielversion eingespielt", "count", n, "backup", label)
@@ -353,15 +361,31 @@ func (o *Orchestrator) finish(ctx context.Context, version string) error {
 	// Jeder Fehler auf dem Client-Weg wird sichtbar — bisher endete ein
 	// gescheiterter Check/Download stumm: kein Paket, kein Hinweis.
 	var clientErr error
-	if _, err := o.modmgr.CheckUpdates(ctx, "client", version); err != nil {
+	// Mods, für die der Check gerade einen Build zur Zielversion gefunden
+	// hat, sind keine Nachzügler mehr — auch wenn der (bis zu 24 h alte)
+	// Versions-Watch das noch behauptet
+	nowAvailable := map[string]bool{}
+	entries, err := o.modmgr.CheckUpdates(ctx, "client", version)
+	for _, e := range entries {
+		if e.UpdateVersion != "" && e.Name != "" {
+			nowAvailable[e.Name] = true
+		}
+	}
+	switch {
+	case err != nil:
 		clientErr = fmt.Errorf("client-mod-check: %w", err)
-	} else if _, err := o.modmgr.Stage(ctx, "client", nil); err != nil {
-		clientErr = fmt.Errorf("client-mods herunterladen: %w", err)
-	} else if _, n, err := o.modmgr.ApplyStaged("client"); err == nil {
-		clientUpdated = true
-		clientNote = fmt.Sprintf(" %d Client-Mods wurden aktualisiert — Download-Link folgt.", n)
-	} else if !errors.Is(err, mods.ErrNothingStaged) {
-		clientErr = fmt.Errorf("client-mods einspielen: %w", err)
+	case len(entries) == 0:
+		// leeres Client-Paket: nichts zu tun — Stage würde sonst mit
+		// „erst Update-Check ausführen" einen Fehlalarm auslösen
+	default:
+		if _, err := o.modmgr.Stage(ctx, "client", nil); err != nil {
+			clientErr = fmt.Errorf("client-mods herunterladen: %w", err)
+		} else if _, n, err := o.modmgr.ApplyStaged("client"); err == nil {
+			clientUpdated = true
+			clientNote = fmt.Sprintf(" %d Client-Mods wurden aktualisiert — Download-Link folgt.", n)
+		} else if !errors.Is(err, mods.ErrNothingStaged) {
+			clientErr = fmt.Errorf("client-mods einspielen: %w", err)
+		}
 	}
 	var fields []events.Field
 	if clientErr != nil {
@@ -379,7 +403,7 @@ func (o *Orchestrator) finish(ctx context.Context, version string) error {
 	}
 	// Client-Mods ohne Build für die neue Version bleiben im Paket auf dem
 	// alten Stand — die Spieler müssen wissen, welche sie vorerst entfernen
-	if lagging := o.clientStragglers(); len(lagging) > 0 {
+	if lagging := o.clientStragglers(version, nowAvailable); len(lagging) > 0 {
 		clientNote += fmt.Sprintf(" Noch nicht für %s verfügbar (vorerst aus dem mods-Ordner nehmen): %s.",
 			version, strings.Join(lagging, ", "))
 	}
@@ -394,14 +418,18 @@ func (o *Orchestrator) finish(ctx context.Context, version string) error {
 
 // clientStragglers listet die Client-Mods, für die der Versions-Watch keine
 // passende Version zur Zielversion gefunden hat (sortiert).
-func (o *Orchestrator) clientStragglers() []string {
+//
+// Nur ein Watch-Ergebnis für genau diese Zielversion zählt: läuft der Watch
+// zwischendurch erneut, ist die Liste leer bzw. bezieht sich auf etwas
+// anderes.
+func (o *Orchestrator) clientStragglers(version string, nowAvailable map[string]bool) []string {
 	last := o.watch.Last()
-	if last == nil {
+	if last == nil || last.LatestVersion != version {
 		return nil
 	}
 	var out []string
 	for name, profile := range last.Stragglers {
-		if profile == "client" {
+		if profile == "client" && !nowAvailable[name] {
 			out = append(out, name)
 		}
 	}

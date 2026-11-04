@@ -154,13 +154,20 @@ func (c *Collector) MCVersion() string {
 
 // SetVersionStore lädt die zuletzt gesehene Minecraft-Version aus get und
 // speichert jede neu erkannte Version über set.
+// Run läuft schon, bevor der Store verdrahtet ist: hat der erste Poll die
+// Version bereits erkannt, wird sie hier nachträglich gespeichert — sonst
+// bliebe der Store bis zum nächsten Versionswechsel leer bzw. veraltet.
 func (c *Collector) SetVersionStore(get func() string, set func(string)) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.lastMCVersion == "" && get != nil {
+	c.versionSet = set
+	seen := c.lastMCVersion
+	if seen == "" && get != nil {
 		c.lastMCVersion = get()
 	}
-	c.versionSet = set
+	c.mu.Unlock()
+	if seen != "" && set != nil && (get == nil || get() != seen) {
+		set(seen)
+	}
 }
 
 func (c *Collector) Containers() []Container {

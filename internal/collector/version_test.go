@@ -32,3 +32,20 @@ func TestVersionStoreSeedsAndPersists(t *testing.T) {
 		t.Errorf("Store = %q, want 26.3", stored)
 	}
 }
+
+// Hat der erste Poll die Version schon vor dem Verdrahten des Stores
+// erkannt, muss sie trotzdem gespeichert werden.
+func TestVersionStorePersistsVersionSeenBeforeWiring(t *testing.T) {
+	stored := "1.21.11" // veralteter Wert
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	c := New(Config{}, nil, fixedMC{MCStatus{Online: true, Version: "26.2"}}, nil, nil, nil, log)
+	c.pollMC(context.Background())
+
+	c.SetVersionStore(func() string { return stored }, func(v string) { stored = v })
+	if stored != "26.2" {
+		t.Errorf("Store = %q, want 26.2", stored)
+	}
+	if got := c.MCVersion(); got != "26.2" {
+		t.Errorf("MCVersion = %q, want 26.2 (live schlägt Store)", got)
+	}
+}
