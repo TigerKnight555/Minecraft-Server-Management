@@ -308,6 +308,7 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 
 	// 5. Host-Helfer: MC_VERSION setzen + Container neu erstellen
 	o.setStatus("erstelle Server mit " + version + " neu (Host-Helfer)")
+	signalled := time.Now()
 	if err := o.signal.RequestUpgrade(version); err != nil {
 		return restartOld(err)
 	}
@@ -318,7 +319,7 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 	deadline := time.Now().Add(o.OnlineTimeout)
 	baseRestarts := -1 // Startwert erst beim ersten erfolgreichen Inspect
 	for time.Now().Before(deadline) {
-		if st := o.mcStatus(); st.Online && st.Version == version {
+		if st := o.mcStatus(); freshOnline(st, version, signalled) {
 			return o.finish(ctx, version)
 		}
 		// Host konnte den Container nicht neu erstellen: nicht bis zum
@@ -350,6 +351,16 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 	}
 	return o.recover(ctx, prevVersion, modLabel, fmt.Errorf("server meldete sich nach %s nicht mit Version %s: %s",
 		o.OnlineTimeout, version, o.explain(ctx)), false)
+}
+
+// freshOnline: der Server meldet sich mit der erwarteten Version — und zwar
+// in einer Abfrage NACH since. Ältere Werte zählen nicht: ist der Container
+// weg, hängt die Abfrage in der Namensauflösung (bis ~1 min), und bis dahin
+// steht noch „online" von vor dem Stopp im Snapshot. In der Testumgebung
+// meldete der Rückfall deshalb Erfolg, bevor der Container überhaupt
+// neu erstellt war.
+func freshOnline(st collector.MCStatus, version string, since time.Time) bool {
+	return st.Online && st.Version == version && !st.Time.Before(since)
 }
 
 // explain liest das Container-Log und übersetzt bekannte Startfehler in

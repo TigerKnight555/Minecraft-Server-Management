@@ -31,6 +31,7 @@ type fakes struct {
 	emptyClient    bool         // Client-Paket ohne Dateien
 	version        atomic.Value // string: was der "Server" nach dem Upgrade meldet
 	online         atomic.Bool
+	staleStatus    atomic.Bool // mcStatus liefert einen veralteten Snapshot
 }
 
 func (f *fakes) rec(s string) {
@@ -118,7 +119,11 @@ func (f *fakes) RequestUpgrade(version string) error {
 
 func (f *fakes) mcStatus() collector.MCStatus {
 	v, _ := f.version.Load().(string)
-	return collector.MCStatus{Online: f.online.Load(), Version: v}
+	at := time.Now()
+	if f.staleStatus.Load() {
+		at = at.Add(-time.Hour) // Snapshot von vor dem Stopp
+	}
+	return collector.MCStatus{Online: f.online.Load(), Version: v, Time: at}
 }
 
 func newOrch(f *fakes, bus *events.Bus) *Orchestrator {

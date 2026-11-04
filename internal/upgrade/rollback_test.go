@@ -255,4 +255,30 @@ func TestHostFailureTriggersImmediateRollback(t *testing.T) {
 	}
 }
 
+// Ein veralteter „online"-Snapshot von vor dem Stopp ist kein Beleg, dass
+// der alte Server zurück ist (in der Testumgebung beobachtet: Erfolgsmeldung
+// vor dem Container-Neubau).
+func TestStaleStatusIsNoRollbackSuccess(t *testing.T) {
+	o, rf, ch := newRollbackOrch(t, logWorldOpened, "")
+	o.RollbackTimeout = 100 * time.Millisecond
+	o.HostFailure = func() (string, bool) {
+		got, _ := rf.signalled.Load().(string)
+		return "compose up gescheitert", got == "26.2"
+	}
+	rf.fakes.version.Store("1.21.11")
+	rf.fakes.online.Store(true)
+	rf.fakes.staleStatus.Store(true)
+
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+
+	for _, ev := range drain(ch) {
+		if strings.Contains(ev.Title, "läuft wieder") {
+			t.Errorf("Erfolg auf Basis eines veralteten Snapshots gemeldet: %q", ev.Title)
+		}
+	}
+}
+
 var _ = collector.MCStatus{}

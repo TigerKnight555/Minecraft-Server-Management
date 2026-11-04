@@ -89,6 +89,7 @@ func (o *Orchestrator) recover(ctx context.Context, from, modLabel string, cause
 			modNote = fmt.Sprintf(" (%d Mod-Datei(en) zurückgerollt)", n)
 		}
 	}
+	requested := time.Now()
 	if err := o.signal.RequestUpgrade(from); err != nil {
 		return fmt.Errorf("%w — Rückfall auf %s ebenfalls fehlgeschlagen: %v", cause, from, err)
 	}
@@ -96,7 +97,7 @@ func (o *Orchestrator) recover(ctx context.Context, from, modLabel string, cause
 	// kurzer Watchdog: kommt der alte Stand wieder hoch?
 	deadline := time.Now().Add(o.RollbackTimeout)
 	for time.Now().Before(deadline) {
-		if st := o.mcStatus(); st.Online && st.Version == from {
+		if st := o.mcStatus(); freshOnline(st, from, requested) {
 			o.bus.Publish(events.Event{
 				Type: events.TypeServerUp, Severity: events.SevSuccess,
 				Title:   "✅ Server läuft wieder auf " + from,

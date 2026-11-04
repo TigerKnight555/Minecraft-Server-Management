@@ -315,12 +315,32 @@ func main() {
 	if kvGet != nil {
 		watcher.SetAnnounceStore(kvGet, kvSet)
 	}
-	go watcher.Run(ctx, func() string {
-		if v := coll.MCVersion(); v != "" {
-			return v
+	go func() {
+		// Erster Lauf direkt nach dem (Host-)Start: kurz auf die LIVE-Version
+		// warten. Die gespeicherte Version stimmt nach einem bewussten
+		// Rückschritt (Backup-Restore auf ältere Version) nicht — der Watch
+		// hielte die Welt dann 24 h lang für neuer, als sie ist.
+		wait := time.NewTimer(5 * time.Minute)
+		defer wait.Stop()
+		tick := time.NewTicker(5 * time.Second)
+		defer tick.Stop()
+	waitLive:
+		for !mcState().Online {
+			select {
+			case <-ctx.Done():
+				return
+			case <-wait.C:
+				break waitLive
+			case <-tick.C:
+			}
 		}
-		return os.Getenv("MC_VERSION")
-	})
+		watcher.Run(ctx, func() string {
+			if v := coll.MCVersion(); v != "" {
+				return v
+			}
+			return os.Getenv("MC_VERSION")
+		})
+	}()
 
 	// MSM-Selbst-Update (Entscheidung #15): Checker fragt GitHub nach dem
 	// neuesten Release-Tag; der Klick geht als Signaldatei an den Host-Helfer
