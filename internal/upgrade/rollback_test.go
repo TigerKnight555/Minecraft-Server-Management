@@ -9,6 +9,7 @@ import (
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
 )
 
 // Log eines Servers, der die Welt nie geöffnet hat (der reale 26.2-Fall).
@@ -73,7 +74,13 @@ func newRollbackOrch(t *testing.T, logText string, comeBack string) (*Orchestrat
 	o.RollbackTimeout = time.Second
 	o.CrashLimit = 0 // nur der Timeout-Pfad in diesem Test
 	o.TailLogs = func(context.Context, int) (string, error) { return logText, nil }
-	o.ModRollback = func(string) (int, error) { rf.modRolled.Store(true); return 2, nil }
+	o.ModRollback = func(_, label string) (int, error) {
+		if label != "L" {
+			t.Errorf("Mod-Rollback mit Label %q, want L (der Satz vom Sprung)", label)
+		}
+		rf.modRolled.Store(true)
+		return 2, nil
+	}
 	return o, rf, ch
 }
 
@@ -152,6 +159,27 @@ func TestNoRollbackWithoutLogAccess(t *testing.T) {
 
 	if got, _ := rf.signalled.Load().(string); got != "26.2" {
 		t.Errorf("Rückfall ohne Logeinsicht ausgelöst (Signal=%q)", got)
+	}
+}
+
+// Hat der Sprung keine Mods getauscht, darf der Rückfall auch keine Mods
+// anfassen — der neueste Backup-Satz stammt dann von einem älteren Update.
+func TestRollbackLeavesModsAloneWhenNothingWasApplied(t *testing.T) {
+	o, rf, _ := newRollbackOrch(t, logWorldUntouched, "1.21.11")
+	rf.fakes.applyErr = mods.ErrNothingStaged
+	rf.fakes.version.Store("1.21.11")
+	rf.fakes.online.Store(true)
+
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+
+	if got, _ := rf.signalled.Load().(string); got != "1.21.11" {
+		t.Errorf("Rückfall-Signal = %q, want 1.21.11", got)
+	}
+	if rf.modRolled.Load() {
+		t.Error("Mods zurückgerollt, obwohl der Sprung keine getauscht hat")
 	}
 }
 

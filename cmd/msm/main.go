@@ -206,6 +206,12 @@ func main() {
 	}
 	cfg := settings.New(kvGet, kvSet)
 
+	// zuletzt gesehene MC-Version überlebt Neustarts — MC_VERSION in der
+	// MSM-Umgebung ist nach einem Ein-Klick-Update veraltet
+	coll.SetVersionStore(
+		func() string { return kvGet("mc.version") },
+		func(v string) { kvSet("mc.version", v) })
+
 	notifier := notify.NewDiscord(cfg.DiscordHooks, log)
 	{
 		ch, _ := bus.Subscribe(64)
@@ -355,7 +361,7 @@ func main() {
 		}
 		// Rückfall auf die alte Version, wenn der Sprung scheitert und die
 		// Welt nachweislich unangetastet ist (Learning 19)
-		upgrader.ModRollback = modmgr.Rollback
+		upgrader.ModRollback = modmgr.RollbackLabel
 	}
 
 	// Down-Wächter erst jetzt: er muss den Upgrade-Zustand kennen, sonst

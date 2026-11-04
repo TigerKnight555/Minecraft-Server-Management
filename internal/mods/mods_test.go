@@ -227,3 +227,51 @@ func TestWatcherReadiness(t *testing.T) {
 		}
 	}
 }
+
+// RollbackLabel holt genau den angegebenen Satz zurück — auch wenn es einen
+// neueren gibt — und meldet einen unbekannten Satz als Fehler.
+func TestRollbackLabelRestoresOnlyThatSet(t *testing.T) {
+	mgr, profiles, _ := setup(t)
+	ctx := context.Background()
+	serverDir := profiles[0].Dirs["mods"]
+
+	if _, err := mgr.CheckUpdates(ctx, "server", "1.21.11"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Stage(ctx, "server", nil); err != nil {
+		t.Fatal(err)
+	}
+	label, applied, err := mgr.ApplyStaged("server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ein jüngerer, fremder Satz daneben darf nicht angefasst werden
+	newer := filepath.Join(serverDir, ".backup", "9999-12-31_23-59-59")
+	if err := os.MkdirAll(newer, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(newer, "manifest.json"),
+		[]byte(`{"items":[{"category":"mods","oldFilename":"fremd.jar","newFilename":"fremd-neu.jar"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(newer, "fremd.jar"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := mgr.RollbackLabel("server", "2000-01-01_00-00-00"); err == nil {
+		t.Error("unbekannter Satz ohne Fehler zurückgerollt")
+	}
+	if _, err := mgr.RollbackLabel("server", "../x"); err == nil {
+		t.Error("Pfad-Label akzeptiert")
+	}
+	restored, err := mgr.RollbackLabel("server", label)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored != applied {
+		t.Errorf("restored = %d, want %d", restored, applied)
+	}
+	if _, err := os.Stat(filepath.Join(serverDir, "fremd.jar")); !os.IsNotExist(err) {
+		t.Error("fremder, neuerer Backup-Satz wurde mit zurückgerollt")
+	}
+}

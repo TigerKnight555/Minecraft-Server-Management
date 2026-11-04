@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -92,11 +93,11 @@ type Orchestrator struct {
 
 	// AutoRollback setzt den Server nach einem gescheiterten Sprung selbst
 	// auf die alte Version zurück — aber nur, wenn die Welt nachweislich
-	// nicht geöffnet wurde (Learning 19). ModRollback holt die zur alten
-	// Version passenden Mods zurück (mods.Manager.Rollback).
+	// nicht geöffnet wurde (Learning 19). ModRollback holt genau den beim
+	// Sprung ersetzten Mod-Satz zurück (mods.Manager.RollbackLabel).
 	AutoRollback    bool
 	RollbackTimeout time.Duration
-	ModRollback     func(profile string) (int, error)
+	ModRollback     func(profile, label string) (int, error)
 
 	mu      sync.Mutex
 	running bool
@@ -178,9 +179,12 @@ func (o *Orchestrator) Start(version string) error {
 	// Container-Neubau) und der Server landete in einer Neustart-Schleife.
 	// Nur blocken, wenn beide Werte bekannt sind — sonst lieber durchlassen.
 	if last.RequiredJava > 0 && o.JavaProbe != nil {
+		// Die Probe liest den CONTAINER, nicht das Image: ein bloßes pull
+		// ändert daran nichts, der Container muss neu erstellt werden. Mit
+		// unveränderter MC_VERSION ist das gefahrlos (gleiche Version).
 		if have := o.JavaProbe(context.Background()); have > 0 && have < last.RequiredJava {
 			o.mu.Unlock()
-			return fmt.Errorf("minecraft %s benötigt Java %d, das Container-Image liefert nur Java %d — Image aktualisieren: docker compose pull mc-fabric",
+			return fmt.Errorf("minecraft %s benötigt Java %d, der Server-Container läuft mit Java %d — auf dem Host im Repo-Verzeichnis: docker compose pull mc-fabric && docker compose up -d mc-fabric (bleibt auf der aktuellen Version), danach Update erneut starten",
 				version, last.RequiredJava, have)
 		}
 	}
@@ -277,10 +281,14 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 	if _, err := o.modmgr.Stage(ctx, "server", nil); err != nil {
 		return restartOld(fmt.Errorf("mods stagen: %w", err))
 	}
-	if _, n, err := o.modmgr.ApplyStaged("server"); err != nil && !errors.Is(err, mods.ErrNothingStaged) {
+	// modLabel: genau dieser Backup-Satz gehört zum Sprung — nur er darf
+	// beim Rückfall zurückgerollt werden, nie ein älteres Mod-Update
+	modLabel := ""
+	if label, n, err := o.modmgr.ApplyStaged("server"); err != nil && !errors.Is(err, mods.ErrNothingStaged) {
 		return restartOld(fmt.Errorf("mods einspielen: %w", err))
 	} else if err == nil {
-		o.log.Info("server-mods für zielversion eingespielt", "count", n)
+		modLabel = label
+		o.log.Info("server-mods für zielversion eingespielt", "count", n, "backup", label)
 	}
 
 	// 5. Host-Helfer: MC_VERSION setzen + Container neu erstellen
@@ -305,7 +313,7 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 				if baseRestarts < 0 {
 					baseRestarts = det.RestartCount
 				} else if det.RestartCount-baseRestarts >= o.CrashLimit {
-					return o.recover(ctx, prevVersion, fmt.Errorf("server startet nicht (%d Fehlversuche in Folge): %s",
+					return o.recover(ctx, prevVersion, modLabel, fmt.Errorf("server startet nicht (%d Fehlversuche in Folge): %s",
 						det.RestartCount-baseRestarts, o.explain(ctx)))
 				}
 			}
@@ -316,7 +324,7 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 		case <-time.After(o.PollStep):
 		}
 	}
-	return o.recover(ctx, prevVersion, fmt.Errorf("server meldete sich nach %s nicht mit Version %s: %s",
+	return o.recover(ctx, prevVersion, modLabel, fmt.Errorf("server meldete sich nach %s nicht mit Version %s: %s",
 		o.OnlineTimeout, version, o.explain(ctx)))
 }
 
@@ -342,15 +350,24 @@ func (o *Orchestrator) finish(ctx context.Context, version string) error {
 	o.setStatus("aktualisiere Client-Mods")
 	clientNote := ""
 	clientUpdated := false
-	if _, err := o.modmgr.CheckUpdates(ctx, "client", version); err == nil {
-		if _, err := o.modmgr.Stage(ctx, "client", nil); err == nil {
-			if _, n, err := o.modmgr.ApplyStaged("client"); err == nil {
-				clientUpdated = true
-				clientNote = fmt.Sprintf(" %d Client-Mods wurden aktualisiert — Download-Link folgt.", n)
-			} else if !errors.Is(err, mods.ErrNothingStaged) {
-				clientNote = " (Client-Mods konnten nicht automatisch aktualisiert werden — siehe Mods-Tab.)"
-			}
-		}
+	// Jeder Fehler auf dem Client-Weg wird sichtbar — bisher endete ein
+	// gescheiterter Check/Download stumm: kein Paket, kein Hinweis.
+	var clientErr error
+	if _, err := o.modmgr.CheckUpdates(ctx, "client", version); err != nil {
+		clientErr = fmt.Errorf("client-mod-check: %w", err)
+	} else if _, err := o.modmgr.Stage(ctx, "client", nil); err != nil {
+		clientErr = fmt.Errorf("client-mods herunterladen: %w", err)
+	} else if _, n, err := o.modmgr.ApplyStaged("client"); err == nil {
+		clientUpdated = true
+		clientNote = fmt.Sprintf(" %d Client-Mods wurden aktualisiert — Download-Link folgt.", n)
+	} else if !errors.Is(err, mods.ErrNothingStaged) {
+		clientErr = fmt.Errorf("client-mods einspielen: %w", err)
+	}
+	var fields []events.Field
+	if clientErr != nil {
+		o.log.Error("client-mods nach upgrade", "err", clientErr)
+		clientNote = " (Client-Mods konnten nicht automatisch aktualisiert werden — der Admin kümmert sich.)"
+		fields = append(fields, events.Field{Name: "Details", Value: clientErr.Error()})
 	}
 	// neues Paket automatisch verteilen, damit niemand mit alten Mods
 	// gegen den neuen Server anrennt
@@ -360,12 +377,36 @@ func (o *Orchestrator) finish(ctx context.Context, version string) error {
 			clientNote += " (Paket-Upload fehlgeschlagen — im Mods-Tab manuell veröffentlichen.)"
 		}
 	}
+	// Client-Mods ohne Build für die neue Version bleiben im Paket auf dem
+	// alten Stand — die Spieler müssen wissen, welche sie vorerst entfernen
+	if lagging := o.clientStragglers(); len(lagging) > 0 {
+		clientNote += fmt.Sprintf(" Noch nicht für %s verfügbar (vorerst aus dem mods-Ordner nehmen): %s.",
+			version, strings.Join(lagging, ", "))
+	}
 	o.bus.Publish(events.Event{
 		Type: events.TypeUpgradeOK, Severity: events.SevSuccess,
 		Title:   "🎉 Server läuft jetzt auf Minecraft " + version + "!",
 		Message: "Update fertig, es kann weitergehen." + clientNote,
+		Fields:  fields,
 	})
 	return nil
+}
+
+// clientStragglers listet die Client-Mods, für die der Versions-Watch keine
+// passende Version zur Zielversion gefunden hat (sortiert).
+func (o *Orchestrator) clientStragglers() []string {
+	last := o.watch.Last()
+	if last == nil {
+		return nil
+	}
+	var out []string
+	for name, profile := range last.Stragglers {
+		if profile == "client" {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (o *Orchestrator) resolve() (id string, running bool) {

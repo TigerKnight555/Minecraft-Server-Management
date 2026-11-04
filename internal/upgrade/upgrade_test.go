@@ -26,6 +26,8 @@ type fakes struct {
 	steps    []string
 	backupOK bool
 	applyErr error
+	// clientCheckErr lässt den Client-Mod-Check nach dem Sprung scheitern
+	clientCheckErr error
 	version  atomic.Value // string: was der "Server" nach dem Upgrade meldet
 	online   atomic.Bool
 }
@@ -76,6 +78,9 @@ func (f *fakes) Run(context.Context) (string, error) {
 // ModManager
 func (f *fakes) CheckUpdates(_ context.Context, profile, v string) ([]mods.Entry, error) {
 	f.rec("check:" + profile + "@" + v)
+	if profile == "client" {
+		return nil, f.clientCheckErr
+	}
 	return nil, nil
 }
 func (f *fakes) Stage(_ context.Context, profile string, _ []string) (int, error) {
@@ -220,4 +225,77 @@ func TestUpgradeGuards(t *testing.T) {
 		t.Errorf("doppelstart akzeptiert: %v", err)
 	}
 	waitDone(t, o)
+}
+
+// Scheitert der Client-Weg, darf das nicht mehr stumm bleiben: kein
+// Paket-Upload, aber ein sichtbarer Hinweis samt Details in der Meldung.
+func TestClientModFailureIsReported(t *testing.T) {
+	f := &fakes{backupOK: true, clientCheckErr: errors.New("modrinth 503")}
+	f.online.Store(true)
+	bus := events.New()
+	ch, cancel := bus.Subscribe(16)
+	defer cancel()
+	o := newOrch(f, bus)
+	published := false
+	o.Publish = func(context.Context) error { published = true; return nil }
+
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+
+	if published {
+		t.Error("Paket veröffentlicht, obwohl die Client-Mods nicht aktualisiert wurden")
+	}
+	var ok *events.Event
+	for _, ev := range drain(ch) {
+		if ev.Type == events.TypeUpgradeOK {
+			ev := ev
+			ok = &ev
+		}
+	}
+	if ok == nil {
+		t.Fatal("keine Erfolgsmeldung — der Server-Sprung selbst hat geklappt")
+	}
+	if !strings.Contains(ok.Message, "Client-Mods konnten nicht") {
+		t.Errorf("kein Hinweis für die Spieler: %q", ok.Message)
+	}
+	if len(ok.Fields) == 0 || !strings.Contains(ok.Fields[0].Value, "modrinth 503") {
+		t.Errorf("Fehlerdetails fehlen: %+v", ok.Fields)
+	}
+}
+
+// Client-Nachzügler aus dem Versions-Watch werden in der Erfolgsmeldung
+// genannt — sonst starten Spieler mit inkompatiblen Mods.
+func TestClientStragglersAreNamed(t *testing.T) {
+	f := &fakes{backupOK: true}
+	f.online.Store(true)
+	bus := events.New()
+	ch, cancel := bus.Subscribe(16)
+	defer cancel()
+	st := readyFor("26.2", 0)
+	st.Stragglers = map[string]string{"Xaero's Minimap": "client", "Lithium": "server"}
+	o := New(f, f, f, f.mcStatus, f, f, fixedReadiness{st}, f, bus, "mc-fabric", testLogger())
+	o.WarnMinutes = 1
+	o.WarnStep = time.Millisecond
+	o.PollStep = time.Millisecond
+
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+
+	for _, ev := range drain(ch) {
+		if ev.Type != events.TypeUpgradeOK {
+			continue
+		}
+		if !strings.Contains(ev.Message, "Xaero's Minimap") {
+			t.Errorf("Client-Nachzügler nicht genannt: %q", ev.Message)
+		}
+		if strings.Contains(ev.Message, "Lithium") {
+			t.Errorf("Server-Mod als Client-Nachzügler genannt: %q", ev.Message)
+		}
+		return
+	}
+	t.Fatal("keine Erfolgsmeldung")
 }

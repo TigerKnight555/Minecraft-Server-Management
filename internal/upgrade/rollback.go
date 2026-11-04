@@ -44,7 +44,11 @@ func WorldOpened(logText string) bool {
 // recover versucht nach einem gescheiterten Sprung den alten Zustand
 // wiederherzustellen. Der Rückgabewert ist immer ein Fehler — er beschreibt,
 // was passiert ist; der Aufrufer meldet ihn nach Discord.
-func (o *Orchestrator) recover(ctx context.Context, from string, cause error) error {
+//
+// modLabel ist der Backup-Satz, den die Kette beim Sprung angelegt hat ("" =
+// es wurden keine Mods getauscht). Nur dieser Satz wird zurückgerollt — der
+// neueste .backup-Ordner kann sonst von einem älteren Mod-Update stammen.
+func (o *Orchestrator) recover(ctx context.Context, from, modLabel string, cause error) error {
 	if !o.AutoRollback || from == "" || o.signal == nil {
 		return cause
 	}
@@ -71,8 +75,8 @@ func (o *Orchestrator) recover(ctx context.Context, from string, cause error) er
 	// Mods gehören zur Version: die Kette hat sie auf die Zielversion
 	// gehoben, für den alten Server müssen sie zurück.
 	modNote := ""
-	if o.ModRollback != nil {
-		if n, err := o.ModRollback("server"); err != nil {
+	if o.ModRollback != nil && modLabel != "" {
+		if n, err := o.ModRollback("server", modLabel); err != nil {
 			modNote = fmt.Sprintf(" (Mod-Rollback fehlgeschlagen: %v — im Mods-Tab prüfen)", err)
 		} else {
 			modNote = fmt.Sprintf(" (%d Mod-Datei(en) zurückgerollt)", n)

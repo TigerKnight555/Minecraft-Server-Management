@@ -411,29 +411,71 @@ func (m *Manager) Rollback(profileName string) (int, error) {
 			continue
 		}
 		sort.Slice(labels, func(i, j int) bool { return labels[i].Name() > labels[j].Name() })
-		newest := filepath.Join(backupRoot, labels[0].Name())
-		man, err := readManifest(filepath.Join(newest, "manifest.json"))
+		n, err := restoreSet(liveDir, filepath.Join(backupRoot, labels[0].Name()))
+		restored += n
 		if err != nil {
-			continue
-		}
-		for _, it := range man.Items {
-			newPath := filepath.Join(liveDir, it.NewFilename)
-			if _, err := os.Stat(newPath); err == nil {
-				os.Rename(newPath, filepath.Join(newest, it.NewFilename+".rolledback"))
-			}
-			oldBackup := filepath.Join(newest, it.OldFilename)
-			if _, err := os.Stat(oldBackup); err == nil {
-				if err := os.Rename(oldBackup, filepath.Join(liveDir, it.OldFilename)); err != nil {
-					return restored, fmt.Errorf("rollback von %s: %w", it.OldFilename, err)
-				}
-				restored++
-			}
+			return restored, err
 		}
 	}
 	if restored == 0 {
 		return 0, fmt.Errorf("kein Backup zum Zurückrollen gefunden")
 	}
 	m.invalidate(profileName)
+	return restored, nil
+}
+
+// RollbackLabel restores exactly the backup set with the given label (the
+// one ApplyStaged returned). Anders als Rollback greift es nie auf einen
+// älteren Satz zurück — wichtig für den automatischen Rückfall nach einem
+// gescheiterten Versionssprung.
+func (m *Manager) RollbackLabel(profileName, label string) (int, error) {
+	p, err := m.profile(profileName)
+	if err != nil {
+		return 0, err
+	}
+	if label == "" || label != filepath.Base(label) || strings.HasPrefix(label, ".") {
+		return 0, fmt.Errorf("ungültiges Backup-Label %q", label)
+	}
+	restored := 0
+	for _, liveDir := range p.Dirs {
+		set := filepath.Join(liveDir, ".backup", label)
+		if _, err := os.Stat(set); err != nil {
+			continue
+		}
+		n, err := restoreSet(liveDir, set)
+		restored += n
+		if err != nil {
+			return restored, err
+		}
+	}
+	if restored == 0 {
+		return 0, fmt.Errorf("backup-satz %s nicht gefunden oder bereits zurückgerollt", label)
+	}
+	m.invalidate(profileName)
+	return restored, nil
+}
+
+// restoreSet moves the new files out of liveDir (into the set, suffixed)
+// and the backed-up old files back in.
+func restoreSet(liveDir, set string) (int, error) {
+	man, err := readManifest(filepath.Join(set, "manifest.json"))
+	if err != nil {
+		return 0, nil
+	}
+	restored := 0
+	for _, it := range man.Items {
+		newPath := filepath.Join(liveDir, it.NewFilename)
+		if _, err := os.Stat(newPath); err == nil {
+			os.Rename(newPath, filepath.Join(set, it.NewFilename+".rolledback"))
+		}
+		oldBackup := filepath.Join(set, it.OldFilename)
+		if _, err := os.Stat(oldBackup); err == nil {
+			if err := os.Rename(oldBackup, filepath.Join(liveDir, it.OldFilename)); err != nil {
+				return restored, fmt.Errorf("rollback von %s: %w", it.OldFilename, err)
+			}
+			restored++
+		}
+	}
 	return restored, nil
 }
 
