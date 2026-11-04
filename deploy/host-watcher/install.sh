@@ -4,7 +4,7 @@
 # sobald MSM die passende Signaldatei schreibt:
 #   reboot.request     -> systemctl reboot
 #   upgrade.request    -> MC_VERSION in .env setzen + compose up -d mc-fabric
-#   selfupdate.request -> git checkout <tag> + compose up -d --build msm
+#   selfupdate.request -> git checkout <tag> + compose up -d --no-deps --build msm
 # Pfade werden automatisch abgeleitet (kein Hardcoding) und in die Units
 # geschrieben. Idempotent — bei Updates einfach erneut ausführen.
 # Aufruf: sudo bash install.sh   (im Verzeichnis deploy/host-watcher)

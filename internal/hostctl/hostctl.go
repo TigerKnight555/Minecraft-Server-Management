@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
@@ -56,11 +57,33 @@ func (s *Signaler) RequestUpgrade(version string) error {
 	if !mcVersionRe.MatchString(version) {
 		return fmt.Errorf("ungültige Versionsangabe %q", version)
 	}
+	// alte Fehler-Rückmeldung verwerfen — sie gehört zu einem früheren Versuch
+	if err := os.Remove(filepath.Join(s.dir, "upgrade.failed")); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("alte Upgrade-Rückmeldung löschen: %w", err)
+	}
 	path := filepath.Join(s.dir, "upgrade.request")
 	if err := os.WriteFile(path, []byte(version+"\n"), 0o664); err != nil {
 		return fmt.Errorf("signaldatei schreiben (%s): %w — Host-Watcher installiert?", path, err)
 	}
 	return nil
+}
+
+// UpgradeFailure meldet, ob der Host-Helfer den Container-Neubau als
+// gescheitert zurückgemeldet hat (upgrade.failed, geschrieben vom Watcher;
+// die .env steht dann schon wieder auf der alten Version).
+func (s *Signaler) UpgradeFailure() (string, bool) {
+	if s.dir == "" {
+		return "", false
+	}
+	data, err := os.ReadFile(filepath.Join(s.dir, "upgrade.failed"))
+	if err != nil {
+		return "", false
+	}
+	msg := strings.TrimSpace(string(data))
+	if msg == "" {
+		msg = "Host-Helfer meldet einen Fehler ohne Details"
+	}
+	return msg, true
 }
 
 // selfUpdateTagRe: derselbe strenge Schnitt wie beim Host-Helfer — der Wert

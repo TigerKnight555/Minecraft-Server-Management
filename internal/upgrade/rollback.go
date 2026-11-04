@@ -48,21 +48,28 @@ func WorldOpened(logText string) bool {
 // modLabel ist der Backup-Satz, den die Kette beim Sprung angelegt hat ("" =
 // es wurden keine Mods getauscht). Nur dieser Satz wird zurückgerollt — der
 // neueste .backup-Ordner kann sonst von einem älteren Mod-Update stammen.
-func (o *Orchestrator) recover(ctx context.Context, from, modLabel string, cause error) error {
+//
+// neverStarted: der Host-Helfer hat gemeldet, dass der Container mit der
+// neuen Version gar nicht erst erstellt wurde. Dann ist die Welt sicher
+// unangetastet — und die Logprüfung wäre sogar irreführend, weil das Log
+// des alten Containers natürlich eine geöffnete Welt zeigt.
+func (o *Orchestrator) recover(ctx context.Context, from, modLabel string, cause error, neverStarted bool) error {
 	if !o.AutoRollback || from == "" || o.signal == nil {
 		return cause
 	}
-	// Ohne Logeinsicht kein automatischer Eingriff — zu riskant.
-	if o.TailLogs == nil {
-		return fmt.Errorf("%w — automatischer Rückfall übersprungen (keine Logeinsicht)", cause)
-	}
-	logText, err := o.TailLogs(ctx, 2000)
-	if err != nil {
-		return fmt.Errorf("%w — automatischer Rückfall übersprungen (Log nicht lesbar: %v)", cause, err)
-	}
-	if WorldOpened(logText) {
-		return fmt.Errorf("%w — KEIN automatischer Rückfall: die Welt wurde bereits geladen und ggf. konvertiert. "+
-			"Ein Versionsrücksprung würde sie nicht mehr öffnen. Rückweg ist das Backup von vor dem Update", cause)
+	if !neverStarted {
+		// Ohne Logeinsicht kein automatischer Eingriff — zu riskant.
+		if o.TailLogs == nil {
+			return fmt.Errorf("%w — automatischer Rückfall übersprungen (keine Logeinsicht)", cause)
+		}
+		logText, err := o.TailLogs(ctx, 2000)
+		if err != nil {
+			return fmt.Errorf("%w — automatischer Rückfall übersprungen (Log nicht lesbar: %v)", cause, err)
+		}
+		if WorldOpened(logText) {
+			return fmt.Errorf("%w — KEIN automatischer Rückfall: die Welt wurde bereits geladen und ggf. konvertiert. "+
+				"Ein Versionsrücksprung würde sie nicht mehr öffnen. Rückweg ist das Backup von vor dem Update", cause)
+		}
 	}
 
 	o.setStatus("Rückfall auf " + from)
@@ -96,6 +103,11 @@ func (o *Orchestrator) recover(ctx context.Context, from, modLabel string, cause
 				Message: "Das Update hat nicht geklappt, der alte Stand ist zurück — die Welt ist unversehrt." + modNote,
 			})
 			return fmt.Errorf("%w — Server wurde automatisch auf %s zurückgesetzt und läuft wieder%s", cause, from, modNote)
+		}
+		if o.HostFailure != nil {
+			if msg, failed := o.HostFailure(); failed {
+				return fmt.Errorf("%w — Rückfall auf %s ebenfalls gescheitert (Host-Helfer: %s)%s", cause, from, msg, modNote)
+			}
 		}
 		select {
 		case <-ctx.Done():

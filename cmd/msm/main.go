@@ -339,8 +339,11 @@ func main() {
 	var upgrader *upgrade.Orchestrator
 	if bd, ok := docker.(backup.Docker); ok {
 		bkRunner := backup.New(bd, coll, envOr("MSM_BACKUP_CONTAINER", "mc-backup"), log)
+		upgradeSignal := hostctl.NewSignaler(signalDir)
 		upgrader = upgrade.New(rcon, controller, coll, mcState, bkRunner, modmgr,
-			watcher, hostctl.NewSignaler(signalDir), bus, mcName, log)
+			watcher, upgradeSignal, bus, mcName, log)
+		// Rückmeldung des Host-Helfers: gescheiterter Container-Neubau
+		upgrader.HostFailure = upgradeSignal.UpgradeFailure
 		// Java-Guard: Zielversion verlangt Java N, Image liefert Java M —
 		// passt es nicht, bricht die Kette ab, statt in eine Neustart-
 		// Schleife zu laufen (Learning 15).

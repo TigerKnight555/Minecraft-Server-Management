@@ -99,6 +99,12 @@ type Orchestrator struct {
 	RollbackTimeout time.Duration
 	ModRollback     func(profile, label string) (int, error)
 
+	// HostFailure liest die Rückmeldung des Host-Helfers (upgrade.failed):
+	// scheitert dort der Container-Neubau, steht die .env schon wieder auf
+	// der alten Version und der neue Server lief nie. Optional —
+	// hostctl.Signaler.UpgradeFailure erfüllt das.
+	HostFailure func() (string, bool)
+
 	mu      sync.Mutex
 	running bool
 	status  string
@@ -314,6 +320,15 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 		if st := o.mcStatus(); st.Online && st.Version == version {
 			return o.finish(ctx, version)
 		}
+		// Host konnte den Container nicht neu erstellen: nicht bis zum
+		// Timeout warten — die neue Version lief nie, die Welt ist sicher
+		// unangetastet, der Rückfall braucht keine Logprüfung
+		if o.HostFailure != nil {
+			if msg, failed := o.HostFailure(); failed {
+				return o.recover(ctx, prevVersion, modLabel,
+					fmt.Errorf("host-helfer konnte den Server nicht mit %s neu erstellen: %s", version, msg), true)
+			}
+		}
 		// Absturzschleife? Dann nicht bis zum Timeout warten — der Server
 		// startet reproduzierbar nicht (Learning 18).
 		if o.Inspect != nil && o.CrashLimit > 0 {
@@ -322,7 +337,7 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 					baseRestarts = det.RestartCount
 				} else if det.RestartCount-baseRestarts >= o.CrashLimit {
 					return o.recover(ctx, prevVersion, modLabel, fmt.Errorf("server startet nicht (%d Fehlversuche in Folge): %s",
-						det.RestartCount-baseRestarts, o.explain(ctx)))
+						det.RestartCount-baseRestarts, o.explain(ctx)), false)
 				}
 			}
 		}
@@ -333,7 +348,7 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 		}
 	}
 	return o.recover(ctx, prevVersion, modLabel, fmt.Errorf("server meldete sich nach %s nicht mit Version %s: %s",
-		o.OnlineTimeout, version, o.explain(ctx)))
+		o.OnlineTimeout, version, o.explain(ctx)), false)
 }
 
 // explain liest das Container-Log und übersetzt bekannte Startfehler in

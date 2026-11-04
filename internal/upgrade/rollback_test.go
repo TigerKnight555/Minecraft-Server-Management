@@ -209,4 +209,50 @@ func TestPartialModApplyIsRolledBack(t *testing.T) {
 	}
 }
 
+// Meldet der Host-Helfer einen gescheiterten Neubau, kommt der Rückfall
+// sofort — ohne Timeout und obwohl das Log (des alten Containers) eine
+// geöffnete Welt zeigt: die neue Version lief nie.
+func TestHostFailureTriggersImmediateRollback(t *testing.T) {
+	o, rf, ch := newRollbackOrch(t, logWorldOpened, "1.21.11")
+	o.OnlineTimeout = 30 * time.Second // der Rückfall muss lange vorher kommen
+	o.HostFailure = func() (string, bool) {
+		got, _ := rf.signalled.Load().(string)
+		return "compose up gescheitert", got == "26.2"
+	}
+	rf.fakes.version.Store("1.21.11")
+	rf.fakes.online.Store(true)
+
+	start := time.Now()
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+
+	if time.Since(start) > 3*time.Second {
+		t.Errorf("Rückfall kam erst nach %s — bis zum Timeout gewartet?", time.Since(start))
+	}
+	if got, _ := rf.signalled.Load().(string); got != "1.21.11" {
+		t.Errorf("Rückfall-Signal = %q, want 1.21.11", got)
+	}
+	if !rf.modRolled.Load() {
+		t.Error("Mods für die Zielversion nicht zurückgerollt")
+	}
+	var back bool
+	var details string
+	for _, ev := range drain(ch) {
+		if strings.Contains(ev.Title, "läuft wieder auf 1.21.11") {
+			back = true
+		}
+		for _, f := range ev.Fields {
+			details += f.Value
+		}
+	}
+	if !back {
+		t.Error("keine Meldung über den geglückten Rückfall")
+	}
+	if !strings.Contains(details, "compose up gescheitert") {
+		t.Errorf("Ursache vom Host fehlt in den Details: %q", details)
+	}
+}
+
 var _ = collector.MCStatus{}
