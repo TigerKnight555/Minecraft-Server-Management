@@ -244,7 +244,7 @@ func TestClientModFailureIsReported(t *testing.T) {
 	defer cancel()
 	o := newOrch(f, bus)
 	published := false
-	o.Publish = func(context.Context) error { published = true; return nil }
+	o.Publish = func(context.Context) (bool, error) { published = true; return true, nil }
 
 	if err := o.Start("26.2"); err != nil {
 		t.Fatal(err)
@@ -357,5 +357,44 @@ func TestFreshlyUpdatedModIsNoStraggler(t *testing.T) {
 	got := o.clientStragglers("26.2", map[string]bool{"Iris": true})
 	if fmt.Sprint(got) != "[Xaero's Minimap]" {
 		t.Errorf("Nachzügler = %v, want nur Xaero's Minimap", got)
+	}
+}
+
+// Der Download-Link wird nur angekündigt, wenn das Paket wirklich
+// veröffentlicht wurde.
+func TestDownloadLinkOnlyAnnouncedWhenPublished(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		publish   func(context.Context) (bool, error)
+		want, not string
+	}{
+		{"veröffentlicht", func(context.Context) (bool, error) { return true, nil }, "Download-Link", "verteilt der Admin"},
+		{"nicht eingerichtet", func(context.Context) (bool, error) { return false, nil }, "verteilt der Admin", "Download-Link"},
+		{"ohne Publish", nil, "verteilt der Admin", "Download-Link"},
+		{"Upload-Fehler", func(context.Context) (bool, error) { return true, errors.New("dropbox weg") }, "Paket-Upload fehlgeschlagen", "Download-Link findet"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakes{backupOK: true}
+			f.online.Store(true)
+			bus := events.New()
+			ch, cancel := bus.Subscribe(16)
+			defer cancel()
+			o := newOrch(f, bus)
+			o.Publish = tc.publish
+			if err := o.Start("26.2"); err != nil {
+				t.Fatal(err)
+			}
+			waitDone(t, o)
+			for _, ev := range drain(ch) {
+				if ev.Type != events.TypeUpgradeOK {
+					continue
+				}
+				if !strings.Contains(ev.Message, tc.want) || strings.Contains(ev.Message, tc.not) {
+					t.Errorf("Meldung = %q (want %q, nicht %q)", ev.Message, tc.want, tc.not)
+				}
+				return
+			}
+			t.Fatal("keine Erfolgsmeldung")
+		})
 	}
 }

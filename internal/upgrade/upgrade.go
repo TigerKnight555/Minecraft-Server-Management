@@ -72,8 +72,9 @@ type Orchestrator struct {
 	PollStep      time.Duration
 
 	// Publish veröffentlicht das Client-Paket (Dropbox + Discord-Link) —
-	// optional; läuft automatisch nach erfolgreichem Client-Mod-Update
-	Publish func(ctx context.Context) error
+	// optional; läuft automatisch nach erfolgreichem Client-Mod-Update.
+	// published=false: Veröffentlichung ist nicht eingerichtet (kein Fehler)
+	Publish func(ctx context.Context) (published bool, err error)
 
 	// JavaProbe meldet die Java-Hauptversion des laufenden Container-Images
 	// (0 = unbekannt). Neuere Minecraft-Versionen verlangen neueres Java;
@@ -397,7 +398,7 @@ func (o *Orchestrator) finish(ctx context.Context, version string) error {
 			clientErr = fmt.Errorf("client-mods herunterladen: %w", err)
 		} else if _, n, err := o.modmgr.ApplyStaged("client"); err == nil {
 			clientUpdated = true
-			clientNote = fmt.Sprintf(" %d Client-Mods wurden aktualisiert — Download-Link folgt.", n)
+			clientNote = fmt.Sprintf(" %d Client-Mods wurden aktualisiert.", n)
 		} else if !errors.Is(err, mods.ErrNothingStaged) {
 			clientErr = fmt.Errorf("client-mods einspielen: %w", err)
 		}
@@ -410,10 +411,23 @@ func (o *Orchestrator) finish(ctx context.Context, version string) error {
 	}
 	// neues Paket automatisch verteilen, damit niemand mit alten Mods
 	// gegen den neuen Server anrennt
-	if clientUpdated && o.Publish != nil {
-		o.setStatus("veröffentliche Client-Paket")
-		if err := o.Publish(ctx); err != nil {
+	// Den Link nur ankündigen, wenn er wirklich gepostet wurde — ohne
+	// eingerichtete Veröffentlichung kam bisher „Download-Link folgt" und
+	// dann nichts (in der Testumgebung beobachtet).
+	if clientUpdated {
+		published := false
+		var pubErr error
+		if o.Publish != nil {
+			o.setStatus("veröffentliche Client-Paket")
+			published, pubErr = o.Publish(ctx)
+		}
+		switch {
+		case pubErr != nil:
 			clientNote += " (Paket-Upload fehlgeschlagen — im Mods-Tab manuell veröffentlichen.)"
+		case published:
+			clientNote += " Den Download-Link findet ihr in der Meldung „📦 Neues Mod-Paket“."
+		default:
+			clientNote += " Das neue Mod-Paket verteilt der Admin."
 		}
 	}
 	// Client-Mods ohne Build für die neue Version bleiben im Paket auf dem

@@ -391,11 +391,11 @@ func main() {
 		if upgrader != nil && clientDirs != nil {
 			// nach dem Ein-Klick-MC-Update das frische Client-Paket
 			// automatisch verteilen — nur wenn Dropbox konfiguriert ist
-			upgrader.Publish = func(ctx context.Context) error {
+			upgrader.Publish = func(ctx context.Context) (bool, error) {
 				if !dbx.Ready() {
-					return nil // Feature aus — kein Fehler, kein Hinweis nötig
+					return false, nil // Feature aus — kein Fehler
 				}
-				return dropbox.Publish(ctx, dbx, clientDirs, bus, log)
+				return true, dropbox.Publish(ctx, dbx, clientDirs, bus, log)
 			}
 		}
 	}
