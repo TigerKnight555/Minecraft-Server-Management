@@ -59,6 +59,7 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mcrcon"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mcstatus"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mock"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modnews"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modrinth"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/netcheck"
@@ -310,6 +311,10 @@ func main() {
 	loader := envOr("MSM_LOADER", "fabric")
 	modmgr := mods.NewManager(modAPI, loader, modProfiles)
 	sched.SetStagedApplier(modmgr)
+	// Mod-Neuigkeiten (Hinzufügen/Entfernen): sammelt angewendete
+	// Änderungen und meldet sie nach dem nächsten Neustart in Discord
+	news := modnews.New(kvGet, kvSet, bus, func() bool { return mcState().Online }, log)
+	modmgr.SetChangeHook(news.OnApply)
 	watcher := mods.NewWatcher(modAPI, modmgr, loader)
 	watcher.SetBus(bus)
 	if kvGet != nil {
@@ -385,6 +390,9 @@ func main() {
 		// Rückfall auf die alte Version, wenn der Sprung scheitert und die
 		// Welt nachweislich unangetastet ist (Learning 19)
 		upgrader.ModRollback = modmgr.RollbackLabel
+		upgrader.PendingChanges = func() bool {
+			return modmgr.HasStaged(mods.ProfileServer) || modmgr.HasStaged(mods.ProfileClient)
+		}
 	}
 
 	// Down-Wächter erst jetzt: er muss den Upgrade-Zustand kennen, sonst
@@ -401,24 +409,37 @@ func main() {
 	// Dropbox (Phase 4.8): Client liest die Credentials dynamisch aus dem
 	// Einstellungen-Store (.env als Fallback) — konfigurierbar im Dashboard.
 	dbx := dropbox.NewDynamic(cfg.DropboxConfig)
-	{
-		var clientDirs map[string]string
-		for _, p := range modProfiles {
-			if p.Name == "client" {
-				clientDirs = p.Dirs
-			}
-		}
-		if upgrader != nil && clientDirs != nil {
-			// nach dem Ein-Klick-MC-Update das frische Client-Paket
-			// automatisch verteilen — nur wenn Dropbox konfiguriert ist
-			upgrader.Publish = func(ctx context.Context) (bool, error) {
-				if !dbx.Ready() {
-					return false, nil // Feature aus — kein Fehler
-				}
-				return true, dropbox.Publish(ctx, dbx, clientDirs, bus, log)
-			}
+	var clientDirs map[string]string
+	for _, p := range modProfiles {
+		if p.Name == mods.ProfileClient {
+			clientDirs = p.Dirs
 		}
 	}
+	// publishPack ist der einzige Weg zum Paket-Versand (Button, MC-Update,
+	// Mod-Neuigkeiten) — jeder Erfolg löscht „Paket veraltet".
+	publishPack := func(ctx context.Context) error {
+		if clientDirs == nil {
+			return fmt.Errorf("kein Client-Profil konfiguriert")
+		}
+		if err := dropbox.Publish(ctx, dbx, clientDirs, bus, log); err != nil {
+			return err
+		}
+		news.Published()
+		return nil
+	}
+	if upgrader != nil && clientDirs != nil {
+		// nach dem Ein-Klick-MC-Update das frische Client-Paket
+		// automatisch verteilen — nur wenn Dropbox konfiguriert ist
+		upgrader.Publish = func(ctx context.Context) (bool, error) {
+			if !dbx.Ready() {
+				return false, nil // Feature aus — kein Fehler
+			}
+			return true, publishPack(ctx)
+		}
+	}
+	news.SetPublisher(dbx.Ready, publishPack)
+	news.SetBusy(upgradeActive)
+	go news.Run(ctx)
 
 	passwordHash := os.Getenv("MSM_ADMIN_PASSWORD_HASH")
 	if passwordHash == "" && !*mockMode {
@@ -452,6 +473,7 @@ func main() {
 				return maint != nil && maint.Active()
 			},
 			Dropbox:           dbx,
+			PublishPack:       publishPack,
 			Upgrader:          upgrader,
 			Settings:          cfg,
 			SelfUpdate:        updater,
