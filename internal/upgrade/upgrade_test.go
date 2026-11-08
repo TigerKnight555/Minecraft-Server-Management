@@ -403,3 +403,17 @@ func TestDownloadLinkOnlyAnnouncedWhenPublished(t *testing.T) {
 		})
 	}
 }
+
+func TestUpgradeRefusesWithPendingModChanges(t *testing.T) {
+	f := &fakes{backupOK: true}
+	f.online.Store(true)
+	o := newOrch(f, events.New())
+	o.PendingChanges = func() bool { return true }
+	err := o.Start("26.2")
+	if err == nil || !strings.Contains(err.Error(), "vorgemerkt") {
+		t.Fatalf("err = %v, want Hinweis auf vorgemerkte Änderungen", err)
+	}
+	if steps := f.list(); len(steps) != 0 {
+		t.Errorf("Kette lief trotzdem an: %v", steps)
+	}
+}

@@ -106,6 +106,11 @@ type Orchestrator struct {
 	// hostctl.Signaler.UpgradeFailure erfüllt das.
 	HostFailure func() (string, bool)
 
+	// PendingChanges meldet manuell vorgemerkte Mod-Änderungen (Mods-Tab).
+	// Sie gehören zur ALTEN Version — ein Sprung würde sie mit einspielen.
+	// Optional; true = Start verweigern.
+	PendingChanges func() bool
+
 	mu      sync.Mutex
 	running bool
 	status  string
@@ -160,6 +165,10 @@ func (o *Orchestrator) Start(version string) error {
 	if o.running {
 		o.mu.Unlock()
 		return fmt.Errorf("es läuft bereits ein Upgrade (%s)", o.status)
+	}
+	if o.PendingChanges != nil && o.PendingChanges() {
+		o.mu.Unlock()
+		return fmt.Errorf("im Mods-Tab sind Änderungen vorgemerkt — erst anwenden oder verwerfen, dann das Update starten")
 	}
 	// Guards VOR dem Start — der Button darf nur Grünes auslösen
 	last := o.watch.Last()
