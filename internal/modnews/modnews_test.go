@@ -184,3 +184,19 @@ func TestRunTriggersOnlyAfterOfflineOnlineAndNotWhileBusy(t *testing.T) {
 		t.Fatalf("keine Meldung nach Neustart: %+v", ev)
 	}
 }
+
+// Der Paket-Versand nach dem Neustart hat ein Zeitlimit.
+func TestAfterRestartPublishHasTimeout(t *testing.T) {
+	store := &kv{m: map[string]string{}}
+	a := New(store.get, store.set, events.New(), func() bool { return true }, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	var deadline time.Time
+	a.SetPublisher(func() bool { return true }, func(ctx context.Context) error {
+		deadline, _ = ctx.Deadline()
+		return nil
+	})
+	a.OnApply(mods.ProfileClient, []mods.Change{{Action: "update", Profile: mods.ProfileClient, Name: "Sodium"}})
+	a.AfterRestart(context.Background())
+	if deadline.IsZero() || time.Until(deadline) > 45*time.Minute {
+		t.Errorf("deadline = %v, want ≤ 45 min", deadline)
+	}
+}

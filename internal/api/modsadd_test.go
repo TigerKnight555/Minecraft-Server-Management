@@ -15,6 +15,7 @@ import (
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mock"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
 )
 
 func modsServer(t *testing.T) (*Server, []mods.Profile) {
@@ -253,5 +254,20 @@ func TestModChangesBlockedWhileUpgradeRuns(t *testing.T) {
 	}
 	if srv.modmgr.HasStaged(mods.ProfileServer) {
 		t.Error("trotz Sperre vorgemerkt")
+	}
+}
+
+// „Anwenden + Neustart" im Wartungsfenster: ablehnen statt 202.
+func TestAnnouncedApplyRefusedDuringMaintenance(t *testing.T) {
+	srv, _ := modsServer(t)
+	srv.sched = scheduler.New(nil, nil, nil, nil, srv.log)
+	srv.maintActive = func() bool { return true }
+	rec := do(srv, "POST", "/api/mods/remove", `{"profile":"server","filename":"lithium-0.21.2.jar"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("remove = %d %s", rec.Code, rec.Body)
+	}
+	rec = do(srv, "POST", "/api/mods/apply", `{"profile":"server","restart":true}`)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Wartungsfenster aktiv") {
+		t.Errorf("apply = %d %s, want 409 Wartungsfenster", rec.Code, rec.Body)
 	}
 }

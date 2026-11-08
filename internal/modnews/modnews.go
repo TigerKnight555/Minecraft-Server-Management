@@ -144,7 +144,9 @@ func (a *Announcer) AfterRestart(ctx context.Context) {
 		a.mu.Unlock()
 	}
 	if canPublish {
-		if err := a.publish(ctx); err != nil {
+		pctx, cancel := context.WithTimeout(ctx, 45*time.Minute)
+		defer cancel()
+		if err := a.publish(pctx); err != nil {
 			a.log.Error("client-paket nach neustart fehlgeschlagen", "err", err)
 		}
 	}

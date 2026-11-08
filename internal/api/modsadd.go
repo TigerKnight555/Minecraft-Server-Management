@@ -240,6 +240,10 @@ func (s *Server) handleModsApplyInfo(w http.ResponseWriter, r *http.Request) {
 // Vorwarnung, save-all, Stop → Tausch → Start, Watchdog. Vorher startete
 // der Button den Server sofort ohne Warnung neu.
 func (s *Server) startAnnouncedApply(w http.ResponseWriter, r *http.Request) {
+	if s.maintActive != nil && s.maintActive() {
+		httpError(w, http.StatusConflict, "Wartungsfenster aktiv — Neustart jetzt nicht möglich")
+		return
+	}
 	if !s.modmgr.HasStaged(mods.ProfileServer) {
 		httpError(w, http.StatusConflict, "für den Server ist nichts vorgemerkt")
 		return

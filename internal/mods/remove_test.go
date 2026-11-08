@@ -188,7 +188,7 @@ func TestClientRemoveAndUploadRefuseWhenOtherChangePending(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !mgr.HasStaged(mods.ProfileClient) {
-		t.Skip("Manifest-Format passt nicht — Test-Vorbereitung anpassen")
+		t.Fatal("Manifest-Format passt nicht — Test-Vorbereitung anpassen")
 	}
 	want := "schon Änderungen vorgemerkt"
 	if err := mgr.StageRemove(mods.ProfileClient, "b.jar"); err == nil || !strings.Contains(err.Error(), want) {
