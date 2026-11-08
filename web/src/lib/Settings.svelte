@@ -146,14 +146,15 @@ Das Dashboard ist während des Neubaus (~1-2 min) kurz nicht erreichbar. Der Min
       <ol>
         <li><a href="https://www.dropbox.com/developers/apps" target="_blank" rel="noreferrer">dropbox.com/developers/apps</a> öffnen (mit deinem Dropbox-Konto anmelden) → <strong>„Create app"</strong></li>
         <li>Auswahl: <strong>„Scoped access"</strong> → <strong>„App folder"</strong> (die App sieht nur ihren eigenen Ordner — die Pakete landen in <code>Apps/&lt;App-Name&gt;/MSM/</code>) → Name vergeben (muss Dropbox-weit eindeutig sein, z. B. <code>msm-meinserver</code>) → „Create app"</li>
-        <li>Auf der App-Seite: Reiter <strong>„Permissions"</strong> → Haken bei <code>files.content.write</code>, <code>files.content.read</code>, <code>sharing.write</code> → unten <strong>„Submit"</strong>. <em>Wichtig: VOR dem nächsten Schritt — sonst gilt der Token ohne diese Rechte und alles muss wiederholt werden.</em></li>
+        <li>Auf der App-Seite: Reiter <strong>„Permissions"</strong> → Haken bei <code>files.content.write</code>, <code>files.content.read</code>, <code>sharing.write</code>, <code>sharing.read</code> → unten <strong>„Submit"</strong>. <em>Wichtig: VOR dem nächsten Schritt — sonst gilt der Token ohne diese Rechte und alles muss wiederholt werden.</em></li>
         <li>Reiter <strong>„Settings"</strong>: dort stehen <strong>App key</strong> und <strong>App secret</strong> („Show" klicken) → beide oben eintragen</li>
         <li>Autorisierungs-Code holen — diese URL im Browser öffnen, <code>APP_KEY</code> ersetzen:<br />
           <code>https://www.dropbox.com/oauth2/authorize?client_id=APP_KEY&response_type=code&token_access_type=offline</code><br />
           → „Zulassen" → den angezeigten Code kopieren (einmalig gültig, wenige Minuten)</li>
-        <li>Refresh-Token tauschen — im Terminal (PC oder Server), <code>CODE/APP_KEY/APP_SECRET</code> ersetzen:<br />
+        <li>Refresh-Token tauschen — im Terminal (PC oder Server), <code>CODE/APP_KEY/APP_SECRET</code> ersetzen (Windows-PowerShell: <code>curl.exe</code> statt <code>curl</code> schreiben):<br />
           <code>curl https://api.dropbox.com/oauth2/token -d code=CODE -d grant_type=authorization_code -u APP_KEY:APP_SECRET</code><br />
-          → aus der JSON-Antwort den Wert von <code>"refresh_token"</code> kopieren (NICHT den <code>access_token</code> — der läuft nach 4 h ab) → oben eintragen</li>
+          → <strong>erst prüfen:</strong> <code>"scope"</code> in der Antwort muss <code>files.content.write</code> und <code>sharing.write</code> enthalten. Steht dort nur <code>account_info.read</code>, wurden die Rechte aus Schritt 3 nicht übernommen → dort „Submit" klicken und Schritt 5+6 wiederholen.<br />
+          → dann den Wert von <code>"refresh_token"</code> kopieren (NICHT den <code>access_token</code> — der läuft nach 4 h ab) → oben eintragen</li>
         <li><strong>Speichern</strong> → Status muss auf „✔ einsatzbereit" springen → Probelauf: Mods-Tab → Profil „Client-Paket" → „Client-Paket veröffentlichen"</li>
       </ol>
       <p class="dim">Der Refresh-Token läuft nicht ab; MSM holt sich damit selbstständig kurzlebige Zugriffstoken. Bei Fehler „invalid_grant": Code war abgelaufen/verbraucht — Schritt 5+6 wiederholen.</p>

@@ -147,3 +147,24 @@ func TestConfigComplete(t *testing.T) {
 		t.Error("vollständige Config als unvollständig gemeldet")
 	}
 }
+
+// Häufigster Einrichtungsfehler (2026-11-08 real erlebt): Rechte erst nach
+// dem Autorisieren gesetzt → Token nur account_info.read → missing_scope.
+// Die Meldung muss sagen, was zu tun ist, nicht nur den Rohfehler zeigen.
+func TestMissingScopeExplained(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/oauth2/token") {
+			json.NewEncoder(w).Encode(map[string]any{"access_token": "AT", "expires_in": 14400})
+			return
+		}
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error_summary":"missing_scope/..","error":{".tag":"missing_scope","required_scope":"files.content.write"}}`))
+	}))
+	defer srv.Close()
+	c := New(Config{AppKey: "k", AppSecret: "s", RefreshToken: "r"})
+	c.SetEndpoints(srv.URL+"/oauth2/token", srv.URL, srv.URL)
+	err := c.Upload(context.Background(), "/MSM/x.zip", strings.NewReader("data"))
+	if err == nil || !strings.Contains(err.Error(), "Permissions") || !strings.Contains(err.Error(), "neu autorisieren") {
+		t.Fatalf("err = %v, want Klartext-Hinweis zu fehlenden Rechten", err)
+	}
+}

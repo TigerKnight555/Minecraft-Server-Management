@@ -33,6 +33,9 @@ func Publish(ctx context.Context, c *Client, dirs map[string]string, bus *events
 		return err
 	}
 	if err := c.Upload(ctx, name, pr); err != nil {
+		// Leseseite schließen, sonst blockiert die ZIP-Goroutine für immer
+		// im Schreiben (Goroutine + offene Dateien leaken je Fehlversuch)
+		pr.CloseWithError(err)
 		return fail(err)
 	}
 	link, err := c.ShareLink(ctx, name)

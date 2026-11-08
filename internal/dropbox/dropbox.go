@@ -204,12 +204,22 @@ func (c *Client) api(ctx context.Context, tok, endpoint, body string, out any) e
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("dropbox %s: %s: %s", endpoint, resp.Status, raw)
+		return apiError(endpoint, resp.Status, raw)
 	}
 	if out != nil {
 		return json.Unmarshal(raw, out)
 	}
 	return nil
+}
+
+// apiError formats a Dropbox error; missing_scope bekommt einen Klartext-
+// Hinweis — häufigster Einrichtungsfehler: Rechte erst NACH dem Autorisieren
+// gesetzt, der Token hat dann nur account_info.read.
+func apiError(endpoint, status string, raw []byte) error {
+	if bytes.Contains(raw, []byte("missing_scope")) {
+		return fmt.Errorf("Dropbox-Token fehlen Rechte (missing_scope) — in der Dropbox-App unter „Permissions“ files.content.write, files.content.read, sharing.write und sharing.read setzen, „Submit“ klicken, dann neu autorisieren und den neuen Refresh-Token eintragen (Anleitung im Einstellungen-Tab). Dropbox meldet: %s", raw)
+	}
+	return fmt.Errorf("dropbox %s: %s: %s", endpoint, status, raw)
 }
 
 // content posts to content.dropboxapi.com with the API arg header.
@@ -231,7 +241,7 @@ func (c *Client) content(ctx context.Context, tok, endpoint, apiArg string, body
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("dropbox %s: %s: %s", endpoint, resp.Status, raw)
+		return apiError(endpoint, resp.Status, raw)
 	}
 	if out != nil {
 		return json.Unmarshal(raw, out)
