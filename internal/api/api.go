@@ -3,12 +3,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/auth"
@@ -39,6 +41,8 @@ type Server struct {
 	maintActive       func() bool // Wartungsfenster gerade aktiv?
 	dropbox           *dropbox.Client
 	upgrader          *upgrade.Orchestrator
+	publishPack       func(ctx context.Context) error // Client-Paket-Versand inkl. Zustands-Pflege
+	applyBusy         atomic.Bool                     // „Anwenden + Neustart" läuft
 	settings          *settings.Store
 	selfupdate        *selfupdate.Checker
 	mcContainer       string
@@ -66,6 +70,7 @@ type Deps struct {
 	MaintActive       func() bool // maintenance.Manager.Active
 	Dropbox           *dropbox.Client
 	Upgrader          *upgrade.Orchestrator
+	PublishPack       func(ctx context.Context) error // optional; nil = dropbox.Publish direkt
 	Settings          *settings.Store
 	SelfUpdate        *selfupdate.Checker
 	MCContainer       string   // name of the minecraft container (mod apply restart)
@@ -99,6 +104,7 @@ func New(d Deps) *Server {
 		maintActive:       d.MaintActive,
 		dropbox:           d.Dropbox,
 		upgrader:          d.Upgrader,
+		publishPack:       d.PublishPack,
 		settings:          d.Settings,
 		selfupdate:        d.SelfUpdate,
 		mcContainer:       d.MCContainer,
@@ -138,6 +144,14 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("POST /api/mods/stage", s.handleModsStage)
 		mux.HandleFunc("POST /api/mods/apply", s.handleModsApply)
 		mux.HandleFunc("POST /api/mods/rollback", s.handleModsRollback)
+		mux.HandleFunc("GET /api/mods/search", s.handleModsSearch)
+		mux.HandleFunc("GET /api/mods/plan", s.handleModsPlan)
+		mux.HandleFunc("POST /api/mods/add", s.handleModsAdd)
+		mux.HandleFunc("POST /api/mods/upload", s.handleModsUpload)
+		mux.HandleFunc("GET /api/mods/remove-info", s.handleModsRemoveInfo)
+		mux.HandleFunc("POST /api/mods/remove", s.handleModsRemove)
+		mux.HandleFunc("POST /api/mods/discard", s.handleModsDiscard)
+		mux.HandleFunc("GET /api/mods/apply-info", s.handleModsApplyInfo)
 		if s.dropbox != nil {
 			mux.HandleFunc("POST /api/mods/publish", s.handlePublishClientPack)
 		}

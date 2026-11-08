@@ -27,8 +27,10 @@ func (s *Server) handleModsList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) mcVersion() string {
-	if v := s.collector.MCVersion(); v != "" {
-		return v
+	if s.collector != nil {
+		if v := s.collector.MCVersion(); v != "" {
+			return v
+		}
 	}
 	return s.fallbackMCVersion
 }
@@ -98,6 +100,10 @@ func (s *Server) handleModsApply(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Profile == "" {
 		req.Profile = "server"
+	}
+	if req.Restart && req.Profile == mods.ProfileServer && s.sched != nil {
+		s.startAnnouncedApply(w, r)
+		return
 	}
 	label, n, err := s.modmgr.ApplyStaged(req.Profile)
 	if err != nil {
@@ -185,7 +191,11 @@ func (s *Server) handlePublishClientPack(w http.ResponseWriter, r *http.Request)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 		defer cancel()
-		if err := dropbox.Publish(ctx, s.dropbox, clientDirs, s.bus, s.log); err != nil {
+		publish := func(ctx context.Context) error { return dropbox.Publish(ctx, s.dropbox, clientDirs, s.bus, s.log) }
+		if s.publishPack != nil {
+			publish = s.publishPack
+		}
+		if err := publish(ctx); err != nil {
 			s.audit(ctx, "mods.publish.failed", err.Error())
 		} else {
 			s.audit(ctx, "mods.publish.ok", "client-pack veröffentlicht")
