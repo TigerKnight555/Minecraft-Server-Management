@@ -197,6 +197,22 @@ func (s *Scheduler) RunNow(ctx context.Context, routineID int64) {
 		s.log.Error("routine vanished", "id", routineID, "err", err)
 		return
 	}
+	s.run(ctx, r)
+}
+
+// RunAdhoc executes a routine definition that is not stored (z. B.
+// „Anwenden + Neustart" im Mods-Tab) — gleiche Kette, gleiche Meldungen,
+// aber kein Historien-Eintrag (ID 0). Läuft synchron.
+func (s *Scheduler) RunAdhoc(ctx context.Context, r storage.Routine) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r.ID = 0
+	s.run(ctx, r)
+}
+
+func (s *Scheduler) run(ctx context.Context, r storage.Routine) {
+	var err error
 	s.log.Info("routine started", "name", r.Name, "kind", r.Kind)
 	var msg string
 	affected := true
@@ -249,9 +265,41 @@ func (s *Scheduler) RunNow(ctx context.Context, routineID int64) {
 			Fields:  []events.Field{{Name: "Details", Value: msg}},
 		})
 	}
+	if r.ID == 0 {
+		return // Ad-hoc-Lauf: keine Historie
+	}
 	if err := s.store.RecordRun(ctx, run); err != nil {
 		s.log.Error("record run failed", "routine", r.Name, "err", err)
 	}
+}
+
+// NextApply returns the earliest enabled routine that applies staged mod
+// changes (announce-restart/backup mit ApplyStaged) — für den Hinweis
+// „Wird aktiv: …" im Mods-Tab.
+func (s *Scheduler) NextApply(ctx context.Context, now time.Time) (string, time.Time, bool, error) {
+	routines, err := s.store.ListRoutines(ctx)
+	if err != nil {
+		return "", time.Time{}, false, err
+	}
+	var (
+		name string
+		at   time.Time
+		ok   bool
+	)
+	for _, r := range routines {
+		if !r.Enabled || !r.ApplyStaged || (r.Kind != "announce-restart" && r.Kind != "backup") {
+			continue
+		}
+		sched, err := cron.ParseStandard(r.Cron)
+		if err != nil {
+			continue
+		}
+		next := sched.Next(now)
+		if !ok || next.Before(at) {
+			name, at, ok = r.Name, next, true
+		}
+	}
+	return name, at, ok, nil
 }
 
 // playersAffected reports whether anyone is on the server right now — nur
