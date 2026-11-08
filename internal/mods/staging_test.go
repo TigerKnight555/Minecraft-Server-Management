@@ -184,3 +184,55 @@ func TestDiscardAndHasStaged(t *testing.T) {
 		t.Error("Verwerfen ohne Vormerkung muss fehlschlagen")
 	}
 }
+
+// Fehler mitten im Anwenden: Angewendetes wird gemeldet, die Staging-Liste
+// enthält nur noch den Rest — ein zweiter Versuch funktioniert.
+func TestApplyStagedPartialFailureKeepsRest(t *testing.T) {
+	m, p, dir := testProfile(t)
+	stage(t, p, map[string]string{"a-1.0.jar": "a"},
+		stagingItem{Category: "mods", NewFilename: "a-1.0.jar", ProjectID: "PA", Name: "A"},
+		stagingItem{Category: "mods", NewFilename: "b-1.0.jar", ProjectID: "PB", Name: "B"}) // b fehlt im Staging
+	var got []Change
+	m.SetChangeHook(func(profile string, c []Change) { got = append(got, c...) })
+
+	if _, n, err := m.ApplyStaged(ProfileServer); err == nil || n != 1 {
+		t.Fatalf("apply = %d, %v — want 1 + Fehler", n, err)
+	}
+	if !exists(filepath.Join(dir, "a-1.0.jar")) {
+		t.Error("a nicht angewendet")
+	}
+	if len(got) != 1 || got[0].Name != "A" {
+		t.Errorf("hook = %+v, want nur A", got)
+	}
+	man, err := readManifest(filepath.Join(stagingDir(p), "manifest.json"))
+	if err != nil || len(man.Items) != 1 || man.Items[0].NewFilename != "b-1.0.jar" {
+		t.Fatalf("rest-manifest = %+v, %v — want nur b", man.Items, err)
+	}
+
+	// Datei nachliefern → zweiter Versuch spielt nur b ein
+	if err := os.WriteFile(filepath.Join(stagingDir(p), "b-1.0.jar"), []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, n, err := m.ApplyStaged(ProfileServer); err != nil || n != 1 {
+		t.Fatalf("retry = %d, %v", n, err)
+	}
+	if !exists(filepath.Join(dir, "b-1.0.jar")) {
+		t.Error("b nach Retry nicht da")
+	}
+}
+
+// Update, dessen neue Datei fehlt: die alte Datei kommt zurück in den
+// Live-Ordner statt im Backup zu verschwinden.
+func TestApplyStagedFailedUpdateRestoresOld(t *testing.T) {
+	m, p, dir := testProfile(t)
+	if err := os.WriteFile(filepath.Join(dir, "c-1.0.jar"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stage(t, p, nil, stagingItem{Category: "mods", OldFilename: "c-1.0.jar", NewFilename: "c-2.0.jar"})
+	if _, _, err := m.ApplyStaged(ProfileServer); err == nil {
+		t.Fatal("kein Fehler")
+	}
+	if !exists(filepath.Join(dir, "c-1.0.jar")) {
+		t.Error("alte Datei nach gescheitertem Update nicht mehr im Live-Ordner")
+	}
+}

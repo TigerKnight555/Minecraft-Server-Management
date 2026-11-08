@@ -151,8 +151,29 @@ func TestApplyStagedFailureRestartsServerAnyway(t *testing.T) {
 		t.Fatalf("actions = %v, want [stop, start] trotz Fehler", got)
 	}
 	runs, _ := store.RecentRuns(context.Background(), 10)
-	if len(runs) != 1 || runs[0].OK || !strings.Contains(runs[0].Message, "läuft wieder mit altem Stand") {
-		t.Errorf("runs = %+v, want Fehler mit 'läuft wieder'", runs)
+	// neutral: ApplyStaged kann mittendrin abbrechen — „alter Stand" stimmt dann nicht
+	if len(runs) != 1 || runs[0].OK || !strings.Contains(runs[0].Message, "nur teilweise eingespielt") || strings.Contains(runs[0].Message, "altem Stand") {
+		t.Errorf("runs = %+v, want Fehler mit 'nur teilweise eingespielt'", runs)
+	}
+}
+
+func TestBackupChainApplyFailureNeutralText(t *testing.T) {
+	s, store, docker, _ := setup(t)
+	s.containers = &fakeResolver{state: "running"}
+	s.SetBackupRunner(&fakeBackup{msg: "Backup ok"})
+	s.SetStagedApplier(&fakeApplier{err: errors.New("einsetzen kaputt")})
+
+	id, _ := store.CreateRoutine(context.Background(), backupRoutine(func(r *storage.Routine) {
+		r.ApplyStaged = true
+	}))
+	s.RunNow(context.Background(), id)
+
+	runs, _ := store.RecentRuns(context.Background(), 10)
+	if len(runs) != 1 || runs[0].OK || !strings.Contains(runs[0].Message, "nur teilweise eingespielt") {
+		t.Errorf("runs = %+v, want Fehler mit 'nur teilweise eingespielt'", runs)
+	}
+	if got := docker.ActionLog(); len(got) != 2 || !strings.HasPrefix(got[1], "start:") {
+		t.Errorf("actions = %v, want [stop, start] trotz Fehler", got)
 	}
 }
 

@@ -430,7 +430,8 @@ func (s *Scheduler) announceRestart(ctx context.Context, r storage.Routine) (str
 			if startErr := s.controller.StartContainer(ctx, id); startErr != nil {
 				return "", fmt.Errorf("updates einspielen: %v; start danach AUCH fehlgeschlagen: %w", err, startErr)
 			}
-			return "", fmt.Errorf("updates einspielen (Server läuft wieder mit altem Stand): %w", err)
+			// ApplyStaged kann mittendrin abbrechen — kein „alter Stand" versprechen
+			return "", fmt.Errorf("Änderungen nur teilweise eingespielt — Details im Log; Rollback im Mods-Tab möglich: %w", err)
 		default:
 			steps = append(steps, fmt.Sprintf("%d Updates eingespielt (Backup %s)", n, label))
 		}
@@ -531,7 +532,7 @@ func (s *Scheduler) backupChain(ctx context.Context, r storage.Routine) (string,
 			case errors.Is(err, mods.ErrNothingStaged):
 				steps = append(steps, "keine gestagten Updates")
 			case err != nil:
-				backupErr = fmt.Errorf("updates einspielen: %w", err)
+				backupErr = fmt.Errorf("Änderungen nur teilweise eingespielt — Details im Log; Rollback im Mods-Tab möglich: %w", err)
 			default:
 				steps = append(steps, fmt.Sprintf("%d Updates eingespielt (Backup %s)", n, label))
 			}

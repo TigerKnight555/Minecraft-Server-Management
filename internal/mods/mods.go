@@ -491,43 +491,71 @@ func (m *Manager) Stage(ctx context.Context, profileName string, filenames []str
 // the backup label for rollback. Call while the server is stopped or right
 // before a scheduled restart.
 func (m *Manager) ApplyStaged(profileName string) (string, int, error) {
+	label, applied, changes, err := m.applyStagedLocked(profileName)
+	// auch bei einem Fehler mittendrin: das bereits Angewendete melden
+	if err == nil || len(changes) > 0 {
+		m.notify(profileName, changes)
+	}
+	return label, applied, err
+}
+
+// applyStagedLocked does the work of ApplyStaged without calling the change
+// hook (the caller notifies with the returned changes). Bricht ein Item ab,
+// enthält die Staging-Liste danach nur noch die nicht angewendeten Items —
+// ein erneuter Versuch setzt dort fort.
+func (m *Manager) applyStagedLocked(profileName string) (string, int, []Change, error) {
 	p, err := m.profile(profileName)
 	if err != nil {
-		return "", 0, err
+		return "", 0, nil, err
 	}
 	sdir := stagingDir(p)
 	manPath := filepath.Join(sdir, "manifest.json")
 	man, err := readManifest(manPath)
 	if err != nil || len(man.Items) == 0 {
-		return "", 0, fmt.Errorf("%w für Profil %s", ErrNothingStaged, profileName)
+		return "", 0, nil, fmt.Errorf("%w für Profil %s", ErrNothingStaged, profileName)
 	}
 
 	label := time.Now().Format("2006-01-02_15-04-05")
 	applied := 0
 	backupMan := stagingManifest{Created: time.Now()}
 	var changes []Change
-	for _, it := range man.Items {
+	fail := func(i int, err error) (string, int, []Change, error) {
+		rest := man
+		rest.Items = append([]stagingItem(nil), man.Items[i:]...)
+		if werr := writeManifest(manPath, rest); werr != nil {
+			err = fmt.Errorf("%w; staging-liste nicht aktualisiert: %v", err, werr)
+		}
+		m.updateCache(profileName, backupMan.Items)
+		return label, applied, changes, err
+	}
+	for i, it := range man.Items {
 		liveDir, ok := p.Dirs[it.Category]
 		if !ok {
 			continue
 		}
 		backupDir := filepath.Join(liveDir, ".backup", label)
 		if err := os.MkdirAll(backupDir, 0o755); err != nil {
-			return label, applied, err
+			return fail(i, err)
 		}
 		// Leerer Name: filepath.Join(liveDir, "") wäre liveDir selbst —
 		// jede Seite nur anfassen, wenn sie gesetzt ist.
+		movedOld := false
 		if it.OldFilename != "" {
 			oldPath := filepath.Join(liveDir, it.OldFilename)
 			if _, err := os.Stat(oldPath); err == nil {
 				if err := os.Rename(oldPath, filepath.Join(backupDir, it.OldFilename)); err != nil {
-					return label, applied, fmt.Errorf("backup von %s: %w", it.OldFilename, err)
+					return fail(i, fmt.Errorf("backup von %s: %w", it.OldFilename, err))
 				}
+				movedOld = true
 			}
 		}
 		if it.NewFilename != "" {
 			if err := os.Rename(filepath.Join(sdir, it.NewFilename), filepath.Join(liveDir, it.NewFilename)); err != nil {
-				return label, applied, fmt.Errorf("einsetzen von %s: %w", it.NewFilename, err)
+				// halbes Update zurücknehmen: alte Datei wieder in den Live-Ordner
+				if movedOld {
+					os.Rename(filepath.Join(backupDir, it.OldFilename), filepath.Join(liveDir, it.OldFilename))
+				}
+				return fail(i, fmt.Errorf("einsetzen von %s: %w", it.NewFilename, err))
 			}
 		}
 		backupMan.Items = append(backupMan.Items, it)
@@ -538,8 +566,7 @@ func (m *Manager) ApplyStaged(profileName string) (string, int, error) {
 	}
 	os.Remove(manPath)
 	m.updateCache(profileName, man.Items)
-	m.notify(profileName, changes)
-	return label, applied, nil
+	return label, applied, changes, nil
 }
 
 // updateCache pflegt den Check-Cache nach dem Anwenden, statt ihn zu
