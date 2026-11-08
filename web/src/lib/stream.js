@@ -174,10 +174,12 @@ export const applyInfo = () => apiFetch('/api/mods/apply-info')
 
 // Upload: multipart, deshalb ohne apiFetch (das setzt JSON-Content-Type)
 export async function uploadMod(file, profiles, category) {
+  // Reihenfolge wichtig: der Server streamt die Datei und braucht Profil
+  // und Kategorie vorher — 'file' immer zuletzt anhängen
   const fd = new FormData()
-  fd.append('file', file)
   profiles.forEach((p) => fd.append('profile', p))
   fd.append('category', category)
+  fd.append('file', file)
   const resp = await fetch('/api/mods/upload', { method: 'POST', body: fd })
   if (resp.status === 401) {
     authenticated.set(false)

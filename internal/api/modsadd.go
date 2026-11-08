@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -89,39 +90,74 @@ func (s *Server) handleModsAdd(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleModsUpload(w http.ResponseWriter, r *http.Request) {
+	// Streamen statt ParseMultipartForm: keine Temp-Dateien im (read-only)
+	// Root-FS, kein 100-MB-Puffer im RAM (mem_limit). Die kleinen Felder
+	// profile/category müssen VOR der Datei kommen (stream.js uploadMod).
 	r.Body = http.MaxBytesReader(w, r.Body, mods.MaxUploadBytes+(1<<20))
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		httpError(w, http.StatusBadRequest, "Upload zu groß oder ungültig (max. 100 MB)")
+	mr, err := r.MultipartReader()
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "Upload ungültig (multipart/form-data erwartet)")
 		return
 	}
-	profiles := r.MultipartForm.Value["profile"]
-	category := r.FormValue("category")
-	if category == "" {
-		category = "mods"
+	var profiles []string
+	category := ""
+	var up mods.UploadFile
+	filename := ""
+	for up.Path == "" {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			httpError(w, http.StatusBadRequest, "Upload zu groß oder ungültig (max. 100 MB)")
+			return
+		}
+		switch part.FormName() {
+		case "profile", "category":
+			b, err := io.ReadAll(io.LimitReader(part, 256))
+			if err != nil {
+				part.Close()
+				httpError(w, http.StatusBadRequest, "Upload zu groß oder ungültig (max. 100 MB)")
+				return
+			}
+			if part.FormName() == "profile" {
+				profiles = append(profiles, strings.TrimSpace(string(b)))
+			} else {
+				category = strings.TrimSpace(string(b))
+			}
+		case "file":
+			if len(profiles) == 0 {
+				part.Close()
+				httpError(w, http.StatusBadRequest, "Datei und mindestens ein Profil angeben (Profil vor der Datei senden)")
+				return
+			}
+			filename = part.FileName()
+			up, err = s.modmgr.SpoolUpload(profiles[0], part)
+			if err != nil {
+				part.Close()
+				s.audit(r.Context(), "mods.upload.failed", fmt.Sprintf("profiles=%v file=%s err=%s", profiles, filename, err))
+				httpError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		part.Close()
 	}
-	file, hdr, err := r.FormFile("file")
-	if err != nil || len(profiles) == 0 {
+	if up.Path == "" {
 		httpError(w, http.StatusBadRequest, "Datei und mindestens ein Profil angeben")
 		return
 	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, mods.MaxUploadBytes+1))
+	defer os.Remove(up.Path)
+	if category == "" {
+		category = "mods"
+	}
+	e, err := s.modmgr.StageUploads(r.Context(), profiles, category, filename, up)
 	if err != nil {
+		s.audit(r.Context(), "mods.upload.failed", fmt.Sprintf("profiles=%v file=%s err=%s", profiles, filename, err))
 		httpError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	var last mods.Entry
-	for _, p := range profiles {
-		e, err := s.modmgr.StageUpload(r.Context(), p, category, hdr.Filename, data)
-		if err != nil {
-			s.audit(r.Context(), "mods.upload.failed", fmt.Sprintf("profile=%s file=%s err=%s", p, hdr.Filename, err))
-			httpError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		last = e
-		s.audit(r.Context(), "mods.upload", fmt.Sprintf("profile=%s file=%s managed=%v", p, hdr.Filename, e.Managed))
-	}
-	writeJSON(w, http.StatusOK, last)
+	s.audit(r.Context(), "mods.upload", fmt.Sprintf("profiles=%v file=%s managed=%v", profiles, filename, e.Managed))
+	writeJSON(w, http.StatusOK, e)
 }
 
 func (s *Server) handleModsRemoveInfo(w http.ResponseWriter, r *http.Request) {

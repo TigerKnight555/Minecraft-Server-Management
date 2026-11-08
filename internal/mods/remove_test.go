@@ -1,7 +1,9 @@
 package mods_test
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -203,4 +205,81 @@ func TestClientRemoveAndUploadRefuseWhenOtherChangePending(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(clientDir, "c.jar")); err == nil {
 		t.Error("c.jar trotz Ablehnung im Paket")
 	}
+}
+
+func spool(t *testing.T, mgr *mods.Manager, profile string, data []byte) mods.UploadFile {
+	t.Helper()
+	f, err := mgr.SpoolUpload(profile, bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(f.Path) })
+	return f
+}
+
+// Upload in mehrere Profile: scheitert eine Prüfung beim zweiten Profil,
+// bleibt auch das erste unverändert (kein halber Zustand).
+func TestStageUploadsAllOrNothing(t *testing.T) {
+	mgr, _, serverDir, clientDir := addSetup(t)
+	sdir := filepath.Join(clientDir, ".msm-staging")
+	if err := os.MkdirAll(sdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sdir, "manifest.json"), []byte(`{"items":[{"category":"mods","oldFilename":"x.jar"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := spool(t, mgr, mods.ProfileServer, []byte("eigener mod"))
+	_, err := mgr.StageUploads(context.Background(), []string{mods.ProfileServer, mods.ProfileClient}, "mods", "custom.jar", f)
+	if err == nil || !strings.Contains(err.Error(), "schon Änderungen vorgemerkt") {
+		t.Fatalf("err = %v, want Client-Sperre", err)
+	}
+	if mgr.HasStaged(mods.ProfileServer) {
+		t.Error("Server trotz Fehler beim Client vorgemerkt")
+	}
+	if _, err := os.Stat(filepath.Join(serverDir, ".msm-staging", "custom.jar")); err == nil {
+		t.Error("Datei trotz Fehler im Server-Staging")
+	}
+}
+
+func TestStageUploadsBothProfiles(t *testing.T) {
+	mgr, _, serverDir, clientDir := addSetup(t)
+	f := spool(t, mgr, mods.ProfileServer, []byte("eigener mod"))
+	e, err := mgr.StageUploads(context.Background(), []string{mods.ProfileServer, mods.ProfileClient}, "mods", "custom.jar", f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.Filename != "custom.jar" || e.Managed {
+		t.Errorf("entry = %+v", e)
+	}
+	if got, err := os.ReadFile(filepath.Join(serverDir, ".msm-staging", "custom.jar")); err != nil || string(got) != "eigener mod" {
+		t.Errorf("server-staging = %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(clientDir, "custom.jar")); err != nil || string(got) != "eigener mod" {
+		t.Errorf("client live = %q, %v", got, err)
+	}
+	if !mgr.HasStaged(mods.ProfileServer) || mgr.HasStaged(mods.ProfileClient) {
+		t.Error("Server muss vorgemerkt, Client sofort angewendet sein")
+	}
+}
+
+func TestSpoolUploadLimit(t *testing.T) {
+	mgr, _, serverDir, _ := addSetup(t)
+	big := io.LimitReader(zeros{}, mods.MaxUploadBytes+1)
+	if _, err := mgr.SpoolUpload(mods.ProfileServer, big); err == nil || !strings.Contains(err.Error(), "max. 100 MB") {
+		t.Errorf("err = %v, want max. 100 MB", err)
+	}
+	if _, err := mgr.SpoolUpload(mods.ProfileServer, bytes.NewReader(nil)); err == nil {
+		t.Error("leere Datei angenommen")
+	}
+	left, _ := os.ReadDir(filepath.Join(serverDir, ".msm-staging"))
+	if len(left) != 0 {
+		t.Errorf("Temp-Dateien übrig: %v", left)
+	}
+}
+
+type zeros struct{}
+
+func (zeros) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
 }
