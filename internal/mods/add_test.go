@@ -59,7 +59,9 @@ func (f *fakeAPI) VersionsByHash(_ context.Context, hs []string) (map[string]mod
 func (f *fakeAPI) LatestVersions(context.Context, []string, string, string) (map[string]modrinth.Version, error) {
 	return map[string]modrinth.Version{}, nil
 }
-func (f *fakeAPI) ProjectSupports(context.Context, string, string, string) (bool, error) { return true, nil }
+func (f *fakeAPI) ProjectSupports(context.Context, string, string, string) (bool, error) {
+	return true, nil
+}
 func (f *fakeAPI) Download(_ context.Context, url string) ([]byte, error) {
 	b, ok := f.files[url]
 	if !ok {
@@ -281,5 +283,82 @@ func TestSearchNeverNil(t *testing.T) {
 	hits, err := mgr.Search(context.Background(), "gibtsnicht", "26.3")
 	if err != nil || hits == nil {
 		t.Errorf("hits = %v, err = %v", hits, err)
+	}
+}
+
+func TestAddModsAtomicAcrossProfiles(t *testing.T) {
+	mgr, api, serverDir, clientDir := addSetup(t)
+	api.addVersion("balm", "Balm", "balm.jar", "required", "required")
+	api.addVersion("way", "Waystones", "waystones.jar", "required", "required", req("balm"), req("fapi"))
+	delete(api.files, "fake://fabric-api.jar") // nur der Client braucht Fabric API
+	if _, err := mgr.AddMods(context.Background(), "way", "26.3", []string{mods.ProfileServer, mods.ProfileClient}); err == nil {
+		t.Fatal("want download error")
+	}
+	if mgr.HasStaged(mods.ProfileServer) {
+		t.Error("Server hat Vormerkungen trotz Fehler")
+	}
+	for _, d := range []string{serverDir, clientDir} {
+		if _, err := os.Stat(filepath.Join(d, "waystones.jar")); err == nil {
+			t.Errorf("waystones.jar liegt in %s", d)
+		}
+	}
+}
+
+func TestAddModsRejectsCorruptManifest(t *testing.T) {
+	mgr, api, serverDir, _ := addSetup(t)
+	api.addVersion("balm", "Balm", "balm.jar", "required", "required")
+	sdir := filepath.Join(serverDir, ".msm-staging")
+	if err := os.MkdirAll(sdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mp := filepath.Join(sdir, "manifest.json")
+	if err := os.WriteFile(mp, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.AddMods(context.Background(), "balm", "26.3", []string{mods.ProfileServer}); err == nil {
+		t.Fatal("want error")
+	}
+	got, _ := os.ReadFile(mp)
+	if string(got) != "{not json" {
+		t.Errorf("manifest überschrieben: %q", got)
+	}
+}
+
+func TestAddModsRejectsBadRemoteFilename(t *testing.T) {
+	mgr, api, serverDir, _ := addSetup(t)
+	api.addVersion("evil", "Evil", "../evil.jar", "required", "required")
+	if _, err := mgr.AddMods(context.Background(), "evil", "26.3", []string{mods.ProfileServer}); err == nil {
+		t.Fatal("want error")
+	}
+	for _, p := range []string{filepath.Join(serverDir, "..", "evil.jar"), filepath.Join(serverDir, ".msm-staging", "..", "evil.jar")} {
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("%s geschrieben", p)
+		}
+	}
+}
+
+func TestAddModsClientRefusesWhenOtherChangesPending(t *testing.T) {
+	mgr, api, _, clientDir := addSetup(t)
+	api.addVersion("sodium", "Sodium", "sodium.jar", "required", "unsupported")
+	old := filepath.Join(clientDir, "old.jar")
+	if err := os.WriteFile(old, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sdir := filepath.Join(clientDir, ".msm-staging")
+	if err := os.MkdirAll(sdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	man := `{"created":"2026-01-01T00:00:00Z","items":[{"category":"mods","oldFilename":"old.jar","newFilename":"","sha512":"","version":""}]}`
+	if err := os.WriteFile(filepath.Join(sdir, "manifest.json"), []byte(man), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.AddMods(context.Background(), "sodium", "26.3", []string{mods.ProfileClient}); err == nil {
+		t.Fatal("want error")
+	}
+	if _, err := os.Stat(old); err != nil {
+		t.Error("old.jar wurde entfernt")
+	}
+	if _, err := os.Stat(filepath.Join(clientDir, "sodium.jar")); err == nil {
+		t.Error("sodium.jar angewendet")
 	}
 }

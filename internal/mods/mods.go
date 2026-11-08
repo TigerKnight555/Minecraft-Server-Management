@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -390,6 +391,19 @@ func readManifest(path string) (stagingManifest, error) {
 		return man, err
 	}
 	return man, json.Unmarshal(data, &man)
+}
+
+// loadManifest is readManifest, but a missing file is an empty manifest and
+// a corrupt one is an error (never silently overwritten).
+func loadManifest(path string) (stagingManifest, error) {
+	man, err := readManifest(path)
+	if err == nil {
+		return man, nil
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return stagingManifest{}, nil
+	}
+	return stagingManifest{}, fmt.Errorf("staging-liste %s unlesbar: %w", path, err)
 }
 
 func writeManifest(path string, man stagingManifest) error {

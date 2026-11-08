@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modrinth"
@@ -220,16 +221,31 @@ func (m *Manager) Plan(ctx context.Context, projectID, mcVersion string) (*AddPl
 	return plan, nil
 }
 
+// validName rejects filenames from Modrinth that could escape the target dir.
+func validName(name string) bool {
+	return name != "" && name == filepath.Base(name) && !strings.ContainsAny(name, `/\`) &&
+		!strings.HasPrefix(name, ".") && !strings.Contains(name, "..")
+}
+
 // AddMods stages the mod plus missing dependencies per profile. Server:
 // vorgemerkt bis zum Neustart; Client: sofort angewendet (gleiche Sicherung).
+// Phase A (keine Schreibzugriffe) prüft und lädt alles; Phase B schreibt erst
+// danach, damit bei einem Fehler kein halber Zustand zurückbleibt.
 func (m *Manager) AddMods(ctx context.Context, projectID, mcVersion string, profiles []string) (*AddResult, error) {
 	if len(profiles) == 0 {
 		return nil, fmt.Errorf("mindestens ein Profil wählen")
 	}
+	hasClient := false
 	for _, name := range profiles {
 		if _, err := m.profile(name); err != nil {
 			return nil, err
 		}
+		if name == ProfileClient {
+			hasClient = true
+		}
+	}
+	if hasClient && m.HasStaged(ProfileClient) {
+		return nil, errors.New("Im Client-Paket sind schon Änderungen vorgemerkt — erst anwenden oder verwerfen")
 	}
 	plan, err := m.Plan(ctx, projectID, mcVersion)
 	if err != nil {
@@ -239,63 +255,90 @@ func (m *Manager) AddMods(ctx context.Context, projectID, mcVersion string, prof
 		return nil, errors.New(plan.Blocked)
 	}
 	files := append([]PlannedFile{plan.Main}, plan.Deps...)
-	res := &AddResult{Added: map[string][]string{}}
-	data := map[string][]byte{} // sha512 -> Inhalt (einmal laden für beide Profile)
+
+	// Phase A: berechnen, prüfen, laden — ohne zu schreiben.
+	type job struct {
+		p       Profile
+		manPath string
+		man     stagingManifest
+		add     []PlannedFile
+	}
+	var jobs []job
+	data := map[string][]byte{} // sha512 -> Inhalt
 	for _, name := range profiles {
 		p, _ := m.profile(name)
 		live, ok := p.Dirs["mods"]
 		if !ok {
-			return res, fmt.Errorf("Profil %s hat keinen mods-Ordner", name)
+			return nil, fmt.Errorf("Profil %s hat keinen mods-Ordner", name)
 		}
-		sdir := stagingDir(p)
-		if err := os.MkdirAll(sdir, 0o755); err != nil {
-			return res, err
+		manPath := filepath.Join(stagingDir(p), "manifest.json")
+		man, err := loadManifest(manPath)
+		if err != nil {
+			return nil, err
 		}
-		manPath := filepath.Join(sdir, "manifest.json")
-		man, _ := readManifest(manPath)
-		man.Created = time.Now()
+		j := job{p: p, manPath: manPath, man: man}
 		for _, f := range files {
 			if f.Present[name] {
 				continue
 			}
+			if !validName(f.Filename) {
+				return nil, fmt.Errorf("ungültiger Dateiname %q von Modrinth — abgebrochen", f.Filename)
+			}
 			if _, err := os.Stat(filepath.Join(live, f.Filename)); err == nil {
-				return res, fmt.Errorf("%s liegt bereits im Profil %s", f.Filename, name)
+				return nil, fmt.Errorf("%s liegt bereits im Profil %s", f.Filename, name)
 			}
-			b, ok := data[f.SHA512]
-			if !ok {
-				b, err = m.api.Download(ctx, f.URL)
-				if err != nil {
-					return res, fmt.Errorf("download %s: %w", f.Filename, err)
-				}
-				sum := sha512.Sum512(b)
-				if hex.EncodeToString(sum[:]) != f.SHA512 {
-					return res, fmt.Errorf("hash-verifikation fehlgeschlagen für %s — abgebrochen", f.Filename)
-				}
-				data[f.SHA512] = b
+			j.add = append(j.add, f)
+		}
+		if len(j.add) > 0 {
+			jobs = append(jobs, j)
+		}
+	}
+	if len(jobs) == 0 {
+		return nil, fmt.Errorf("%s ist in den gewählten Profilen schon vorhanden oder vorgemerkt", plan.Main.Name)
+	}
+	for _, j := range jobs {
+		for _, f := range j.add {
+			if _, ok := data[f.SHA512]; ok {
+				continue
 			}
-			if err := os.WriteFile(filepath.Join(sdir, f.Filename), b, 0o644); err != nil {
+			b, err := m.api.Download(ctx, f.URL)
+			if err != nil {
+				return nil, fmt.Errorf("download %s: %w", f.Filename, err)
+			}
+			sum := sha512.Sum512(b)
+			if hex.EncodeToString(sum[:]) != f.SHA512 {
+				return nil, fmt.Errorf("hash-verifikation fehlgeschlagen für %s — abgebrochen", f.Filename)
+			}
+			data[f.SHA512] = b
+		}
+	}
+
+	// Phase B: schreiben.
+	res := &AddResult{Added: map[string][]string{}}
+	for _, j := range jobs {
+		sdir := stagingDir(j.p)
+		if err := os.MkdirAll(sdir, 0o755); err != nil {
+			return res, err
+		}
+		j.man.Created = time.Now()
+		for _, f := range j.add {
+			if err := os.WriteFile(filepath.Join(sdir, f.Filename), data[f.SHA512], 0o644); err != nil {
 				return res, err
 			}
-			man.Items = append(man.Items, stagingItem{
+			j.man.Items = append(j.man.Items, stagingItem{
 				Category: "mods", NewFilename: f.Filename, SHA512: f.SHA512, Version: f.VersionNumber,
 				ProjectID: f.ProjectID, Name: f.Name, ClientSide: f.ClientSide,
 			})
-			res.Added[name] = append(res.Added[name], f.Name)
+			res.Added[j.p.Name] = append(res.Added[j.p.Name], f.Name)
 		}
-		if len(res.Added[name]) == 0 {
-			continue
-		}
-		if err := writeManifest(manPath, man); err != nil {
+		if err := writeManifest(j.manPath, j.man); err != nil {
 			return res, err
 		}
-		if name == ProfileClient {
-			if _, _, err := m.ApplyStaged(name); err != nil {
+		if j.p.Name == ProfileClient {
+			if _, _, err := m.ApplyStaged(j.p.Name); err != nil {
 				return res, fmt.Errorf("client-paket: %w", err)
 			}
 		}
-	}
-	if len(res.Added) == 0 {
-		return res, fmt.Errorf("%s ist in den gewählten Profilen schon vorhanden oder vorgemerkt", plan.Main.Name)
 	}
 	return res, nil
 }
