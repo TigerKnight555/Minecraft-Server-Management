@@ -329,3 +329,64 @@ func TestWatcherIgnoresNonModCategories(t *testing.T) {
 		t.Errorf("Shader %s als Nachzügler gemeldet", name)
 	}
 }
+
+// "Alle stagen" darf eine vorgemerkte Entfernung nicht in ein Update
+// verwandeln.
+func TestStageKeepsPendingRemoval(t *testing.T) {
+	mgr, _, _ := setup(t)
+	ctx := context.Background()
+	if _, err := mgr.CheckUpdates(ctx, "server", "1.21.11"); err != nil {
+		t.Fatal(err)
+	}
+	var target string
+	updatable := 0
+	for _, e := range mgr.Entries("server") {
+		if e.UpdateVersion != "" {
+			updatable++
+			if target == "" {
+				target = e.Filename
+			}
+		}
+	}
+	if target == "" {
+		t.Fatal("nichts updatebar")
+	}
+	if err := mgr.StageRemove(mods.ProfileServer, target); err != nil {
+		t.Fatal(err)
+	}
+	n, err := mgr.Stage(ctx, "server", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != updatable-1 {
+		t.Errorf("staged = %d, want %d (vorgemerkte Datei übersprungen)", n, updatable-1)
+	}
+	for _, e := range mgr.Entries("server") {
+		if e.Filename == target && e.Pending != "remove" {
+			t.Errorf("%s pending = %q, want remove", target, e.Pending)
+		}
+	}
+}
+
+// Stage überschreibt eine beschädigte Staging-Liste nicht.
+func TestStageRefusesCorruptManifest(t *testing.T) {
+	mgr, profiles, _ := setup(t)
+	ctx := context.Background()
+	if _, err := mgr.CheckUpdates(ctx, "server", "1.21.11"); err != nil {
+		t.Fatal(err)
+	}
+	sdir := filepath.Join(profiles[0].Dirs["mods"], ".msm-staging")
+	if err := os.MkdirAll(sdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	man := filepath.Join(sdir, "manifest.json")
+	if err := os.WriteFile(man, []byte("{kaputt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Stage(ctx, "server", nil); err == nil {
+		t.Error("kein Fehler bei kaputter Liste")
+	}
+	if got, _ := os.ReadFile(man); string(got) != "{kaputt" {
+		t.Errorf("manifest überschrieben: %q", got)
+	}
+}

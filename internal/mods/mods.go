@@ -434,16 +434,27 @@ func (m *Manager) Stage(ctx context.Context, profileName string, filenames []str
 	}
 
 	sdir := stagingDir(p)
+	manPath := filepath.Join(sdir, "manifest.json")
+	man, err := loadManifest(manPath)
+	if err != nil {
+		return 0, err
+	}
 	if err := os.MkdirAll(sdir, 0o755); err != nil {
 		return 0, err
 	}
-	manPath := filepath.Join(sdir, "manifest.json")
-	man, _ := readManifest(manPath)
 	man.Created = time.Now()
+	// Dateien mit einer Vormerkung (Entfernen, Update) bleiben unberührt —
+	// sonst würde „Alle stagen" eine vorgemerkte Entfernung zum Update machen
+	pending := map[string]bool{}
+	for _, it := range man.Items {
+		if it.OldFilename != "" {
+			pending[it.OldFilename] = true
+		}
+	}
 
 	staged := 0
 	for _, e := range entries {
-		if e.UpdateURL == "" {
+		if e.UpdateURL == "" || pending[e.Filename] {
 			continue
 		}
 		if len(want) > 0 && !want[e.Filename] {
@@ -460,14 +471,8 @@ func (m *Manager) Stage(ctx context.Context, profileName string, filenames []str
 		if err := os.WriteFile(filepath.Join(sdir, e.UpdateFilename), data, 0o644); err != nil {
 			return staged, err
 		}
-		// replace an existing staging entry for the same old file
-		kept := man.Items[:0]
-		for _, it := range man.Items {
-			if it.OldFilename != e.Filename {
-				kept = append(kept, it)
-			}
-		}
-		man.Items = append(kept, stagingItem{
+		pending[e.Filename] = true
+		man.Items = append(man.Items, stagingItem{
 			Category: e.Category, OldFilename: e.Filename,
 			NewFilename: e.UpdateFilename, SHA512: e.UpdateSHA512, Version: e.UpdateVersion,
 		})

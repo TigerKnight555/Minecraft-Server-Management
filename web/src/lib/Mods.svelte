@@ -25,7 +25,7 @@
   let error = $state('')
   let info = $state('')
 
-  let updatable = $derived(entries.filter((e) => e.updateVersion))
+  let updatable = $derived(entries.filter((e) => e.updateVersion && !e.pending))
   let stagedCount = $derived(entries.filter((e) => e.pending).length)
 
   async function load() {
