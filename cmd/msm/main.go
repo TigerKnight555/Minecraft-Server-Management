@@ -421,10 +421,11 @@ func main() {
 		if clientDirs == nil {
 			return fmt.Errorf("kein Client-Profil konfiguriert")
 		}
+		gen := news.BeginPublish()
 		if err := dropbox.Publish(ctx, dbx, clientDirs, bus, log); err != nil {
 			return err
 		}
-		news.Published()
+		news.Published(gen)
 		return nil
 	}
 	if upgrader != nil && clientDirs != nil {

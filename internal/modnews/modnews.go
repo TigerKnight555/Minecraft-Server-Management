@@ -39,7 +39,8 @@ type Announcer struct {
 	// Poll: Abstand der Online-Prüfung
 	Poll time.Duration
 
-	mu sync.Mutex
+	mu  sync.Mutex
+	gen uint64 // zählt Client-Änderungen (nur im Speicher) — siehe Published
 }
 
 func New(get func(string) string, set func(string, string), bus *events.Bus, online func() bool, log *slog.Logger) *Announcer {
@@ -51,7 +52,7 @@ func New(get func(string) string, set func(string, string), bus *events.Bus, onl
 func (a *Announcer) SetBusy(f func() bool) { a.busy = f }
 
 // SetPublisher wires the client pack upload; publish muss bei Erfolg
-// Published() auslösen (in main über publishPack erledigt).
+// BeginPublish/Published auslösen (in main über publishPack erledigt).
 func (a *Announcer) SetPublisher(ready func() bool, publish func(ctx context.Context) error) {
 	a.ready, a.publish = ready, publish
 }
@@ -88,6 +89,7 @@ func (a *Announcer) OnApply(profile string, changes []mods.Change) {
 	}
 	switch profile {
 	case mods.ProfileClient:
+		a.gen++
 		a.set(keyDirty, "1") // jede Client-Änderung (auch Updates/Rollback) macht das Paket alt
 		if len(news) > 0 {
 			a.save(keyClient, append(a.load(keyClient), news...))
@@ -99,13 +101,25 @@ func (a *Announcer) OnApply(profile string, changes []mods.Change) {
 	}
 }
 
-// Published clears the "pack outdated" flag and the collected client
-// changes — nach jedem erfolgreichen Versand (Button, Update, Neustart).
-func (a *Announcer) Published() {
+// BeginPublish returns the current client-change generation; vor dem
+// Paket-Upload aufrufen und das Ergebnis an Published weitergeben.
+func (a *Announcer) BeginPublish() uint64 {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.set(keyDirty, "")
-	a.save(keyClient, nil)
+	return a.gen
+}
+
+// Published clears the "pack outdated" flag after a successful upload
+// (Button, Update, Neustart) — aber nur, wenn seit BeginPublish keine
+// Client-Änderung dazukam (sonst fehlt sie im hochgeladenen Paket). Die
+// gesammelte Änderungsliste bleibt stehen, bis AfterRestart sie meldet
+// (Nutzer-Entscheidung: Button-Versand verbraucht die Liste nicht).
+func (a *Announcer) Published(gen uint64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.gen == gen {
+		a.set(keyDirty, "")
+	}
 }
 
 // AfterRestart posts the mod list (if anything was added/removed) and

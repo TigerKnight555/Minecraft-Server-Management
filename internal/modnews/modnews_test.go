@@ -34,8 +34,9 @@ func setup(t *testing.T, ready bool) (*Announcer, *kv, <-chan events.Event, *ato
 	a := New(store.get, store.set, bus, online.Load, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	var self *Announcer = a
 	a.SetPublisher(func() bool { return ready }, func(context.Context) error {
+		gen := self.BeginPublish()
 		published.Add(1)
-		self.Published()
+		self.Published(gen)
 		return nil
 	})
 	return a, store, ch, published, online
@@ -117,13 +118,41 @@ func TestWithoutDropboxHintAndDirtyStays(t *testing.T) {
 	}
 }
 
-func TestPublishedByButtonConsumesClientList(t *testing.T) {
-	a, _, ch, _, _ := setup(t, true)
+// Nutzer-Entscheidung: der Button-Versand löscht nur „Paket veraltet" —
+// die Client-Änderungen werden trotzdem beim nächsten Neustart gemeldet.
+func TestPublishedByButtonKeepsClientListForRestart(t *testing.T) {
+	a, store, ch, published, _ := setup(t, true)
 	a.OnApply(mods.ProfileClient, []mods.Change{add(mods.ProfileClient, "Sodium", "required")})
-	a.Published()
+	a.Published(a.BeginPublish())
+	if store.get(keyDirty) != "" {
+		t.Error("Markierung 'Paket veraltet' nach Versand nicht gelöscht")
+	}
 	a.AfterRestart(context.Background())
-	if ev, ok := next(t, ch); ok {
-		t.Errorf("schon verschickte Client-Änderung erneut gemeldet: %+v", ev)
+	ev, ok := next(t, ch)
+	if !ok || !strings.Contains(ev.Message, "Sodium") {
+		t.Fatalf("Client-Änderung nach Button-Versand nicht gemeldet: %+v (ok=%v)", ev, ok)
+	}
+	if published.Load() != 0 {
+		t.Error("Paket ist aktuell — kein erneuter Versand nötig")
+	}
+	if store.get(keyClient) != "" {
+		t.Error("Liste nach der Meldung nicht geleert")
+	}
+}
+
+// Kommt während des Versands eine Client-Änderung, bleibt das Paket veraltet.
+func TestPublishedKeepsDirtyWhenChangedDuringUpload(t *testing.T) {
+	a, store, _, _, _ := setup(t, true)
+	a.OnApply(mods.ProfileClient, []mods.Change{add(mods.ProfileClient, "Sodium", "required")})
+	gen := a.BeginPublish()
+	a.OnApply(mods.ProfileClient, []mods.Change{add(mods.ProfileClient, "Iris", "required")})
+	a.Published(gen)
+	if store.get(keyDirty) != "1" {
+		t.Error("Änderung während des Uploads: Paket muss veraltet bleiben")
+	}
+	a.Published(a.BeginPublish())
+	if store.get(keyDirty) != "" {
+		t.Error("Versand ohne neue Änderung muss die Markierung löschen")
 	}
 }
 
