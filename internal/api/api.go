@@ -41,6 +41,7 @@ type Server struct {
 	maintActive       func() bool // Wartungsfenster gerade aktiv?
 	dropbox           *dropbox.Client
 	upgrader          *upgrade.Orchestrator
+	upgradeActive     func() bool                     // Ein-Klick-MC-Update läuft? (nil = nie)
 	publishPack       func(ctx context.Context) error // Client-Paket-Versand inkl. Zustands-Pflege
 	applyBusy         atomic.Bool                     // „Anwenden + Neustart" läuft
 	settings          *settings.Store
@@ -88,7 +89,12 @@ func New(d Deps) *Server {
 			managed[name] = true
 		}
 	}
+	var upgradeActive func() bool
+	if d.Upgrader != nil {
+		upgradeActive = d.Upgrader.Active
+	}
 	return &Server{
+		upgradeActive:     upgradeActive,
 		collector:         d.Collector,
 		docker:            d.Docker,
 		controller:        d.Controller,

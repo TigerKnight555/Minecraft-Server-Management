@@ -98,6 +98,9 @@ func (s *Server) handleModsApply(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	if s.upgradeRunning(w) {
+		return
+	}
 	if req.Profile == "" {
 		req.Profile = "server"
 	}

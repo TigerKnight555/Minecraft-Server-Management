@@ -227,3 +227,31 @@ func assertNoTempFiles(t *testing.T, modsDir string) {
 		}
 	}
 }
+
+// Während des Ein-Klick-MC-Updates sind Mod-Änderungen gesperrt.
+func TestModChangesBlockedWhileUpgradeRuns(t *testing.T) {
+	srv, _ := modsServer(t)
+	srv.upgradeActive = func() bool { return true }
+	cases := []struct{ path, body string }{
+		{"/api/mods/add", `{"projectId":"jade-mock","profiles":["server"]}`},
+		{"/api/mods/remove", `{"profile":"server","filename":"lithium-0.21.2.jar"}`},
+		{"/api/mods/discard", `{"profile":"server","filename":"lithium-0.21.2.jar"}`},
+		{"/api/mods/apply", `{"profile":"server","restart":false}`},
+		{"/api/mods/apply", `{"profile":"server","restart":true}`},
+	}
+	for _, c := range cases {
+		rec := do(srv, "POST", c.path, c.body)
+		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Minecraft-Update läuft gerade") {
+			t.Errorf("%s %s = %d %s, want 409", c.path, c.body, rec.Code, rec.Body)
+		}
+	}
+	req := uploadReq(t, [][2]string{{"profile", "server"}, {"category", "mods"}}, false, "custom.jar", []byte("x"))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Minecraft-Update läuft gerade") {
+		t.Errorf("upload = %d %s, want 409", rec.Code, rec.Body)
+	}
+	if srv.modmgr.HasStaged(mods.ProfileServer) {
+		t.Error("trotz Sperre vorgemerkt")
+	}
+}

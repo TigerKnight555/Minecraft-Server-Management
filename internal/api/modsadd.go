@@ -65,6 +65,9 @@ func (s *Server) handleModsPlan(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleModsAdd(w http.ResponseWriter, r *http.Request) {
+	if s.upgradeRunning(w) {
+		return
+	}
 	var req struct {
 		ProjectID string   `json:"projectId"`
 		Profiles  []string `json:"profiles"`
@@ -90,6 +93,9 @@ func (s *Server) handleModsAdd(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleModsUpload(w http.ResponseWriter, r *http.Request) {
+	if s.upgradeRunning(w) {
+		return
+	}
 	// Streamen statt ParseMultipartForm: keine Temp-Dateien im (read-only)
 	// Root-FS, kein 100-MB-Puffer im RAM (mem_limit). Die kleinen Felder
 	// profile/category müssen VOR der Datei kommen (stream.js uploadMod).
@@ -186,6 +192,9 @@ func decodeProfileFile(w http.ResponseWriter, r *http.Request) (profileFileReq, 
 }
 
 func (s *Server) handleModsRemove(w http.ResponseWriter, r *http.Request) {
+	if s.upgradeRunning(w) {
+		return
+	}
 	req, ok := decodeProfileFile(w, r)
 	if !ok {
 		return
@@ -199,6 +208,9 @@ func (s *Server) handleModsRemove(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleModsDiscard(w http.ResponseWriter, r *http.Request) {
+	if s.upgradeRunning(w) {
+		return
+	}
 	req, ok := decodeProfileFile(w, r)
 	if !ok {
 		return
@@ -250,4 +262,14 @@ func (s *Server) startAnnouncedApply(w http.ResponseWriter, r *http.Request) {
 		"scheduled": true,
 		"message":   "Server startet in 5 Minuten neu (Spieler werden im Spiel gewarnt) — danach sind die Änderungen aktiv.",
 	})
+}
+
+// upgradeRunning writes 409 while the one-click MC upgrade runs — es tauscht
+// selbst Mods und Staging, parallele Änderungen kämen ihm in die Quere.
+func (s *Server) upgradeRunning(w http.ResponseWriter) bool {
+	if s.upgradeActive != nil && s.upgradeActive() {
+		httpError(w, http.StatusConflict, "Ein Minecraft-Update läuft gerade — Mod-Änderungen danach erneut versuchen")
+		return true
+	}
+	return false
 }
