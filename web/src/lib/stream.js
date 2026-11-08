@@ -159,6 +159,35 @@ export const deleteMaintenance = (id) => apiFetch(`/api/maintenance/${id}`, { me
 // --- Client-Pack-Veröffentlichung (Phase 4.8) ---
 export const publishClientPack = () => apiFetch('/api/mods/publish', { method: 'POST' })
 
+// --- Mods hinzufügen/entfernen ---
+export const searchMods = (q) => apiFetch(`/api/mods/search?q=${encodeURIComponent(q)}`)
+export const planMod = (project) => apiFetch(`/api/mods/plan?project=${encodeURIComponent(project)}`)
+export const addMod = (projectId, profiles) =>
+  apiFetch('/api/mods/add', { method: 'POST', body: JSON.stringify({ projectId, profiles }) })
+export const removeInfo = (profile, file) =>
+  apiFetch(`/api/mods/remove-info?profile=${encodeURIComponent(profile)}&file=${encodeURIComponent(file)}`)
+export const removeMod = (profile, filename) =>
+  apiFetch('/api/mods/remove', { method: 'POST', body: JSON.stringify({ profile, filename }) })
+export const discardMod = (profile, filename) =>
+  apiFetch('/api/mods/discard', { method: 'POST', body: JSON.stringify({ profile, filename }) })
+export const applyInfo = () => apiFetch('/api/mods/apply-info')
+
+// Upload: multipart, deshalb ohne apiFetch (das setzt JSON-Content-Type)
+export async function uploadMod(file, profiles, category) {
+  const fd = new FormData()
+  fd.append('file', file)
+  profiles.forEach((p) => fd.append('profile', p))
+  fd.append('category', category)
+  const resp = await fetch('/api/mods/upload', { method: 'POST', body: fd })
+  if (resp.status === 401) {
+    authenticated.set(false)
+    throw new Error('nicht angemeldet')
+  }
+  const data = await resp.json().catch(() => ({}))
+  if (!resp.ok) throw new Error(data.error ?? resp.statusText)
+  return data
+}
+
 // --- Ein-Klick-MC-Upgrade ---
 export const startVersionUpgrade = (version) =>
   apiFetch('/api/version-upgrade', { method: 'POST', body: JSON.stringify({ version }) })

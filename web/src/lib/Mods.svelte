@@ -1,8 +1,10 @@
 <script>
   import { onMount } from 'svelte'
+  import AddMod from './AddMod.svelte'
   import {
     listMods, checkMods, stageMods, applyMods, rollbackMods,
     versionWatch, versionWatchCheck, publishClientPack,
+    removeInfo, removeMod, discardMod,
   } from './stream.js'
 
   async function doPublish() {
@@ -24,7 +26,7 @@
   let info = $state('')
 
   let updatable = $derived(entries.filter((e) => e.updateVersion))
-  let stagedCount = $derived(entries.filter((e) => e.staged).length)
+  let stagedCount = $derived(entries.filter((e) => e.pending).length)
 
   async function load() {
     try {
@@ -67,14 +69,37 @@
   const doApply = () => {
     const restart = profile === 'server'
     const msg = restart
-      ? 'Gestagte Updates einsetzen und den Minecraft-Server NEU STARTEN? Spieler werden getrennt.'
+      ? 'Vorgemerkte Änderungen einspielen? Der Server startet mit 5 Minuten Vorwarnung neu.'
       : 'Gestagte Updates ins Client-Paket einsetzen?'
     if (!confirm(msg)) return
     run(() => applyMods(profile, restart),
-      (r) => `${r.applied} Update(s) eingesetzt (Backup ${r.backup})${r.restarted ? ', Server startet neu' : ''}`)
+      (r) => r.message ?? `${r.applied} Update(s) eingesetzt (Backup ${r.backup})`)
   }
   const doWatchCheck = () => run(async () => (watch = await versionWatchCheck()),
     () => 'Versions-Check abgeschlossen')
+
+  const profileLabel = (p) => (p === 'server' ? 'Server' : 'Client-Paket')
+
+  async function doRemove(e) {
+    let info
+    try {
+      info = await removeInfo(profile, e.filename)
+    } catch (err) {
+      error = err.message
+      return
+    }
+    let msg = `${info.name} aus dem ${profileLabel(profile)} entfernen?`
+    if (profile === 'server') msg += '\nWird beim nächsten Neustart wirksam (Datei wandert ins Backup, Rollback möglich).'
+    if (info.dependents.length) msg += `\n\n⚠️ Wird gebraucht von: ${info.dependents.join(', ')}`
+    if (!confirm(msg)) return
+    const also = info.alsoIn.filter((a) => confirm(`${info.name} auch aus dem ${profileLabel(a.profile)} entfernen?`))
+    run(async () => {
+      await removeMod(profile, e.filename)
+      for (const a of also) await removeMod(a.profile, a.filename)
+    }, () => (profile === 'server' ? 'Entfernen vorgemerkt' : 'Entfernt') + (also.length ? ' (auch im anderen Profil)' : ''))
+  }
+
+  const doDiscard = (e) => run(() => discardMod(profile, e.filename), () => `Vormerkung für ${e.name || e.filename} verworfen`)
 </script>
 
 <div class="panel wide">
@@ -105,6 +130,8 @@
   {/if}
   <button class="btn" onclick={doWatchCheck} disabled={busy}>Jetzt prüfen</button>
 </div>
+
+<AddMod onchange={load} />
 
 <div class="panel wide">
   <h2>
@@ -146,7 +173,11 @@
             <td>{e.name || '—'}</td>
             <td class="mono">{e.version || '?'}</td>
             <td>
-              {#if e.staged}
+              {#if e.pending === 'add'}
+                <span class="badge staged">neu · vorgemerkt</span>
+              {:else if e.pending === 'remove'}
+                <span class="badge remove">wird entfernt</span>
+              {:else if e.staged}
                 <span class="badge staged">gestaged</span>
               {:else if e.updateVersion}
                 <span class="badge update">→ {e.updateVersion}</span>
@@ -156,9 +187,14 @@
                 <span class="badge unmanaged" title="Nicht auf Modrinth gefunden — wird nie angefasst">unverwaltet</span>
               {/if}
             </td>
-            <td>
-              {#if e.updateVersion && !e.staged}
-                <button class="btn sm" onclick={() => doStageOne(e.filename)} disabled={busy}>Stagen</button>
+            <td class="row-actions">
+              {#if e.pending}
+                <button class="btn sm" onclick={() => doDiscard(e)} disabled={busy}>Verwerfen</button>
+              {:else}
+                {#if e.updateVersion}
+                  <button class="btn sm" onclick={() => doStageOne(e.filename)} disabled={busy}>Stagen</button>
+                {/if}
+                <button class="btn sm danger" onclick={() => doRemove(e)} disabled={busy}>Entfernen</button>
               {/if}
             </td>
           </tr>
@@ -200,6 +236,9 @@
   .badge.update { background: #3a2f14; color: var(--warn); }
   .badge.staged { background: #14293a; color: #60a5fa; }
   .badge.unmanaged { background: var(--panel-border); color: var(--text-dim); }
+  .badge.remove { background: #3a1c1c; color: var(--err); }
+  .row-actions { white-space: nowrap; }
+  .row-actions .btn { margin-right: 0.3rem; }
   .err-msg { color: var(--err); font-size: 0.85rem; margin-bottom: 0.6rem; }
   .info-msg { color: var(--accent); font-size: 0.85rem; margin-bottom: 0.6rem; }
 </style>
