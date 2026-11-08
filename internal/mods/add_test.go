@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha512"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,6 +21,8 @@ type fakeAPI struct {
 	versions map[string][]modrinth.Version
 	byHash   map[string]modrinth.Version
 	files    map[string][]byte
+	// onDownload läuft vor jedem Download (Tests für gleichzeitige Änderungen)
+	onDownload func()
 }
 
 func newFakeAPI() *fakeAPI {
@@ -63,6 +66,9 @@ func (f *fakeAPI) ProjectSupports(context.Context, string, string, string) (bool
 	return true, nil
 }
 func (f *fakeAPI) Download(_ context.Context, url string) ([]byte, error) {
+	if f.onDownload != nil {
+		f.onDownload()
+	}
 	b, ok := f.files[url]
 	if !ok {
 		return nil, fmt.Errorf("404 %s", url)
@@ -360,5 +366,77 @@ func TestAddModsClientRefusesWhenOtherChangesPending(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(clientDir, "sodium.jar")); err == nil {
 		t.Error("sodium.jar angewendet")
+	}
+}
+
+type manifestFile struct {
+	Items []struct {
+		OldFilename string `json:"oldFilename"`
+		NewFilename string `json:"newFilename"`
+	} `json:"items"`
+}
+
+func readStaged(t *testing.T, modsDir string) manifestFile {
+	t.Helper()
+	var man manifestFile
+	b, err := os.ReadFile(filepath.Join(modsDir, ".msm-staging", "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &man); err != nil {
+		t.Fatal(err)
+	}
+	return man
+}
+
+// Während AddMods lädt, wird die Staging-Liste anderweitig geändert
+// (Anwenden, weitere Vormerkung) — AddMods darf nichts davon überschreiben.
+func TestAddModsDoesNotClobberConcurrentStagingChanges(t *testing.T) {
+	mgr, api, serverDir, _ := addSetup(t)
+	api.addVersion("way", "Waystones", "waystones.jar", "required", "required")
+	ctx := context.Background()
+	if err := mgr.StageRemove(mods.ProfileServer, "fabric-api.jar"); err != nil {
+		t.Fatal(err)
+	}
+	ran := false
+	api.onDownload = func() {
+		if ran {
+			return
+		}
+		ran = true
+		// angewendet während des Downloads → darf nicht wiederauferstehen
+		if _, _, err := mgr.ApplyStaged(mods.ProfileServer); err != nil {
+			t.Error(err)
+		}
+		// neu vorgemerkt während des Downloads → darf nicht verloren gehen
+		if _, err := mgr.StageUpload(ctx, mods.ProfileServer, "mods", "custom.jar", []byte("eigen")); err != nil {
+			t.Error(err)
+		}
+	}
+	if _, err := mgr.AddMods(ctx, "way", "26.3", []string{mods.ProfileServer}); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, it := range readStaged(t, serverDir).Items {
+		if it.OldFilename == "fabric-api.jar" {
+			t.Error("angewendete Entfernung wieder in der Staging-Liste")
+		}
+		got[it.NewFilename] = true
+	}
+	if !got["waystones.jar"] || !got["custom.jar"] {
+		t.Errorf("staging-liste = %v, want waystones.jar + custom.jar", got)
+	}
+}
+
+// Dieselbe Datei schon vorgemerkt (z. B. per Upload): AddMods lehnt ab.
+func TestAddModsRefusesStagedFilenameCollision(t *testing.T) {
+	mgr, api, _, _ := addSetup(t)
+	api.addVersion("way", "Waystones", "waystones.jar", "required", "required")
+	ctx := context.Background()
+	if _, err := mgr.StageUpload(ctx, mods.ProfileServer, "mods", "waystones.jar", []byte("eigener build")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.AddMods(ctx, "way", "26.3", []string{mods.ProfileServer}); err == nil {
+		t.Error("gleicher Dateiname schon vorgemerkt — kein Fehler")
 	}
 }

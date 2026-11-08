@@ -245,7 +245,7 @@ func (m *Manager) AddMods(ctx context.Context, projectID, mcVersion string, prof
 		}
 	}
 	if hasClient && m.HasStaged(ProfileClient) {
-		return nil, errors.New("Im Client-Paket sind schon Änderungen vorgemerkt — erst anwenden oder verwerfen")
+		return nil, errClientPending
 	}
 	plan, err := m.Plan(ctx, projectID, mcVersion)
 	if err != nil {
@@ -272,11 +272,13 @@ func (m *Manager) AddMods(ctx context.Context, projectID, mcVersion string, prof
 			return nil, fmt.Errorf("Profil %s hat keinen mods-Ordner", name)
 		}
 		manPath := filepath.Join(stagingDir(p), "manifest.json")
+		m.stageMu.Lock()
 		man, err := loadManifest(manPath)
+		m.stageMu.Unlock()
 		if err != nil {
 			return nil, err
 		}
-		j := job{p: p, manPath: manPath, man: man}
+		j := job{p: p, manPath: manPath}
 		for _, f := range files {
 			if f.Present[name] {
 				continue
@@ -287,6 +289,9 @@ func (m *Manager) AddMods(ctx context.Context, projectID, mcVersion string, prof
 			if _, err := os.Stat(filepath.Join(live, f.Filename)); err == nil {
 				return nil, fmt.Errorf("%s liegt bereits im Profil %s", f.Filename, name)
 			}
+			if stagedDup(man, f) {
+				return nil, fmt.Errorf("%s ist im Profil %s schon vorgemerkt", f.Filename, name)
+			}
 			j.add = append(j.add, f)
 		}
 		if len(j.add) > 0 {
@@ -296,6 +301,7 @@ func (m *Manager) AddMods(ctx context.Context, projectID, mcVersion string, prof
 	if len(jobs) == 0 {
 		return nil, fmt.Errorf("%s ist in den gewählten Profilen schon vorhanden oder vorgemerkt", plan.Main.Name)
 	}
+	// Downloads ohne Sperre — sie können Minuten dauern
 	for _, j := range jobs {
 		for _, f := range j.add {
 			if _, ok := data[f.SHA512]; ok {
@@ -313,32 +319,76 @@ func (m *Manager) AddMods(ctx context.Context, projectID, mcVersion string, prof
 		}
 	}
 
-	// Phase B: schreiben.
-	res := &AddResult{Added: map[string][]string{}}
-	for _, j := range jobs {
-		sdir := stagingDir(j.p)
-		if err := os.MkdirAll(sdir, 0o755); err != nil {
-			return res, err
+	// Phase B: schreiben — unter stageMu und mit frisch gelesenen
+	// Staging-Listen (während der Downloads kann angewendet, verworfen oder
+	// weiter vorgemerkt worden sein).
+	var applied []Change
+	m.stageMu.Lock()
+	res, err := func() (*AddResult, error) {
+		if hasClient && m.HasStaged(ProfileClient) {
+			return nil, errClientPending
 		}
-		j.man.Created = time.Now()
-		for _, f := range j.add {
-			if err := os.WriteFile(filepath.Join(sdir, f.Filename), data[f.SHA512], 0o644); err != nil {
+		for i := range jobs {
+			man, err := loadManifest(jobs[i].manPath)
+			if err != nil {
+				return nil, err
+			}
+			for _, f := range jobs[i].add {
+				if _, err := os.Stat(filepath.Join(jobs[i].p.Dirs["mods"], f.Filename)); err == nil {
+					return nil, fmt.Errorf("%s liegt inzwischen im Profil %s", f.Filename, jobs[i].p.Name)
+				}
+				if stagedDup(man, f) {
+					return nil, fmt.Errorf("%s ist im Profil %s inzwischen vorgemerkt", f.Filename, jobs[i].p.Name)
+				}
+			}
+			jobs[i].man = man
+		}
+		res := &AddResult{Added: map[string][]string{}}
+		for _, j := range jobs {
+			sdir := stagingDir(j.p)
+			if err := os.MkdirAll(sdir, 0o755); err != nil {
 				return res, err
 			}
-			j.man.Items = append(j.man.Items, stagingItem{
-				Category: "mods", NewFilename: f.Filename, SHA512: f.SHA512, Version: f.VersionNumber,
-				ProjectID: f.ProjectID, Name: f.Name, ClientSide: f.ClientSide,
-			})
-			res.Added[j.p.Name] = append(res.Added[j.p.Name], f.Name)
-		}
-		if err := writeManifest(j.manPath, j.man); err != nil {
-			return res, err
-		}
-		if j.p.Name == ProfileClient {
-			if _, _, err := m.ApplyStaged(j.p.Name); err != nil {
-				return res, fmt.Errorf("client-paket: %w", err)
+			j.man.Created = time.Now()
+			for _, f := range j.add {
+				if err := os.WriteFile(filepath.Join(sdir, f.Filename), data[f.SHA512], 0o644); err != nil {
+					return res, err
+				}
+				j.man.Items = append(j.man.Items, stagingItem{
+					Category: "mods", NewFilename: f.Filename, SHA512: f.SHA512, Version: f.VersionNumber,
+					ProjectID: f.ProjectID, Name: f.Name, ClientSide: f.ClientSide,
+				})
+				res.Added[j.p.Name] = append(res.Added[j.p.Name], f.Name)
+			}
+			if err := writeManifest(j.manPath, j.man); err != nil {
+				return res, err
+			}
+			if j.p.Name == ProfileClient {
+				_, _, changes, err := m.applyStagedLocked(j.p.Name)
+				applied = changes
+				if err != nil {
+					return res, fmt.Errorf("client-paket: %w", err)
+				}
 			}
 		}
+		return res, nil
+	}()
+	m.stageMu.Unlock()
+	if applied != nil {
+		m.notify(ProfileClient, applied)
 	}
-	return res, nil
+	return res, err
+}
+
+// stagedDup: f (or the same project) is already staged as a new file.
+func stagedDup(man stagingManifest, f PlannedFile) bool {
+	for _, it := range man.Items {
+		if it.NewFilename == "" {
+			continue
+		}
+		if it.NewFilename == f.Filename || (f.ProjectID != "" && it.ProjectID == f.ProjectID) {
+			return true
+		}
+	}
+	return false
 }

@@ -87,6 +87,10 @@ type Manager struct {
 
 	mu      sync.Mutex
 	entries map[string][]Entry // profile name -> last check result
+	// stageMu serialisiert jedes Lesen-Ändern-Schreiben der Staging-Listen
+	// (Stage, AddMods, StageRemove, StageUploads, Discard, ApplyStaged).
+	// Nie über Downloads halten; der Change-Hook läuft ohne diese Sperre.
+	stageMu sync.Mutex
 	// onChange meldet angewendete Änderungen (Discord-Neuigkeiten, Paket
 	// veraltet); nil = aus
 	onChange func(profile string, changes []Change)
@@ -356,6 +360,8 @@ func (m *Manager) Discard(profile, filename string) error {
 	if err != nil {
 		return err
 	}
+	m.stageMu.Lock()
+	defer m.stageMu.Unlock()
 	sdir := stagingDir(p)
 	manPath := filepath.Join(sdir, "manifest.json")
 	man, err := readManifest(manPath)
@@ -435,21 +441,13 @@ func (m *Manager) Stage(ctx context.Context, profileName string, filenames []str
 
 	sdir := stagingDir(p)
 	manPath := filepath.Join(sdir, "manifest.json")
-	man, err := loadManifest(manPath)
-	if err != nil {
-		return 0, err
-	}
-	if err := os.MkdirAll(sdir, 0o755); err != nil {
-		return 0, err
-	}
-	man.Created = time.Now()
 	// Dateien mit einer Vormerkung (Entfernen, Update) bleiben unberührt —
 	// sonst würde „Alle stagen" eine vorgemerkte Entfernung zum Update machen
-	pending := map[string]bool{}
-	for _, it := range man.Items {
-		if it.OldFilename != "" {
-			pending[it.OldFilename] = true
-		}
+	m.stageMu.Lock()
+	pending, err := pendingOld(manPath)
+	m.stageMu.Unlock()
+	if err != nil {
+		return 0, err
 	}
 
 	staged := 0
@@ -460,6 +458,7 @@ func (m *Manager) Stage(ctx context.Context, profileName string, filenames []str
 		if len(want) > 0 && !want[e.Filename] {
 			continue
 		}
+		// Download ohne Sperre — er kann Minuten dauern
 		data, err := m.api.Download(ctx, e.UpdateURL)
 		if err != nil {
 			return staged, fmt.Errorf("download %s: %w", e.UpdateFilename, err)
@@ -468,22 +467,58 @@ func (m *Manager) Stage(ctx context.Context, profileName string, filenames []str
 		if hex.EncodeToString(sum[:]) != e.UpdateSHA512 {
 			return staged, fmt.Errorf("hash-verifikation fehlgeschlagen für %s — abgebrochen", e.UpdateFilename)
 		}
-		if err := os.WriteFile(filepath.Join(sdir, e.UpdateFilename), data, 0o644); err != nil {
+		ok, err := m.stageUpdate(sdir, manPath, e, data)
+		if err != nil {
 			return staged, err
 		}
-		pending[e.Filename] = true
-		man.Items = append(man.Items, stagingItem{
-			Category: e.Category, OldFilename: e.Filename,
-			NewFilename: e.UpdateFilename, SHA512: e.UpdateSHA512, Version: e.UpdateVersion,
-		})
-		staged++
-	}
-	if staged > 0 {
-		if err := writeManifest(manPath, man); err != nil {
-			return staged, err
+		if ok {
+			staged++
 		}
 	}
 	return staged, nil
+}
+
+// pendingOld lists the live files with a pending change. Caller holds stageMu.
+func pendingOld(manPath string) (map[string]bool, error) {
+	man, err := loadManifest(manPath)
+	if err != nil {
+		return nil, err
+	}
+	pending := map[string]bool{}
+	for _, it := range man.Items {
+		if it.OldFilename != "" {
+			pending[it.OldFilename] = true
+		}
+	}
+	return pending, nil
+}
+
+// stageUpdate records one downloaded update — read-modify-write der
+// Staging-Liste unter stageMu; false = inzwischen anderweitig vorgemerkt.
+func (m *Manager) stageUpdate(sdir, manPath string, e Entry, data []byte) (bool, error) {
+	m.stageMu.Lock()
+	defer m.stageMu.Unlock()
+	man, err := loadManifest(manPath)
+	if err != nil {
+		return false, err
+	}
+	for _, it := range man.Items {
+		if it.OldFilename == e.Filename || it.NewFilename == e.UpdateFilename {
+			return false, nil
+		}
+	}
+	if err := os.MkdirAll(sdir, 0o755); err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(filepath.Join(sdir, e.UpdateFilename), data, 0o644); err != nil {
+		return false, err
+	}
+	man.Created = time.Now()
+	man.Items = append(man.Items, stagingItem{
+		Category: e.Category, OldFilename: e.Filename,
+		NewFilename: e.UpdateFilename, SHA512: e.UpdateSHA512, Version: e.UpdateVersion,
+	})
+	return true, writeManifest(manPath, man)
 }
 
 // ApplyStaged swaps staged files into the live directory: old/removed files
@@ -491,7 +526,9 @@ func (m *Manager) Stage(ctx context.Context, profileName string, filenames []str
 // the backup label for rollback. Call while the server is stopped or right
 // before a scheduled restart.
 func (m *Manager) ApplyStaged(profileName string) (string, int, error) {
+	m.stageMu.Lock()
 	label, applied, changes, err := m.applyStagedLocked(profileName)
+	m.stageMu.Unlock()
 	// auch bei einem Fehler mittendrin: das bereits Angewendete melden
 	if err == nil || len(changes) > 0 {
 		m.notify(profileName, changes)
@@ -500,7 +537,8 @@ func (m *Manager) ApplyStaged(profileName string) (string, int, error) {
 }
 
 // applyStagedLocked does the work of ApplyStaged without calling the change
-// hook (the caller notifies with the returned changes). Bricht ein Item ab,
+// hook (the caller notifies with the returned changes); caller holds
+// stageMu. Bricht ein Item ab,
 // enthält die Staging-Liste danach nur noch die nicht angewendeten Items —
 // ein erneuter Versuch setzt dort fort.
 func (m *Manager) applyStagedLocked(profileName string) (string, int, []Change, error) {

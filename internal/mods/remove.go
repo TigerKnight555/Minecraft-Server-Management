@@ -112,22 +112,33 @@ func (m *Manager) StageRemove(profile, filename string) error {
 	if err != nil {
 		return err
 	}
+	m.stageMu.Lock()
+	applied, err := m.stageRemoveLocked(p, filename)
+	m.stageMu.Unlock()
+	if len(applied) > 0 {
+		m.notify(profile, applied)
+	}
+	return err
+}
+
+func (m *Manager) stageRemoveLocked(p Profile, filename string) ([]Change, error) {
+	profile := p.Name
 	if profile == ProfileClient && m.HasStaged(ProfileClient) {
-		return errClientPending
+		return nil, errClientPending
 	}
 	cat, err := findLive(p, filename)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	sdir := stagingDir(p)
 	manPath := filepath.Join(sdir, "manifest.json")
 	man, err := loadManifest(manPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, it := range man.Items {
 		if it.OldFilename == filename {
-			return fmt.Errorf("für %s ist schon eine Änderung vorgemerkt — erst verwerfen", filename)
+			return nil, fmt.Errorf("für %s ist schon eine Änderung vorgemerkt — erst verwerfen", filename)
 		}
 	}
 	item := stagingItem{Category: cat, OldFilename: filename}
@@ -139,19 +150,21 @@ func (m *Manager) StageRemove(profile, filename string) error {
 	}
 	m.mu.Unlock()
 	if err := os.MkdirAll(sdir, 0o755); err != nil {
-		return err
+		return nil, err
 	}
 	man.Created = time.Now()
 	man.Items = append(man.Items, item)
 	if err := writeManifest(manPath, man); err != nil {
-		return err
+		return nil, err
 	}
 	if profile == ProfileClient {
-		if _, _, err := m.ApplyStaged(profile); err != nil {
-			return fmt.Errorf("client-paket: %w", err)
+		_, _, changes, err := m.applyStagedLocked(profile)
+		if err != nil {
+			return changes, fmt.Errorf("client-paket: %w", err)
 		}
+		return changes, nil
 	}
-	return nil
+	return nil, nil
 }
 
 // StageUpload stages an uploaded file. Bekannte Modrinth-Dateien (Hash)
@@ -200,21 +213,47 @@ func (m *Manager) StageUpload(ctx context.Context, profile, category, filename s
 			item.ProjectID, item.Name, item.Version = v.ProjectID, v.Name, v.VersionNumber
 		}
 	}
-	if err := os.MkdirAll(sdir, 0o755); err != nil {
-		return Entry{}, err
-	}
-	if err := os.WriteFile(filepath.Join(sdir, filename), data, 0o644); err != nil {
-		return Entry{}, err
-	}
-	man.Created = time.Now()
-	man.Items = append(man.Items, item)
-	if err := writeManifest(manPath, man); err != nil {
-		return Entry{}, err
-	}
-	if profile == ProfileClient {
-		if _, _, err := m.ApplyStaged(profile); err != nil {
-			return Entry{}, fmt.Errorf("client-paket: %w", err)
+	var applied []Change
+	m.stageMu.Lock()
+	err = func() error {
+		if profile == ProfileClient && m.HasStaged(ProfileClient) {
+			return errClientPending
 		}
+		man, err := loadManifest(manPath) // frisch lesen — VersionsByHash lief ohne Sperre
+		if err != nil {
+			return err
+		}
+		for _, it := range man.Items {
+			if it.NewFilename == filename {
+				return fmt.Errorf("%s ist schon vorgemerkt", filename)
+			}
+		}
+		if err := os.MkdirAll(sdir, 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(sdir, filename), data, 0o644); err != nil {
+			return err
+		}
+		man.Created = time.Now()
+		man.Items = append(man.Items, item)
+		if err := writeManifest(manPath, man); err != nil {
+			return err
+		}
+		if profile == ProfileClient {
+			_, _, changes, err := m.applyStagedLocked(profile)
+			applied = changes
+			if err != nil {
+				return fmt.Errorf("client-paket: %w", err)
+			}
+		}
+		return nil
+	}()
+	m.stageMu.Unlock()
+	if len(applied) > 0 {
+		m.notify(profile, applied)
+	}
+	if err != nil {
+		return Entry{}, err
 	}
 	return Entry{Profile: profile, Category: category, Filename: filename, SHA512: hash,
 		Managed: item.ProjectID != "", ProjectID: item.ProjectID, Name: item.Name, Version: item.Version}, nil
