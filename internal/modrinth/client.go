@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -83,14 +84,15 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 
 // Version is one Modrinth project version (fields MSM needs).
 type Version struct {
-	ID            string   `json:"id"`
-	ProjectID     string   `json:"project_id"`
-	Name          string   `json:"name"`
-	VersionNumber string   `json:"version_number"`
-	Changelog     string   `json:"changelog"`
-	GameVersions  []string `json:"game_versions"`
-	Loaders       []string `json:"loaders"`
-	Files         []File   `json:"files"`
+	ID            string       `json:"id"`
+	ProjectID     string       `json:"project_id"`
+	Name          string       `json:"name"`
+	VersionNumber string       `json:"version_number"`
+	Changelog     string       `json:"changelog"`
+	GameVersions  []string     `json:"game_versions"`
+	Loaders       []string     `json:"loaders"`
+	Files         []File       `json:"files"`
+	Dependencies  []Dependency `json:"dependencies"`
 }
 
 type File struct {
@@ -101,6 +103,39 @@ type File struct {
 	Hashes   struct {
 		SHA512 string `json:"sha512"`
 	} `json:"hashes"`
+}
+
+// Dependency is one dependency of a version. DependencyType: required |
+// optional | incompatible | embedded.
+type Dependency struct {
+	VersionID      string `json:"version_id"`
+	ProjectID      string `json:"project_id"`
+	DependencyType string `json:"dependency_type"`
+}
+
+// Project is the subset of /project/{id} MSM needs. ClientSide/ServerSide:
+// required | optional | unsupported | unknown.
+type Project struct {
+	ID          string `json:"id"`
+	Slug        string `json:"slug"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	IconURL     string `json:"icon_url"`
+	ClientSide  string `json:"client_side"`
+	ServerSide  string `json:"server_side"`
+	ProjectType string `json:"project_type"`
+}
+
+// SearchHit is one result of /search.
+type SearchHit struct {
+	ProjectID   string `json:"project_id"`
+	Slug        string `json:"slug"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	IconURL     string `json:"icon_url"`
+	Downloads   int64  `json:"downloads"`
+	ClientSide  string `json:"client_side"`
+	ServerSide  string `json:"server_side"`
 }
 
 // PrimaryFile returns the primary (or first) file of a version.
@@ -150,17 +185,50 @@ func (c *Client) VersionsByHash(ctx context.Context, sha512s []string) (map[stri
 	return out, nil
 }
 
-// ProjectSupports reports whether a project has any version for the given
-// loader + MC version (readiness check for the version watch). Die Filter
-// sind JSON-Arrays im Query-String und MÜSSEN URL-encodiert werden — rohe
-// Anführungszeichen/Klammern beantwortet Modrinth mit 400 (Learning 14).
-func (c *Client) ProjectSupports(ctx context.Context, projectID, loader, mcVersion string) (bool, error) {
+// Search finds mods with a build for loader + MC version. Facetten sind
+// JSON im Query-String und müssen encodiert werden (Learning 14).
+func (c *Client) Search(ctx context.Context, query, loader, mcVersion string, limit int) ([]SearchHit, error) {
+	q := url.Values{}
+	q.Set("query", query)
+	q.Set("facets", fmt.Sprintf(`[["project_type:mod"],["categories:%s"],["versions:%s"]]`, loader, mcVersion))
+	q.Set("limit", strconv.Itoa(limit))
+	var out struct {
+		Hits []SearchHit `json:"hits"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/search?"+q.Encode(), nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Hits, nil
+}
+
+// Project fetches one project (ID oder Slug).
+func (c *Client) Project(ctx context.Context, id string) (Project, error) {
+	var p Project
+	err := c.do(ctx, http.MethodGet, "/project/"+url.PathEscape(id), nil, &p)
+	return p, err
+}
+
+// ProjectVersions lists a project's versions for loader + MC version,
+// newest first (Modrinth-Reihenfolge). Die Filter sind JSON-Arrays im
+// Query-String und MÜSSEN URL-encodiert werden — rohe Anführungszeichen/
+// Klammern beantwortet Modrinth mit 400 (Learning 14).
+func (c *Client) ProjectVersions(ctx context.Context, projectID, loader, mcVersion string) ([]Version, error) {
 	q := url.Values{}
 	q.Set("loaders", fmt.Sprintf(`["%s"]`, loader))
 	q.Set("game_versions", fmt.Sprintf(`["%s"]`, mcVersion))
 	path := "/project/" + url.PathEscape(projectID) + "/version?" + q.Encode()
 	var versions []Version
 	if err := c.do(ctx, http.MethodGet, path, nil, &versions); err != nil {
+		return nil, err
+	}
+	return versions, nil
+}
+
+// ProjectSupports reports whether a project has any version for the given
+// loader + MC version (readiness check for the version watch).
+func (c *Client) ProjectSupports(ctx context.Context, projectID, loader, mcVersion string) (bool, error) {
+	versions, err := c.ProjectVersions(ctx, projectID, loader, mcVersion)
+	if err != nil {
 		return false, err
 	}
 	return len(versions) > 0, nil

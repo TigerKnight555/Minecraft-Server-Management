@@ -38,6 +38,9 @@ type ModrinthAPI interface {
 	VersionsByHash(ctx context.Context, sha512s []string) (map[string]modrinth.Version, error)
 	ProjectSupports(ctx context.Context, projectID, loader, mcVersion string) (bool, error)
 	Download(ctx context.Context, url string) ([]byte, error)
+	Search(ctx context.Context, query, loader, mcVersion string, limit int) ([]modrinth.SearchHit, error)
+	Project(ctx context.Context, id string) (modrinth.Project, error)
+	ProjectVersions(ctx context.Context, projectID, loader, mcVersion string) ([]modrinth.Version, error)
 }
 
 // Profile is one managed directory tree.
