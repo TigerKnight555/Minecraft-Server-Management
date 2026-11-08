@@ -31,6 +31,13 @@ import (
 // scheduler treat this as "nothing to do", not as a failure.
 var ErrNothingStaged = errors.New("nichts gestaged")
 
+// Profilnamen — Server = Live-Mods des Minecraft-Servers, Client = Paket
+// für die Spieler.
+const (
+	ProfileServer = "server"
+	ProfileClient = "client"
+)
+
 // ModrinthAPI is the subset of the Modrinth client the manager needs
 // (interface for tests/mock mode).
 type ModrinthAPI interface {
@@ -66,6 +73,9 @@ type Entry struct {
 	UpdateSHA512   string `json:"-"`
 	Changelog      string `json:"changelog,omitempty"`
 	Staged         bool   `json:"staged"`
+	// Pending: was vorgemerkt ist — "add" (neu), "remove" (wird entfernt),
+	// "update" (gestagtes Update); leer = nichts vorgemerkt
+	Pending string `json:"pending,omitempty"`
 }
 
 // Manager coordinates scans, update checks, staging and rollback.
@@ -76,6 +86,9 @@ type Manager struct {
 
 	mu      sync.Mutex
 	entries map[string][]Entry // profile name -> last check result
+	// onChange meldet angewendete Änderungen (Discord-Neuigkeiten, Paket
+	// veraltet); nil = aus
+	onChange func(profile string, changes []Change)
 }
 
 func NewManager(api ModrinthAPI, loader string, profiles []Profile) *Manager {
@@ -83,6 +96,27 @@ func NewManager(api ModrinthAPI, loader string, profiles []Profile) *Manager {
 }
 
 func (m *Manager) Profiles() []Profile { return m.profiles }
+
+// Change describes one applied staging item — Grundlage für die
+// Discord-Meldung nach dem Neustart.
+type Change struct {
+	Action     string `json:"action"` // "add" | "remove" | "update"
+	Profile    string `json:"profile"`
+	Filename   string `json:"filename"`
+	ProjectID  string `json:"projectId,omitempty"`
+	Name       string `json:"name"`
+	ClientSide string `json:"clientSide,omitempty"`
+}
+
+// SetChangeHook registers f; called after every successful ApplyStaged
+// (alle angewendeten Items) and every successful rollback (changes = nil).
+func (m *Manager) SetChangeHook(f func(profile string, changes []Change)) { m.onChange = f }
+
+func (m *Manager) notify(profile string, changes []Change) {
+	if m.onChange != nil {
+		m.onChange(profile, changes)
+	}
+}
 
 func (m *Manager) profile(name string) (Profile, error) {
 	for _, p := range m.profiles {
@@ -93,17 +127,40 @@ func (m *Manager) profile(name string) (Profile, error) {
 	return Profile{}, fmt.Errorf("unbekanntes Profil %q", name)
 }
 
-// Entries returns the cached result of the last update check; the staged
-// flag is re-read from the staging manifest so it stays current after
-// Stage/Apply without a new Modrinth round trip.
+// Entries returns the cached result of the last update check plus pending
+// staging state: Vormerkungen werden bei jedem Aufruf aus dem Manifest
+// gelesen (kein Modrinth-Aufruf nötig), vorgemerkte Neuzugänge erscheinen
+// als eigene Zeilen.
 func (m *Manager) Entries(profile string) []Entry {
 	m.mu.Lock()
 	out := append([]Entry(nil), m.entries[profile]...)
 	m.mu.Unlock()
-	if p, err := m.profile(profile); err == nil {
-		staged := m.stagedFilenames(p)
-		for i := range out {
-			out[i].Staged = staged[out[i].Filename]
+	p, err := m.profile(profile)
+	if err != nil {
+		return out
+	}
+	items := m.stagedItems(p)
+	byOld := map[string]stagingItem{}
+	for _, it := range items {
+		if it.OldFilename != "" {
+			byOld[it.OldFilename] = it
+		}
+	}
+	for i := range out {
+		it, ok := byOld[out[i].Filename]
+		out[i].Staged = ok
+		out[i].Pending = ""
+		if ok {
+			out[i].Pending = it.action()
+		}
+	}
+	for _, it := range items {
+		if it.action() == "add" {
+			out = append(out, Entry{
+				Profile: profile, Category: it.Category, Filename: it.NewFilename,
+				SHA512: it.SHA512, Managed: it.ProjectID != "", ProjectID: it.ProjectID,
+				Name: it.Name, Version: it.Version, Staged: true, Pending: "add",
+			})
 		}
 	}
 	return out
@@ -204,12 +261,40 @@ func (m *Manager) CheckUpdates(ctx context.Context, profileName, mcVersion strin
 
 // --- Staging ---
 
+// stagingItem: OldFilename leer = Hinzufügen, NewFilename leer = Entfernen,
+// beide gesetzt = Update.
 type stagingItem struct {
 	Category    string `json:"category"`
 	OldFilename string `json:"oldFilename"`
 	NewFilename string `json:"newFilename"`
 	SHA512      string `json:"sha512"`
 	Version     string `json:"version"`
+	ProjectID   string `json:"projectId,omitempty"`
+	Name        string `json:"name,omitempty"`
+	ClientSide  string `json:"clientSide,omitempty"`
+}
+
+func (it stagingItem) action() string {
+	switch {
+	case it.OldFilename == "":
+		return "add"
+	case it.NewFilename == "":
+		return "remove"
+	}
+	return "update"
+}
+
+func (it stagingItem) change(profile string) Change {
+	file := it.NewFilename
+	if it.action() == "remove" {
+		file = it.OldFilename
+	}
+	name := it.Name
+	if name == "" {
+		name = file
+	}
+	return Change{Action: it.action(), Profile: profile, Filename: file,
+		ProjectID: it.ProjectID, Name: name, ClientSide: it.ClientSide}
 }
 
 type stagingManifest struct {
@@ -236,16 +321,66 @@ func stagingDir(p Profile) string {
 	return filepath.Join(p.Dirs[keys[0]], ".msm-staging")
 }
 
-func (m *Manager) stagedFilenames(p Profile) map[string]bool {
-	out := map[string]bool{}
+func (m *Manager) stagedItems(p Profile) []stagingItem {
 	man, err := readManifest(filepath.Join(stagingDir(p), "manifest.json"))
 	if err != nil {
-		return out
+		return nil
 	}
-	for _, it := range man.Items {
-		out[it.OldFilename] = true
+	return man.Items
+}
+
+func (m *Manager) stagedFilenames(p Profile) map[string]bool {
+	out := map[string]bool{}
+	for _, it := range m.stagedItems(p) {
+		if it.OldFilename != "" {
+			out[it.OldFilename] = true
+		}
 	}
 	return out
+}
+
+// HasStaged reports whether anything is pending for the profile.
+func (m *Manager) HasStaged(profile string) bool {
+	p, err := m.profile(profile)
+	if err != nil {
+		return false
+	}
+	return len(m.stagedItems(p)) > 0
+}
+
+// Discard drops the pending change for filename (vorgemerktes Hinzufügen,
+// Entfernen oder Update). Der Live-Ordner bleibt unangetastet.
+func (m *Manager) Discard(profile, filename string) error {
+	p, err := m.profile(profile)
+	if err != nil {
+		return err
+	}
+	sdir := stagingDir(p)
+	manPath := filepath.Join(sdir, "manifest.json")
+	man, err := readManifest(manPath)
+	if err != nil {
+		return fmt.Errorf("für %s ist nichts vorgemerkt", filename)
+	}
+	kept := man.Items[:0]
+	found := false
+	for _, it := range man.Items {
+		if filename != "" && (it.OldFilename == filename || (it.OldFilename == "" && it.NewFilename == filename)) {
+			found = true
+			if it.NewFilename != "" {
+				os.Remove(filepath.Join(sdir, it.NewFilename))
+			}
+			continue
+		}
+		kept = append(kept, it)
+	}
+	if !found {
+		return fmt.Errorf("für %s ist nichts vorgemerkt", filename)
+	}
+	if len(kept) == 0 {
+		return os.Remove(manPath)
+	}
+	man.Items = kept
+	return writeManifest(manPath, man)
 }
 
 func readManifest(path string) (stagingManifest, error) {
@@ -332,9 +467,9 @@ func (m *Manager) Stage(ctx context.Context, profileName string, filenames []str
 	return staged, nil
 }
 
-// ApplyStaged swaps staged files into the live directory: old files move to
-// .backup/<timestamp>/ (never deleted), staged files move in. Returns the
-// backup label for rollback. Call while the server is stopped or right
+// ApplyStaged swaps staged files into the live directory: old/removed files
+// move to .backup/<timestamp>/ (never deleted), new files move in. Returns
+// the backup label for rollback. Call while the server is stopped or right
 // before a scheduled restart.
 func (m *Manager) ApplyStaged(profileName string) (string, int, error) {
 	p, err := m.profile(profileName)
@@ -351,6 +486,7 @@ func (m *Manager) ApplyStaged(profileName string) (string, int, error) {
 	label := time.Now().Format("2006-01-02_15-04-05")
 	applied := 0
 	backupMan := stagingManifest{Created: time.Now()}
+	var changes []Change
 	for _, it := range man.Items {
 		liveDir, ok := p.Dirs[it.Category]
 		if !ok {
@@ -360,43 +496,77 @@ func (m *Manager) ApplyStaged(profileName string) (string, int, error) {
 		if err := os.MkdirAll(backupDir, 0o755); err != nil {
 			return label, applied, err
 		}
-		oldPath := filepath.Join(liveDir, it.OldFilename)
-		if _, err := os.Stat(oldPath); err == nil {
-			if err := os.Rename(oldPath, filepath.Join(backupDir, it.OldFilename)); err != nil {
-				return label, applied, fmt.Errorf("backup von %s: %w", it.OldFilename, err)
+		// Leerer Name: filepath.Join(liveDir, "") wäre liveDir selbst —
+		// jede Seite nur anfassen, wenn sie gesetzt ist.
+		if it.OldFilename != "" {
+			oldPath := filepath.Join(liveDir, it.OldFilename)
+			if _, err := os.Stat(oldPath); err == nil {
+				if err := os.Rename(oldPath, filepath.Join(backupDir, it.OldFilename)); err != nil {
+					return label, applied, fmt.Errorf("backup von %s: %w", it.OldFilename, err)
+				}
 			}
 		}
-		if err := os.Rename(filepath.Join(sdir, it.NewFilename), filepath.Join(liveDir, it.NewFilename)); err != nil {
-			return label, applied, fmt.Errorf("einsetzen von %s: %w", it.NewFilename, err)
+		if it.NewFilename != "" {
+			if err := os.Rename(filepath.Join(sdir, it.NewFilename), filepath.Join(liveDir, it.NewFilename)); err != nil {
+				return label, applied, fmt.Errorf("einsetzen von %s: %w", it.NewFilename, err)
+			}
 		}
 		backupMan.Items = append(backupMan.Items, it)
 		applied++
 		// rollback needs to know where the backup lives
 		writeManifest(filepath.Join(backupDir, "manifest.json"), backupMan)
+		changes = append(changes, it.change(profileName))
 	}
 	os.Remove(manPath)
-	// den Cache NICHT komplett verwerfen — nur die angewendeten Einträge auf
-	// den neuen Stand setzen. Die übrigen Update-Badges bleiben stehen, die
-	// Oberfläche "vergisst" nichts (UX-Feedback vom ersten echten Update).
+	m.updateCache(profileName, man.Items)
+	m.notify(profileName, changes)
+	return label, applied, nil
+}
+
+// updateCache pflegt den Check-Cache nach dem Anwenden, statt ihn zu
+// verwerfen — übrige Update-Badges bleiben stehen (UX-Feedback vom ersten
+// echten Update).
+func (m *Manager) updateCache(profileName string, items []stagingItem) {
 	m.mu.Lock()
-	entries := m.entries[profileName]
-	for _, it := range man.Items {
-		for i := range entries {
-			if entries[i].Filename == it.OldFilename && entries[i].Category == it.Category {
-				entries[i].Filename = it.NewFilename
-				entries[i].SHA512 = it.SHA512
-				entries[i].Version = it.Version
-				entries[i].UpdateVersion = ""
-				entries[i].UpdateFilename = ""
-				entries[i].UpdateURL = ""
-				entries[i].UpdateSHA512 = ""
-				entries[i].Changelog = ""
-				entries[i].Staged = false
+	defer m.mu.Unlock()
+	entries, ok := m.entries[profileName]
+	if !ok {
+		return // noch kein Check gelaufen
+	}
+	for _, it := range items {
+		switch it.action() {
+		case "add":
+			entries = append(entries, Entry{
+				Profile: profileName, Category: it.Category, Filename: it.NewFilename,
+				SHA512: it.SHA512, Managed: it.ProjectID != "", ProjectID: it.ProjectID,
+				Name: it.Name, Version: it.Version,
+			})
+		case "remove":
+			kept := entries[:0]
+			for _, e := range entries {
+				if !(e.Filename == it.OldFilename && e.Category == it.Category) {
+					kept = append(kept, e)
+				}
+			}
+			entries = kept
+		default:
+			for i := range entries {
+				if entries[i].Filename == it.OldFilename && entries[i].Category == it.Category {
+					entries[i].Filename = it.NewFilename
+					entries[i].SHA512 = it.SHA512
+					entries[i].Version = it.Version
+					entries[i].UpdateVersion = ""
+					entries[i].UpdateFilename = ""
+					entries[i].UpdateURL = ""
+					entries[i].UpdateSHA512 = ""
+					entries[i].Changelog = ""
+					entries[i].Staged = false
+				}
 			}
 		}
 	}
-	m.mu.Unlock()
-	return label, applied, nil
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Filename < entries[j].Filename })
+	m.entries[profileName] = entries
 }
 
 // Rollback restores the newest backup set: new files move out of the live
@@ -424,6 +594,7 @@ func (m *Manager) Rollback(profileName string) (int, error) {
 		return 0, fmt.Errorf("kein Backup zum Zurückrollen gefunden")
 	}
 	m.invalidate(profileName)
+	m.notify(profileName, nil)
 	return restored, nil
 }
 
@@ -455,11 +626,13 @@ func (m *Manager) RollbackLabel(profileName, label string) (int, error) {
 		return 0, fmt.Errorf("backup-satz %s nicht gefunden oder bereits zurückgerollt", label)
 	}
 	m.invalidate(profileName)
+	m.notify(profileName, nil)
 	return restored, nil
 }
 
 // restoreSet moves the new files out of liveDir (into the set, suffixed)
-// and the backed-up old files back in.
+// and the backed-up old files back in. Leere Namen (Hinzufügen/Entfernen)
+// werden übersprungen — filepath.Join(dir, "") wäre der Ordner selbst.
 func restoreSet(liveDir, set string) (int, error) {
 	man, err := readManifest(filepath.Join(set, "manifest.json"))
 	if err != nil {
@@ -467,16 +640,23 @@ func restoreSet(liveDir, set string) (int, error) {
 	}
 	restored := 0
 	for _, it := range man.Items {
-		newPath := filepath.Join(liveDir, it.NewFilename)
-		if _, err := os.Stat(newPath); err == nil {
-			os.Rename(newPath, filepath.Join(set, it.NewFilename+".rolledback"))
-		}
-		oldBackup := filepath.Join(set, it.OldFilename)
-		if _, err := os.Stat(oldBackup); err == nil {
-			if err := os.Rename(oldBackup, filepath.Join(liveDir, it.OldFilename)); err != nil {
-				return restored, fmt.Errorf("rollback von %s: %w", it.OldFilename, err)
+		if it.NewFilename != "" {
+			newPath := filepath.Join(liveDir, it.NewFilename)
+			if _, err := os.Stat(newPath); err == nil {
+				os.Rename(newPath, filepath.Join(set, it.NewFilename+".rolledback"))
+				if it.OldFilename == "" {
+					restored++ // Hinzufügen rückgängig gemacht
+				}
 			}
-			restored++
+		}
+		if it.OldFilename != "" {
+			oldBackup := filepath.Join(set, it.OldFilename)
+			if _, err := os.Stat(oldBackup); err == nil {
+				if err := os.Rename(oldBackup, filepath.Join(liveDir, it.OldFilename)); err != nil {
+					return restored, fmt.Errorf("rollback von %s: %w", it.OldFilename, err)
+				}
+				restored++
+			}
 		}
 	}
 	return restored, nil
