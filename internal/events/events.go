@@ -30,6 +30,7 @@ const (
 	TypeModsApplied     = "mods.applied"
 	TypeModsRollback    = "mods.rollback"
 	TypeClientPack      = "mods.clientpack" // Client-Paket veröffentlicht
+	TypeModsChanged     = "mods.changed"    // Mods hinzugefügt/entfernt (nach Neustart)
 	TypeVersionNew      = "version.new"
 	TypeVersionReady    = "version.ready"
 	TypeContainerAction = "container.action"
