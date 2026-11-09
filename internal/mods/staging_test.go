@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func testProfile(t *testing.T) (*Manager, Profile, string) {
@@ -252,5 +253,52 @@ func TestApplyUpdateRefreshesName(t *testing.T) {
 	e := m.Entries(ProfileServer)
 	if len(e) != 1 || e[0].Filename != "api-2.jar" || e[0].Name != "[26.3] API 2" {
 		t.Errorf("entries = %+v, want Name der neuen Version", e)
+	}
+}
+
+// Rollback nimmt nur die zuletzt angewendete Änderung zurück — nicht je
+// Kategorie-Ordner den jeweils neuesten Satz (WSL-Test 2026-11-09: ein
+// Client-Rollback entfernte nebenbei ein älteres Resourcepack-Upload).
+// Ein zweiter Rollback geht einen Schritt weiter zurück.
+func TestRollbackOnlyNewestChangeAcrossCategories(t *testing.T) {
+	base := t.TempDir()
+	modsDir, rpDir := filepath.Join(base, "mods"), filepath.Join(base, "resourcepacks")
+	os.MkdirAll(modsDir, 0o755)
+	os.MkdirAll(rpDir, 0o755)
+	p := Profile{Name: ProfileClient, Dirs: map[string]string{"mods": modsDir, "resourcepacks": rpDir}}
+	m := NewManager(nil, "fabric", []Profile{p})
+
+	// 1) älter: Resourcepack hinzugefügt
+	stage(t, p, map[string]string{"pack.zip": "p"}, stagingItem{Category: "resourcepacks", NewFilename: "pack.zip"})
+	if _, _, err := m.ApplyStaged(ProfileClient); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1100 * time.Millisecond) // Labels haben Sekunden-Auflösung
+	// 2) neuer: Mod entfernt
+	os.WriteFile(filepath.Join(modsDir, "way.jar"), []byte("w"), 0o644)
+	stage(t, p, nil, stagingItem{Category: "mods", OldFilename: "way.jar"})
+	if _, _, err := m.ApplyStaged(ProfileClient); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.Rollback(ProfileClient); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(filepath.Join(modsDir, "way.jar")) {
+		t.Error("entfernter Mod nicht zurück")
+	}
+	if !exists(filepath.Join(rpDir, "pack.zip")) {
+		t.Fatal("Rollback hat die ältere, unbeteiligte Resourcepack-Änderung mit zurückgenommen")
+	}
+
+	// zweiter Rollback: jetzt die ältere Änderung
+	if _, err := m.Rollback(ProfileClient); err != nil {
+		t.Fatalf("zweiter Rollback: %v", err)
+	}
+	if exists(filepath.Join(rpDir, "pack.zip")) {
+		t.Error("zweiter Rollback hat das Resourcepack-Upload nicht zurückgenommen")
+	}
+	if !exists(filepath.Join(modsDir, "way.jar")) {
+		t.Error("zweiter Rollback hat den ersten wieder umgedreht")
 	}
 }

@@ -697,27 +697,38 @@ func (m *Manager) Rollback(profileName string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	restored := 0
+	// Ein Anwenden legt in JEDEM betroffenen Kategorie-Ordner einen Satz mit
+	// demselben Label an. Zurückgenommen wird nur das neueste Label über alle
+	// Ordner — vorher nahm jeder Ordner seinen eigenen neuesten Satz, und ein
+	// Rollback drehte nebenbei ältere, unbeteiligte Änderungen mit um
+	// (WSL-Test 2026-11-09).
+	label := ""
 	for _, liveDir := range p.Dirs {
-		backupRoot := filepath.Join(liveDir, ".backup")
-		labels, err := os.ReadDir(backupRoot)
-		if err != nil || len(labels) == 0 {
+		sets, err := os.ReadDir(filepath.Join(liveDir, ".backup"))
+		if err != nil {
 			continue
 		}
-		sort.Slice(labels, func(i, j int) bool { return labels[i].Name() > labels[j].Name() })
-		n, err := restoreSet(liveDir, filepath.Join(backupRoot, labels[0].Name()))
-		restored += n
-		if err != nil {
-			return restored, err
+		for _, s := range sets {
+			name := s.Name()
+			if !s.IsDir() || strings.HasSuffix(name, rolledBackSuffix) {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(liveDir, ".backup", name, "manifest.json")); err != nil {
+				continue // leerer Satz (z. B. Fehler beim ersten Item) — nichts zurückzunehmen
+			}
+			if name > label {
+				label = name
+			}
 		}
 	}
-	if restored == 0 {
+	if label == "" {
 		return 0, fmt.Errorf("kein Backup zum Zurückrollen gefunden")
 	}
-	m.invalidate(profileName)
-	m.notify(profileName, nil)
-	return restored, nil
+	return m.RollbackLabel(profileName, label)
 }
+
+// rolledBackSuffix marks a backup set that was already restored.
+const rolledBackSuffix = ".rolledback"
 
 // RollbackLabel restores exactly the backup set with the given label (the
 // one ApplyStaged returned). Anders als Rollback greift es nie auf einen
@@ -742,6 +753,9 @@ func (m *Manager) RollbackLabel(profileName, label string) (int, error) {
 		if err != nil {
 			return restored, err
 		}
+		// als erledigt markieren: der nächste Rollback geht einen Schritt
+		// weiter zurück statt an diesem Satz hängen zu bleiben
+		os.Rename(set, set+rolledBackSuffix)
 	}
 	if restored == 0 {
 		return 0, fmt.Errorf("backup-satz %s nicht gefunden oder bereits zurückgerollt", label)
