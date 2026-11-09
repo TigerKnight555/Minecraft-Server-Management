@@ -26,7 +26,10 @@ func TestRemovalInfoFindsDependentsAndOtherProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(info.Dependents) != 1 || !strings.Contains(info.Dependents[0], "Waystones") {
+	if info.Name != "Fabric API" {
+		t.Errorf("name = %q, want Projekttitel statt Versionsname", info.Name)
+	}
+	if len(info.Dependents) != 1 || info.Dependents[0] != "Waystones" {
 		t.Errorf("dependents = %v", info.Dependents)
 	}
 	if len(info.AlsoIn) != 1 || info.AlsoIn[0].Profile != mods.ProfileClient || info.AlsoIn[0].Filename != "fabric-api.jar" {

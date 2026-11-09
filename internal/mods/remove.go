@@ -50,6 +50,16 @@ func findLive(p Profile, filename string) (string, error) {
 
 // RemovalInfo collects warnings before removing filename — best effort:
 // ohne Modrinth gibt es nur den Dateinamen-Abgleich.
+// projectTitle returns the Modrinth project title ("Waystones") — der
+// Versionsname aus dem Hash-Abgleich ist bei manchen Mods nur eine Nummer
+// („26.3.0.2+fabric-26.3", im WSL-Test 2026-11-08 aufgefallen).
+func (m *Manager) projectTitle(ctx context.Context, projectID, fallback string) string {
+	if p, err := m.api.Project(ctx, projectID); err == nil && p.Title != "" {
+		return p.Title
+	}
+	return fallback
+}
+
 func (m *Manager) RemovalInfo(ctx context.Context, profile, filename string) (*RemovalInfo, error) {
 	p, err := m.profile(profile)
 	if err != nil {
@@ -67,7 +77,7 @@ func (m *Manager) RemovalInfo(ctx context.Context, profile, filename string) (*R
 	target := ""
 	if vs, err := m.api.VersionsByHash(ctx, []string{sum}); err == nil {
 		if v, ok := vs[sum]; ok {
-			target, info.Name = v.ProjectID, v.Name
+			target, info.Name = v.ProjectID, m.projectTitle(ctx, v.ProjectID, v.Name)
 		}
 	}
 	if target != "" {
@@ -86,7 +96,7 @@ func (m *Manager) RemovalInfo(ctx context.Context, profile, filename string) (*R
 				}
 				for _, d := range im.deps {
 					if d.DependencyType == "required" && d.ProjectID == target {
-						info.Dependents = append(info.Dependents, im.name)
+						info.Dependents = append(info.Dependents, m.projectTitle(ctx, pid, im.name))
 						break
 					}
 				}
