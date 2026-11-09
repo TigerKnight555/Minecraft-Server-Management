@@ -68,7 +68,7 @@ func TestAfterRestartAnnouncesAndPublishes(t *testing.T) {
 	if !ok || ev.Type != events.TypeModsChanged {
 		t.Fatalf("event = %+v (ok=%v)", ev, ok)
 	}
-	for _, want := range []string{"Waystones — auch bei dir nötig", "Lithium — nur Server, nichts zu tun", "Sodium — nur bei dir (Client-Mod)", "Altmod — nichts zu tun"} {
+	for _, want := range []string{"Waystones — auch bei dir nötig", "Lithium — nur Server, nichts zu tun", "Sodium — nur bei dir (Client-Paket)", "Altmod — nichts zu tun"} {
 		if !strings.Contains(ev.Message, want) {
 			t.Errorf("Meldung fehlt %q:\n%s", want, ev.Message)
 		}

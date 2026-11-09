@@ -238,7 +238,7 @@ func compose(server, client []mods.Change) (text, title string, ok bool) {
 			b.WriteString("• " + r.name + " — " + hint + "\n")
 		}
 	}
-	write("**Neu:**", added, "auch bei dir nötig", "nur Server, nichts zu tun", "nur bei dir (Client-Mod)")
+	write("**Neu:**", added, "auch bei dir nötig", "nur Server, nichts zu tun", "nur bei dir (Client-Paket)")
 	write("**Entfernt:**", removed, "bitte auch bei dir entfernen", "nichts zu tun", "kann bei dir raus")
 	title = "🧩 Neue Mods auf dem Server"
 	if len(added) == 0 {
