@@ -72,3 +72,26 @@ func TestProjectAndVersionsWithDependencies(t *testing.T) {
 		t.Errorf("ProjectSupports = %v, %v", ok, err)
 	}
 }
+
+func TestProjectsBulkEncodesIDs(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/projects" {
+			http.Error(w, "path "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+		got = r.URL.Query().Get("ids")
+		w.Write([]byte(`[{"id":"A","title":"Waystones"},{"id":"B","title":"Balm"}]`))
+	}))
+	defer srv.Close()
+	ps, err := NewWithBase(srv.URL).Projects(context.Background(), []string{"A", "B"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != `["A","B"]` {
+		t.Errorf("ids = %q", got)
+	}
+	if len(ps) != 2 || ps[0].Title != "Waystones" {
+		t.Errorf("projects = %+v", ps)
+	}
+}

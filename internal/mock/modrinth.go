@@ -160,3 +160,17 @@ func CreateFakeProfiles(baseDir string) ([]mods.Profile, error) {
 		{Name: "client", Dirs: map[string]string{"mods": clientMods, "shaderpacks": clientShaders}},
 	}, nil
 }
+
+// Projects returns catalog projects; unknown IDs are omitted (Anzeige fällt
+// dann auf den Versionsnamen zurück).
+func (m *Modrinth) Projects(_ context.Context, ids []string) ([]modrinth.Project, error) {
+	out := []modrinth.Project{}
+	for _, id := range ids {
+		for _, c := range mockCatalog {
+			if c.project.ID == id {
+				out = append(out, c.project)
+			}
+		}
+	}
+	return out, nil
+}

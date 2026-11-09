@@ -49,6 +49,7 @@ type ModrinthAPI interface {
 	Search(ctx context.Context, query, loader, mcVersion string, limit int) ([]modrinth.SearchHit, error)
 	Project(ctx context.Context, id string) (modrinth.Project, error)
 	ProjectVersions(ctx context.Context, projectID, loader, mcVersion string) ([]modrinth.Version, error)
+	Projects(ctx context.Context, ids []string) ([]modrinth.Project, error)
 }
 
 // Profile is one managed directory tree.
@@ -216,6 +217,27 @@ func hashFile(path string) (string, int64, error) {
 	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
 
+// projectTitles resolves project IDs to Modrinth titles in one request.
+func (m *Manager) projectTitles(ctx context.Context, versions map[string]modrinth.Version) map[string]string {
+	seen := map[string]bool{}
+	var ids []string
+	for _, v := range versions {
+		if v.ProjectID != "" && !seen[v.ProjectID] {
+			seen[v.ProjectID] = true
+			ids = append(ids, v.ProjectID)
+		}
+	}
+	out := map[string]string{}
+	projects, err := m.api.Projects(ctx, ids)
+	if err != nil {
+		return out
+	}
+	for _, p := range projects {
+		out[p.ID] = p.Title
+	}
+	return out
+}
+
 // CheckUpdates scans a profile, resolves identities and available updates
 // via Modrinth and caches the result.
 func (m *Manager) CheckUpdates(ctx context.Context, profileName, mcVersion string) ([]Entry, error) {
@@ -239,6 +261,11 @@ func (m *Manager) CheckUpdates(ctx context.Context, profileName, mcVersion strin
 	if err != nil {
 		return nil, fmt.Errorf("modrinth update check: %w", err)
 	}
+	// Anzeigename = Modrinth-Projekttitel ("Waystones"); der Versionsname ist
+	// bei manchen Mods nur eine Nummer ("26.3.0.2+fabric-26.3", WSL-Test
+	// 2026-11-09). Eine gebündelte Abfrage; scheitert sie, bleibt der
+	// Versionsname.
+	titles := m.projectTitles(ctx, current)
 	staged := m.stagedFilenames(p)
 	for i := range entries {
 		e := &entries[i]
@@ -246,6 +273,9 @@ func (m *Manager) CheckUpdates(ctx context.Context, profileName, mcVersion strin
 			e.Managed = true
 			e.ProjectID = cur.ProjectID
 			e.Name = cur.Name
+			if t := titles[cur.ProjectID]; t != "" {
+				e.Name = t
+			}
 			e.Version = cur.VersionNumber
 		}
 		if up, ok := latest[e.SHA512]; ok && e.Managed {
@@ -254,7 +284,7 @@ func (m *Manager) CheckUpdates(ctx context.Context, profileName, mcVersion strin
 				e.UpdateFilename = f.Filename
 				e.UpdateURL = f.URL
 				e.UpdateSHA512 = f.Hashes.SHA512
-				e.UpdateName = up.Name
+				e.UpdateName = e.Name // Projekttitel bleibt über Versionen gleich
 				e.Changelog = up.Changelog
 			}
 		}

@@ -208,6 +208,25 @@ func (c *Client) Project(ctx context.Context, id string) (Project, error) {
 	return p, err
 }
 
+// Projects fetches several projects in one request (/projects?ids=[...]) —
+// für Anzeigenamen im Mod-Inventar statt einer Abfrage pro Mod.
+func (c *Client) Projects(ctx context.Context, ids []string) ([]Project, error) {
+	if len(ids) == 0 {
+		return []Project{}, nil
+	}
+	raw, err := json.Marshal(ids)
+	if err != nil {
+		return nil, err
+	}
+	q := url.Values{}
+	q.Set("ids", string(raw))
+	var out []Project
+	if err := c.do(ctx, http.MethodGet, "/projects?"+q.Encode(), nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ProjectVersions lists a project's versions for loader + MC version,
 // newest first (Modrinth-Reihenfolge). Die Filter sind JSON-Arrays im
 // Query-String und MÜSSEN URL-encodiert werden — rohe Anführungszeichen/

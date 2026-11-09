@@ -91,6 +91,15 @@ func (f *fakeAPI) Project(_ context.Context, id string) (modrinth.Project, error
 	}
 	return p, nil
 }
+func (f *fakeAPI) Projects(_ context.Context, ids []string) ([]modrinth.Project, error) {
+	var out []modrinth.Project
+	for _, id := range ids {
+		if p, ok := f.projects[id]; ok {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
 func (f *fakeAPI) ProjectVersions(_ context.Context, id, _, _ string) ([]modrinth.Version, error) {
 	return f.versions[id], nil
 }
@@ -438,5 +447,18 @@ func TestAddModsRefusesStagedFilenameCollision(t *testing.T) {
 	}
 	if _, err := mgr.AddMods(ctx, "way", "26.3", []string{mods.ProfileServer}); err == nil {
 		t.Error("gleicher Dateiname schon vorgemerkt — kein Fehler")
+	}
+}
+
+// Die Mod-Liste zeigt den Projekttitel, nicht den Versionsnamen (bei
+// manchen Mods nur eine Nummer, WSL-Test 2026-11-09).
+func TestCheckUpdatesUsesProjectTitles(t *testing.T) {
+	mgr, _, _, _ := addSetup(t)
+	entries, err := mgr.CheckUpdates(context.Background(), mods.ProfileServer, "26.3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name != "Fabric API" {
+		t.Errorf("entries = %+v, want Name \"Fabric API\" (Projekttitel statt \"Fabric API 1.0\")", entries)
 	}
 }
