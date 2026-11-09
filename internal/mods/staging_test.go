@@ -236,3 +236,21 @@ func TestApplyStagedFailedUpdateRestoresOld(t *testing.T) {
 		t.Error("alte Datei nach gescheitertem Update nicht mehr im Live-Ordner")
 	}
 }
+
+// Nach einem angewendeten Update zeigte die Liste den Namen der ALTEN
+// Version ("[1.21.11] Fabric API 0.141.4" neben fabric-api-0.166.0+26.3.jar,
+// WSL-Test 2026-11-09).
+func TestApplyUpdateRefreshesName(t *testing.T) {
+	m, p, dir := testProfile(t)
+	os.WriteFile(filepath.Join(dir, "api-1.jar"), []byte("old"), 0o644)
+	m.entries[ProfileServer] = []Entry{{Profile: ProfileServer, Category: "mods", Filename: "api-1.jar", Name: "[1.21.11] API 1"}}
+	stage(t, p, map[string]string{"api-2.jar": "new"},
+		stagingItem{Category: "mods", OldFilename: "api-1.jar", NewFilename: "api-2.jar", Version: "2", Name: "[26.3] API 2"})
+	if _, _, err := m.ApplyStaged(ProfileServer); err != nil {
+		t.Fatal(err)
+	}
+	e := m.Entries(ProfileServer)
+	if len(e) != 1 || e[0].Filename != "api-2.jar" || e[0].Name != "[26.3] API 2" {
+		t.Errorf("entries = %+v, want Name der neuen Version", e)
+	}
+}

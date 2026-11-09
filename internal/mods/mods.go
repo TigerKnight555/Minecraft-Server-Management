@@ -72,6 +72,7 @@ type Entry struct {
 	UpdateFilename string `json:"updateFilename,omitempty"`
 	UpdateURL      string `json:"-"`
 	UpdateSHA512   string `json:"-"`
+	UpdateName     string `json:"-"` // Versionsname des Updates (ersetzt Name nach dem Anwenden)
 	Changelog      string `json:"changelog,omitempty"`
 	Staged         bool   `json:"staged"`
 	// Pending: was vorgemerkt ist — "add" (neu), "remove" (wird entfernt),
@@ -253,6 +254,7 @@ func (m *Manager) CheckUpdates(ctx context.Context, profileName, mcVersion strin
 				e.UpdateFilename = f.Filename
 				e.UpdateURL = f.URL
 				e.UpdateSHA512 = f.Hashes.SHA512
+				e.UpdateName = up.Name
 				e.Changelog = up.Changelog
 			}
 		}
@@ -544,6 +546,7 @@ func (m *Manager) stageUpdate(sdir, manPath string, e Entry, data []byte) (bool,
 	man.Items = append(man.Items, stagingItem{
 		Category: e.Category, OldFilename: e.Filename,
 		NewFilename: e.UpdateFilename, SHA512: e.UpdateSHA512, Version: e.UpdateVersion,
+		ProjectID: e.ProjectID, Name: e.UpdateName,
 	})
 	return true, writeManifest(manPath, man)
 }
@@ -669,10 +672,14 @@ func (m *Manager) updateCache(profileName string, items []stagingItem) {
 					entries[i].Filename = it.NewFilename
 					entries[i].SHA512 = it.SHA512
 					entries[i].Version = it.Version
+					if it.Name != "" {
+						entries[i].Name = it.Name
+					}
 					entries[i].UpdateVersion = ""
 					entries[i].UpdateFilename = ""
 					entries[i].UpdateURL = ""
 					entries[i].UpdateSHA512 = ""
+					entries[i].UpdateName = ""
 					entries[i].Changelog = ""
 					entries[i].Staged = false
 				}
