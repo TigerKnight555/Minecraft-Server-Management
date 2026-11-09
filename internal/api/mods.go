@@ -64,6 +64,9 @@ func (s *Server) handleModsCheck(w http.ResponseWriter, r *http.Request) {
 
 // handleModsStage downloads selected updates into staging.
 func (s *Server) handleModsStage(w http.ResponseWriter, r *http.Request) {
+	if s.upgradeRunning(w) {
+		return
+	}
 	var req struct {
 		Profile   string   `json:"profile"`
 		Filenames []string `json:"filenames"`
@@ -144,6 +147,9 @@ func (s *Server) handleModsApply(w http.ResponseWriter, r *http.Request) {
 
 // handleModsRollback restores the newest backup set.
 func (s *Server) handleModsRollback(w http.ResponseWriter, r *http.Request) {
+	if s.upgradeRunning(w) {
+		return
+	}
 	var req struct {
 		Profile string `json:"profile"`
 	}

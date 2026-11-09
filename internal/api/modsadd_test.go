@@ -236,6 +236,8 @@ func TestModChangesBlockedWhileUpgradeRuns(t *testing.T) {
 	cases := []struct{ path, body string }{
 		{"/api/mods/add", `{"projectId":"jade-mock","profiles":["server"]}`},
 		{"/api/mods/remove", `{"profile":"server","filename":"lithium-0.21.2.jar"}`},
+		{"/api/mods/stage", `{"profile":"server"}`},
+		{"/api/mods/rollback", `{"profile":"server"}`},
 		{"/api/mods/discard", `{"profile":"server","filename":"lithium-0.21.2.jar"}`},
 		{"/api/mods/apply", `{"profile":"server","restart":false}`},
 		{"/api/mods/apply", `{"profile":"server","restart":true}`},

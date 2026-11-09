@@ -417,7 +417,34 @@ func writeManifest(path string, man stagingManifest) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".manifest-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 // Stage downloads the available updates for the given filenames (empty =
@@ -590,10 +617,13 @@ func (m *Manager) applyStagedLocked(profileName string) (string, int, []Change, 
 		if it.NewFilename != "" {
 			if err := os.Rename(filepath.Join(sdir, it.NewFilename), filepath.Join(liveDir, it.NewFilename)); err != nil {
 				// halbes Update zurücknehmen: alte Datei wieder in den Live-Ordner
+				insErr := fmt.Errorf("einsetzen von %s: %w", it.NewFilename, err)
 				if movedOld {
-					os.Rename(filepath.Join(backupDir, it.OldFilename), filepath.Join(liveDir, it.OldFilename))
+					if restoreErr := os.Rename(filepath.Join(backupDir, it.OldFilename), filepath.Join(liveDir, it.OldFilename)); restoreErr != nil {
+						insErr = fmt.Errorf("%w; alte Datei %s liegt noch in %s: %v", insErr, it.OldFilename, backupDir, restoreErr)
+					}
 				}
-				return fail(i, fmt.Errorf("einsetzen von %s: %w", it.NewFilename, err))
+				return fail(i, insErr)
 			}
 		}
 		backupMan.Items = append(backupMan.Items, it)
