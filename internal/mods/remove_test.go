@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -285,4 +286,26 @@ type zeros struct{}
 func (zeros) Read(p []byte) (int, error) {
 	clear(p)
 	return len(p), nil
+}
+
+// Hochgeladene Dateien müssen für andere User lesbar sein (0644): der
+// Minecraft-Server läuft als anderer User als MSM. CreateTemp legt 0600 an.
+func TestUploadedFileIsWorldReadable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-Dateirechte")
+	}
+	mgr, _, serverDir, _ := addSetup(t)
+	if _, err := mgr.StageUpload(context.Background(), mods.ProfileServer, "mods", "custom.jar", []byte("eigener mod")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := mgr.ApplyStaged(mods.ProfileServer); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(filepath.Join(serverDir, "custom.jar"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm()&0o044 != 0o044 {
+		t.Errorf("mode = %v, want group/other lesbar", fi.Mode().Perm())
+	}
 }

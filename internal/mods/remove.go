@@ -221,6 +221,12 @@ func (m *Manager) SpoolUpload(profile string, r io.Reader) (UploadFile, error) {
 		os.Remove(tmp.Name())
 		return UploadFile{}, errUploadSize
 	}
+	// CreateTemp legt 0600 an — der Minecraft-Server (anderer User als MSM)
+	// könnte einen hochgeladenen Mod dann nicht lesen (WSL-Test 2026-11-09).
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		os.Remove(tmp.Name())
+		return UploadFile{}, err
+	}
 	return UploadFile{Path: tmp.Name(), Size: n, SHA512: hex.EncodeToString(h.Sum(nil))}, nil
 }
 
