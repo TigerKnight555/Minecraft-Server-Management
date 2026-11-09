@@ -111,6 +111,12 @@ type Orchestrator struct {
 	// Optional; true = Start verweigern.
 	PendingChanges func() bool
 
+	// OnSuccess läuft nach einem erfolgreichen Sprung (z. B. Versions-Watch
+	// und Mod-Inventar sofort neu prüfen — sonst zeigt die Kachel bis zum
+	// nächsten Tageslauf den alten Stand und bietet dasselbe Update erneut an).
+	// Optional; muss selbst entscheiden, ob es asynchron läuft.
+	OnSuccess func(ctx context.Context, version string)
+
 	mu      sync.Mutex
 	running bool
 	status  string
@@ -169,6 +175,14 @@ func (o *Orchestrator) Start(version string) error {
 	if o.PendingChanges != nil && o.PendingChanges() {
 		o.mu.Unlock()
 		return fmt.Errorf("im Mods-Tab sind Änderungen vorgemerkt — erst anwenden oder verwerfen, dann das Update starten")
+	}
+	// veralteter Versions-Watch darf keinen zweiten Sprung auf dieselbe
+	// Version auslösen (Backup + Neustart + Neubau für nichts)
+	if o.mcStatus != nil {
+		if cur := o.mcStatus().Version; cur != "" && cur == version {
+			o.mu.Unlock()
+			return fmt.Errorf("der Server läuft bereits auf Minecraft %s — Versions-Check mit „Jetzt prüfen“ aktualisieren", version)
+		}
 	}
 	// Guards VOR dem Start — der Button darf nur Grünes auslösen
 	last := o.watch.Last()
@@ -462,6 +476,9 @@ func (o *Orchestrator) finish(ctx context.Context, version string) error {
 		Message: "Update fertig, es kann weitergehen." + clientNote,
 		Fields:  fields,
 	})
+	if o.OnSuccess != nil {
+		o.OnSuccess(ctx, version)
+	}
 	return nil
 }
 

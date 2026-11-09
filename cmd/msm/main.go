@@ -393,6 +393,23 @@ func main() {
 		upgrader.PendingChanges = func() bool {
 			return modmgr.HasStaged(mods.ProfileServer) || modmgr.HasStaged(mods.ProfileClient)
 		}
+		// nach dem Sprung Versions-Watch + Mod-Inventar sofort auffrischen —
+		// sonst zeigt die Kachel bis zum Tageslauf „Update verfügbar" für die
+		// gerade installierte Version (WSL-Test 2026-11-09)
+		upgrader.OnSuccess = func(_ context.Context, version string) {
+			go func() {
+				rctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+				defer cancel()
+				for _, p := range modmgr.Profiles() {
+					modmgr.CheckUpdates(rctx, p.Name, version)
+				}
+				if st, err := watcher.Check(rctx, version); err == nil {
+					watcher.SetLast(st)
+				} else {
+					log.Warn("versions-watch nach update fehlgeschlagen", "err", err)
+				}
+			}()
+		}
 	}
 
 	// Down-Wächter erst jetzt: er muss den Upgrade-Zustand kennen, sonst

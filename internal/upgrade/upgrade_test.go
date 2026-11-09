@@ -417,3 +417,37 @@ func TestUpgradeRefusesWithPendingModChanges(t *testing.T) {
 		t.Errorf("Kette lief trotzdem an: %v", steps)
 	}
 }
+
+// Nach einem erfolgreichen Sprung zeigte der Versions-Watch bis zu 24 h den
+// alten Stand ("26.3 verfügbar, aktuell 1.21.11") — der Knopf bot dasselbe
+// Update erneut an (WSL-Test 2026-11-09). OnSuccess stößt die Neuprüfung an.
+func TestUpgradeCallsOnSuccess(t *testing.T) {
+	f := &fakes{backupOK: true}
+	f.online.Store(true)
+	o := newOrch(f, events.New())
+	var got atomic.Value
+	o.OnSuccess = func(_ context.Context, v string) { got.Store(v) }
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+	if v, _ := got.Load().(string); v != "26.2" {
+		t.Errorf("OnSuccess version = %q, want 26.2", v)
+	}
+}
+
+// Läuft der Server schon auf der Zielversion (veralteter Versions-Watch),
+// darf die Kette nicht noch einmal starten.
+func TestUpgradeRefusesWhenAlreadyOnTarget(t *testing.T) {
+	f := &fakes{backupOK: true}
+	f.online.Store(true)
+	f.version.Store("26.2")
+	o := newOrch(f, events.New())
+	err := o.Start("26.2")
+	if err == nil || !strings.Contains(err.Error(), "läuft bereits auf") {
+		t.Fatalf("err = %v, want Hinweis 'läuft bereits auf'", err)
+	}
+	if steps := f.list(); len(steps) != 0 {
+		t.Errorf("Kette lief trotzdem an: %v", steps)
+	}
+}
