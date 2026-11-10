@@ -17,6 +17,8 @@
   let apply = $state(null)
 
   let upFile = $state(null)
+  let fileInput = $state(null)
+  let loadingId = $state('')
   let upServer = $state(true)
   let upClient = $state(false)
   let upCategory = $state('mods')
@@ -58,11 +60,19 @@
     })
   }
 
+  // Plan braucht mehrere Modrinth-Abfragen (Abhängigkeiten, je ~0,5 s
+  // gedrosselt) — ohne Anzeige wirkte der Klick wie tot.
   const openPlan = (hit) => guard(async () => {
-    plan = await planMod(hit.project_id)
-    wantServer = plan.server && !plan.main.present?.server
-    wantClient = plan.client && !plan.main.present?.client
-    apply = await applyInfo().catch(() => null)
+    loadingId = hit.project_id
+    plan = null
+    try {
+      plan = await planMod(hit.project_id)
+      wantServer = plan.server && !plan.main.present?.server
+      wantClient = plan.client && !plan.main.present?.client
+      apply = await applyInfo().catch(() => null)
+    } finally {
+      loadingId = ''
+    }
   })
 
   const confirmAdd = () => guard(async () => {
@@ -86,6 +96,7 @@
       ? ' (auf Modrinth erkannt — bekommt Updates)'
       : ' (unverwaltet — keine automatischen Updates)')
     upFile = null
+    if (fileInput) fileInput.value = ''
     onchange?.()
   })
 
@@ -106,6 +117,10 @@
     <input type="text" bind:value={query} placeholder="Auf Modrinth suchen, z. B. Jade" />
     <button class="btn" type="submit" disabled={busy || query.trim().length < 2}>Suchen</button>
   </form>
+
+  {#if loadingId}
+    <div class="dialog loading"><span class="spinner"></span> Prüfe Versionen und Abhängigkeiten auf Modrinth …</div>
+  {/if}
 
   {#if plan}
     <div class="dialog">
@@ -151,7 +166,7 @@
             <span class="dim-sm">{(h.downloads ?? 0).toLocaleString('de-DE')} Downloads</span>
             <div class="dim-sm">{h.description}</div>
           </div>
-          <button class="btn sm" onclick={() => openPlan(h)} disabled={busy}>Auswählen</button>
+          <button class="btn sm" onclick={() => openPlan(h)} disabled={busy}>{loadingId === h.project_id ? 'Lädt …' : 'Auswählen'}</button>
         </li>
       {/each}
     </ul>
@@ -161,7 +176,7 @@
 
   <h3>Datei hochladen <span class="dim-sm">(Notlösung, z. B. Mods von CurseForge)</span></h3>
   <div class="row">
-    <input type="file" accept=".jar,.zip" onchange={(e) => (upFile = e.currentTarget.files?.[0] ?? null)} />
+    <input type="file" accept=".jar,.zip" bind:this={fileInput} onchange={(e) => (upFile = e.currentTarget.files?.[0] ?? null)} />
     <label><input type="checkbox" bind:checked={upServer} /> Server</label>
     <label><input type="checkbox" bind:checked={upClient} /> Client-Paket</label>
     {#if upClient && !upServer}
@@ -188,6 +203,13 @@
   .btn.sm { padding: 0.2rem 0.6rem; font-size: 0.75rem; }
   .dialog { border: 1px solid var(--accent); border-radius: 6px; padding: 0.6rem 0.8rem; margin: 0.6rem 0; }
   .dialog h3 { margin: 0 0 0.5rem; }
+  .dialog.loading { display: flex; gap: 0.6rem; align-items: center; color: var(--text-dim); font-size: 0.85rem; }
+  .spinner {
+    width: 14px; height: 14px; flex: none; border-radius: 50%;
+    border: 2px solid var(--panel-border); border-top-color: var(--accent);
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .hits { list-style: none; padding: 0; margin: 0.4rem 0 0.8rem; }
   .hits li { display: flex; gap: 0.6rem; align-items: center; padding: 0.4rem 0; border-bottom: 1px solid var(--panel-border); }
   .hits img, .noicon { width: 32px; height: 32px; border-radius: 4px; flex: none; background: var(--panel-border); }

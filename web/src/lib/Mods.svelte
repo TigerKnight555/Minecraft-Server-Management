@@ -62,9 +62,19 @@
     (r) => `${r.staged} Update(s) heruntergeladen und verifiziert (Staging)`)
   const doStageOne = (f) => run(() => stageMods(profile, [f]),
     (r) => `${r.staged} Update gestaged`)
+  // Rollback leert den Update-Cache (Dateien haben sich geändert) — danach
+  // gleich neu prüfen, sonst steht die Liste leer da.
   const doRollback = () => {
-    if (!confirm('Letztes Mod-Backup wiederherstellen? Danach Server neu starten!')) return
-    run(() => rollbackMods(profile), (r) => `${r.restored} Datei(en) zurückgerollt — Neustart nötig`)
+    const server = profile === 'server'
+    const msg = server
+      ? 'Letzte Mod-Änderung am Server zurücknehmen? Wirksam erst nach einem Server-Neustart.'
+      : 'Letzte Änderung am Client-Paket zurücknehmen? Wird beim nächsten Neustart an die Spieler verteilt.'
+    if (!confirm(msg)) return
+    run(async () => {
+      const r = await rollbackMods(profile)
+      await checkMods(profile).catch(() => null)
+      return r
+    }, (r) => `${r.restored} Datei(en) zurückgerollt` + (server ? ' — Neustart nötig' : ''))
   }
   const doApply = () => {
     const restart = profile === 'server'
