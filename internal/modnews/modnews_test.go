@@ -225,3 +225,31 @@ func TestRollbackCancelsPendingNews(t *testing.T) {
 	}
 	_ = store
 }
+
+// Upload + Rollback: Paket gilt als veraltet, ist inhaltlich aber gleich
+// dem zuletzt verschickten — kein erneuter Versand.
+func TestNoRepublishWhenPackContentUnchanged(t *testing.T) {
+	a, store, _, published, _ := setup(t, true)
+	content := "A"
+	a.SetFingerprint(func() string { return content })
+	a.Published(a.BeginPublish()) // Stand A verschickt
+
+	a.OnApply(mods.ProfileClient, nil) // Upload …
+	content = "B"
+	a.OnApply(mods.ProfileClient, nil) // … und Rollback
+	content = "A"
+	a.AfterRestart(context.Background())
+	if published.Load() != 0 {
+		t.Errorf("published = %d, Paket unverändert — kein Versand erwartet", published.Load())
+	}
+	if store.get(keyDirty) != "" {
+		t.Error("dirty-Flag bleibt stehen")
+	}
+
+	a.OnApply(mods.ProfileClient, nil)
+	content = "C" // echte Änderung
+	a.AfterRestart(context.Background())
+	if published.Load() != 1 {
+		t.Errorf("published = %d, geänderter Inhalt muss verschickt werden", published.Load())
+	}
+}

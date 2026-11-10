@@ -22,6 +22,7 @@ const (
 	keyServer = "mods.news.server"
 	keyClient = "mods.news.client"
 	keyDirty  = "mods.clientpack.dirty"
+	keyPackFP = "mods.clientpack.fingerprint"
 	maxItems  = 50
 )
 
@@ -35,6 +36,8 @@ type Announcer struct {
 	busy    func() bool
 	ready   func() bool
 	publish func(ctx context.Context) error
+	// fingerprint beschreibt den aktuellen Paket-Inhalt (nil = unbekannt)
+	fingerprint func() string
 
 	// Poll: Abstand der Online-Prüfung
 	Poll time.Duration
@@ -123,6 +126,12 @@ func merge(list, news []mods.Change) []mods.Change {
 	return list
 }
 
+// SetFingerprint wires a content fingerprint of the client pack. Damit
+// erkennt AfterRestart, dass ein „veraltetes" Paket inhaltlich doch dem
+// zuletzt verschickten entspricht (z. B. Upload + Rollback) — sonst bekamen
+// die Spieler ein „📦 Neues Mod-Paket" ohne jede Änderung (WSL-Test 2026-11-10).
+func (a *Announcer) SetFingerprint(f func() string) { a.fingerprint = f }
+
 // BeginPublish returns the current client-change generation; vor dem
 // Paket-Upload aufrufen und das Ergebnis an Published weitergeben.
 func (a *Announcer) BeginPublish() uint64 {
@@ -141,6 +150,9 @@ func (a *Announcer) Published(gen uint64) {
 	defer a.mu.Unlock()
 	if a.gen == gen {
 		a.set(keyDirty, "")
+		if a.fingerprint != nil {
+			a.set(keyPackFP, a.fingerprint())
+		}
 	}
 }
 
@@ -150,6 +162,12 @@ func (a *Announcer) AfterRestart(ctx context.Context) {
 	a.mu.Lock()
 	server, client := a.load(keyServer), a.load(keyClient)
 	dirty := a.get(keyDirty) == "1"
+	if dirty && a.fingerprint != nil {
+		if fp := a.get(keyPackFP); fp != "" && fp == a.fingerprint() {
+			dirty = false // Inhalt wie zuletzt verschickt
+			a.set(keyDirty, "")
+		}
+	}
 	a.mu.Unlock()
 
 	canPublish := dirty && a.publish != nil && a.ready != nil && a.ready()

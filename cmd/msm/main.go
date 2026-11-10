@@ -28,6 +28,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -36,6 +38,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -459,6 +462,9 @@ func main() {
 		}
 	}
 	news.SetPublisher(dbx.Ready, publishPack)
+	if clientDirs != nil {
+		news.SetFingerprint(func() string { return packFingerprint(clientDirs) })
+	}
 	news.SetBusy(upgradeActive)
 	go news.Run(ctx)
 
@@ -552,4 +558,30 @@ func pruneLoop(ctx context.Context, s *storage.SQLite, log *slog.Logger) {
 			}
 		}
 	}
+}
+
+// packFingerprint hashes the client pack listing (Kategorie, Name, Größe).
+// Reicht, um „inhaltlich wie zuletzt verschickt" zu erkennen, ohne alle
+// Dateien zu lesen.
+func packFingerprint(dirs map[string]string) string {
+	var lines []string
+	for cat, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("%s/%s/%d", cat, e.Name(), info.Size()))
+		}
+	}
+	sort.Strings(lines)
+	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+	return hex.EncodeToString(sum[:])
 }
