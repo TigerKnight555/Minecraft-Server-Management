@@ -318,6 +318,20 @@ func main() {
 	// Änderungen und meldet sie nach dem nächsten Neustart in Discord
 	news := modnews.New(kvGet, kvSet, bus, func() bool { return mcState().Online }, log)
 	modmgr.SetChangeHook(news.OnApply)
+	news.SetPendingServer(func() map[string]bool {
+		out := map[string]bool{}
+		for _, e := range modmgr.Entries(mods.ProfileServer) {
+			if e.Pending == "" {
+				continue
+			}
+			if e.ProjectID != "" {
+				out[e.ProjectID] = true
+			} else {
+				out[e.Name] = true
+			}
+		}
+		return out
+	})
 	watcher := mods.NewWatcher(modAPI, modmgr, loader)
 	watcher.SetBus(bus)
 	if kvGet != nil {

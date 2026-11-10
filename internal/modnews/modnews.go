@@ -38,6 +38,9 @@ type Announcer struct {
 	publish func(ctx context.Context) error
 	// fingerprint beschreibt den aktuellen Paket-Inhalt (nil = unbekannt)
 	fingerprint func() string
+	// pendingServer liefert die Schlüssel (Projekt-ID, sonst Name) der am
+	// Server noch vorgemerkten Änderungen
+	pendingServer func() map[string]bool
 
 	// Poll: Abstand der Online-Prüfung
 	Poll time.Duration
@@ -132,6 +135,20 @@ func merge(list, news []mods.Change) []mods.Change {
 // die Spieler ein „📦 Neues Mod-Paket" ohne jede Änderung (WSL-Test 2026-11-10).
 func (a *Announcer) SetFingerprint(f func() string) { a.fingerprint = f }
 
+// SetPendingServer wires the server's still-staged changes. Client-Teile
+// eines Mods, dessen Server-Teil noch vorgemerkt ist, werden bis zu dessen
+// Neustart zurückgehalten — sonst kam Waystones (beide Seiten) erst als
+// „nur bei dir (Client-Paket)" und später als „nur Server, nichts zu tun"
+// (WSL-Test 2026-11-10, Neustart durch eine Routine ohne Einspielen).
+func (a *Announcer) SetPendingServer(f func() map[string]bool) { a.pendingServer = f }
+
+func changeKey(c mods.Change) string {
+	if c.ProjectID != "" {
+		return c.ProjectID
+	}
+	return c.Name
+}
+
 // BeginPublish returns the current client-change generation; vor dem
 // Paket-Upload aufrufen und das Ergebnis an Published weitergeben.
 func (a *Announcer) BeginPublish() uint64 {
@@ -159,8 +176,20 @@ func (a *Announcer) Published(gen uint64) {
 // AfterRestart posts the mod list (if anything was added/removed) and
 // publishes the client pack when it is outdated.
 func (a *Announcer) AfterRestart(ctx context.Context) {
+	var pending map[string]bool
+	if a.pendingServer != nil {
+		pending = a.pendingServer()
+	}
 	a.mu.Lock()
-	server, client := a.load(keyServer), a.load(keyClient)
+	server, all := a.load(keyServer), a.load(keyClient)
+	var client, held []mods.Change
+	for _, c := range all {
+		if pending[changeKey(c)] {
+			held = append(held, c)
+		} else {
+			client = append(client, c)
+		}
+	}
 	dirty := a.get(keyDirty) == "1"
 	if dirty && a.fingerprint != nil {
 		if fp := a.get(keyPackFP); fp != "" && fp == a.fingerprint() {
@@ -180,7 +209,7 @@ func (a *Announcer) AfterRestart(ctx context.Context) {
 		a.bus.Publish(events.Event{Type: events.TypeModsChanged, Severity: events.SevSuccess, Title: title, Message: text})
 		a.mu.Lock()
 		a.save(keyServer, nil)
-		a.save(keyClient, nil)
+		a.save(keyClient, held)
 		a.mu.Unlock()
 	}
 	if canPublish {
@@ -221,6 +250,7 @@ func (a *Announcer) Run(ctx context.Context) {
 type row struct {
 	name           string
 	server, client bool
+	clientNeeded   bool // Modrinth: client_side required
 }
 
 // compose builds the Discord text; ok=false wenn nichts hinzugefügt oder
@@ -246,6 +276,9 @@ func compose(server, client []mods.Change) (text, title string, ok bool) {
 		} else {
 			r.server = true
 		}
+		if c.ClientSide == "required" {
+			r.clientNeeded = true
+		}
 	}
 	for _, c := range server {
 		put(c, false)
@@ -270,7 +303,9 @@ func compose(server, client []mods.Change) (text, title string, ok bool) {
 		for _, r := range rows {
 			hint := serverOnly
 			switch {
-			case r.server && r.client:
+			case r.server && (r.client || r.clientNeeded):
+				// auch wenn der Client-Teil schon früher verteilt wurde:
+				// die Spieler brauchen den Mod
 				hint = both
 			case r.client:
 				hint = clientOnly
@@ -280,9 +315,16 @@ func compose(server, client []mods.Change) (text, title string, ok bool) {
 	}
 	write("**Neu:**", added, "auch bei dir nötig", "nur Server, nichts zu tun", "nur bei dir (Client-Paket)")
 	write("**Entfernt:**", removed, "bitte auch bei dir entfernen", "nichts zu tun", "kann bei dir raus")
-	title = "🧩 Neue Mods auf dem Server"
-	if len(added) == 0 {
+	onServer := len(server) > 0
+	switch {
+	case len(added) > 0 && onServer:
+		title = "🧩 Neue Mods auf dem Server"
+	case len(added) > 0:
+		title = "🧩 Neu im Mod-Paket"
+	case onServer:
 		title = "🧩 Mods vom Server entfernt"
+	default:
+		title = "🧩 Aus dem Mod-Paket entfernt"
 	}
 	return strings.TrimRight(b.String(), "\n"), title, true
 }

@@ -253,3 +253,42 @@ func TestNoRepublishWhenPackContentUnchanged(t *testing.T) {
 		t.Errorf("published = %d, geänderter Inhalt muss verschickt werden", published.Load())
 	}
 }
+
+// Waystones für beide Seiten: Client sofort drin, Server noch vorgemerkt.
+// Ein Neustart ohne Einspielen darf den Client-Teil nicht allein melden;
+// nach dem Einspielen kommt eine gemeinsame Zeile „auch bei dir nötig".
+func TestClientPartHeldWhileServerPartPending(t *testing.T) {
+	a, _, ch, _, _ := setup(t, true)
+	pending := map[string]bool{"p-Waystones": true}
+	a.SetPendingServer(func() map[string]bool { return pending })
+	a.OnApply(mods.ProfileClient, []mods.Change{add(mods.ProfileClient, "Waystones", "required"), add(mods.ProfileClient, "Mod Menu", "required")})
+
+	a.AfterRestart(context.Background())
+	ev, ok := next(t, ch)
+	if !ok || strings.Contains(ev.Message, "Waystones") || !strings.Contains(ev.Message, "Mod Menu") {
+		t.Fatalf("1. Neustart: %+v, want nur Mod Menu", ev)
+	}
+	if ev.Title != "🧩 Neu im Mod-Paket" {
+		t.Errorf("Titel = %q (nur Client-Änderungen)", ev.Title)
+	}
+
+	pending = map[string]bool{}
+	a.OnApply(mods.ProfileServer, []mods.Change{add(mods.ProfileServer, "Waystones", "required")})
+	a.AfterRestart(context.Background())
+	ev, ok = next(t, ch)
+	if !ok || !strings.Contains(ev.Message, "Waystones — auch bei dir nötig") {
+		t.Fatalf("2. Neustart: %+v, want Waystones — auch bei dir nötig", ev)
+	}
+}
+
+// Server-Teil allein, Modrinth sagt client required (Client-Teil früher
+// verteilt oder bewusst nicht ins Paket): nicht „nichts zu tun".
+func TestServerOnlyButClientRequiredSaysNeeded(t *testing.T) {
+	a, _, ch, _, _ := setup(t, true)
+	a.OnApply(mods.ProfileServer, []mods.Change{add(mods.ProfileServer, "Balm", "required"), add(mods.ProfileServer, "Lithium", "optional")})
+	a.AfterRestart(context.Background())
+	ev, _ := next(t, ch)
+	if !strings.Contains(ev.Message, "Balm — auch bei dir nötig") || !strings.Contains(ev.Message, "Lithium — nur Server, nichts zu tun") {
+		t.Errorf("Meldung = %q", ev.Message)
+	}
+}
