@@ -47,17 +47,18 @@ var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[
 // Überschreiben gesichert (.pre-restore-<ts>), nie gelöscht.
 //
 // Zwei Ablageorte (siehe PlayerDirs): Ziel ist der Ordner, den die Welt
-// JETZT benutzt; im Snapshot wird zuerst das neue, dann das alte Layout
-// gesucht — der Pflicht-Snapshot direkt vor einem MC-Update hat noch
-// world/playerdata, die Welt danach schon world/players/data.
+// JETZT benutzt; im Snapshot wird zuerst dasselbe Layout gesucht, dann das
+// andere — der Pflicht-Snapshot direkt vor einem MC-Update hat noch
+// world/playerdata, die Welt danach schon world/players/data. Umgekehrt
+// (Welt auf altem Stand, Snapshot hat beides) gewinnt das alte Layout.
 const restoreScript = `set -eu
 echo "` + jobMarker + `"
 U="%s"
-if [ -d /data/world/players/data ]; then D=/data/world/players/data; else D=/data/world/playerdata; fi
+if [ -d /data/world/players/data ]; then D=/data/world/players/data; O=/data/world/playerdata; else D=/data/world/playerdata; O=/data/world/players/data; fi
 F="$D/$U.dat"
 restic restore latest --target /restore-out --include "/data/world/players/data/$U.dat" --include "/data/world/playerdata/$U.dat"
 S=""
-for C in "/restore-out/data/world/players/data/$U.dat" "/restore-out/data/world/playerdata/$U.dat"; do
+for C in "/restore-out$D/$U.dat" "/restore-out$O/$U.dat"; do
   if [ -f "$C" ]; then S="$C"; break; fi
 done
 if [ -z "$S" ]; then

@@ -38,7 +38,8 @@ func TestRestoreWritesScriptAndSupervises(t *testing.T) {
 		"restic restore latest",
 		// beide Layouts im Snapshot suchen, neues zuerst
 		`--include "/data/world/players/data/$U.dat" --include "/data/world/playerdata/$U.dat"`,
-		`if [ -d /data/world/players/data ]; then D=/data/world/players/data; else D=/data/world/playerdata; fi`,
+		`if [ -d /data/world/players/data ]; then D=/data/world/players/data; O=/data/world/playerdata; else D=/data/world/playerdata; O=/data/world/players/data; fi`,
+		`for C in "/restore-out$D/$U.dat" "/restore-out$O/$U.dat"; do`, // aktuelles Layout zuerst
 		".pre-restore-",
 		"set -eu",
 		`cp -p "$S" "$F"`, // Ownership erhalten (MC-Server muss lesen können)
