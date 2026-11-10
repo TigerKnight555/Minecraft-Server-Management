@@ -18,11 +18,37 @@ type Player struct {
 	LastSaved time.Time `json:"lastSaved"`
 }
 
-// ListPlayers scans <dataDir>/world/playerdata for restorable players.
-// Nur exakte <uuid>.dat-Namen zählen — .pre-restore-Sicherungen und
-// sonstige Dateien werden ignoriert.
+// PlayerDirs are the world-relative player-data directories, newest MC
+// layout first: ab MC 26.x liegen die Dateien unter world/players/data,
+// beim Weltupgrade verschiebt der Server world/playerdata dorthin
+// (WSL-Test 2026-11-10: nach 1.21.11 → 26.3 war die Spielerliste leer).
+var PlayerDirs = []string{"players/data", "playerdata"}
+
+// PlayerDir returns the existing player-data directory of the world.
+func PlayerDir(dataDir string) (string, error) {
+	var firstErr error
+	for _, rel := range PlayerDirs {
+		dir := filepath.Join(dataDir, "world", filepath.FromSlash(rel))
+		info, err := os.Stat(dir)
+		if err == nil && info.IsDir() {
+			return dir, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return "", firstErr
+}
+
+// ListPlayers scans the world's player-data directory for restorable
+// players. Nur exakte <uuid>.dat-Namen zählen — .pre-restore-Sicherungen
+// und sonstige Dateien werden ignoriert.
 func ListPlayers(dataDir string) ([]Player, error) {
-	entries, err := os.ReadDir(filepath.Join(dataDir, "world", "playerdata"))
+	dir, err := PlayerDir(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}

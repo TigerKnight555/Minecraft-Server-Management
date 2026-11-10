@@ -39,14 +39,25 @@ func NewRestore(docker Docker, containers resolver, container, jobDir string, lo
 // validiert, weil der Wert in ein Shell-Skript eingesetzt wird.
 var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// restoreScript: restores one playerdata file from the newest snapshot.
+// restoreScript: restores one player file from the newest snapshot.
 // Beibehaltevariante des alten Skripts: die aktuelle Datei wird vor dem
 // Überschreiben gesichert (.pre-restore-<ts>), nie gelöscht.
+//
+// Zwei Ablageorte (siehe PlayerDirs): Ziel ist der Ordner, den die Welt
+// JETZT benutzt; im Snapshot wird zuerst das neue, dann das alte Layout
+// gesucht — der Pflicht-Snapshot direkt vor einem MC-Update hat noch
+// world/playerdata, die Welt danach schon world/players/data.
 const restoreScript = `set -eu
-F="/data/world/playerdata/%s.dat"
-restic restore latest --target /restore-out --include "$F"
-if [ ! -f "/restore-out$F" ]; then
-  echo "FEHLER: $F ist im letzten Snapshot nicht enthalten"
+U="%s"
+if [ -d /data/world/players/data ]; then D=/data/world/players/data; else D=/data/world/playerdata; fi
+F="$D/$U.dat"
+restic restore latest --target /restore-out --include "/data/world/players/data/$U.dat" --include "/data/world/playerdata/$U.dat"
+S=""
+for C in "/restore-out/data/world/players/data/$U.dat" "/restore-out/data/world/playerdata/$U.dat"; do
+  if [ -f "$C" ]; then S="$C"; break; fi
+done
+if [ -z "$S" ]; then
+  echo "FEHLER: Spielerdatei $U.dat ist im letzten Snapshot nicht enthalten"
   exit 3
 fi
 if [ -f "$F" ]; then
@@ -55,10 +66,10 @@ if [ -f "$F" ]; then
 fi
 # -p erhält Besitzer/Rechte aus dem Snapshot — ohne -p gehörte die Datei
 # root und der MC-Server (uid 1000) könnte sie nicht mehr lesen! Zusätzlich
-# Besitzer ans playerdata-Verzeichnis angleichen, falls der Snapshot selbst
+# Besitzer an den Spieler-Ordner angleichen, falls der Snapshot selbst
 # schon falsche Ownership enthält (busybox: kein chown --reference).
-cp -p "/restore-out$F" "$F"
-chown "$(stat -c '%%u:%%g' /data/world/playerdata)" "$F"
+cp -p "$S" "$F"
+chown "$(stat -c '%%u:%%g' "$D")" "$F"
 echo "wiederhergestellt: $F"
 `
 
@@ -76,7 +87,7 @@ func (r *Restore) resolve() (string, error) {
 	return "", fmt.Errorf("kein Restore-Container konfiguriert")
 }
 
-// RestorePlayer restores playerdata/<uuid>.dat from the latest snapshot.
+// RestorePlayer restores <uuid>.dat (players/data oder playerdata) from the latest snapshot.
 // Der Spieler muss offline sein — sonst überschreibt der Server die Datei
 // beim nächsten Speichern wieder (Verantwortung des Aufrufers/UI-Hinweis).
 func (r *Restore) RestorePlayer(ctx context.Context, uuid string) (string, error) {

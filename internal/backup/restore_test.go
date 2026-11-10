@@ -34,12 +34,15 @@ func TestRestoreWritesScriptAndSupervises(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"playerdata/069a79f4-44e9-4726-a5be-fca90e38aaf5.dat",
+		`U="069a79f4-44e9-4726-a5be-fca90e38aaf5"`,
 		"restic restore latest",
+		// beide Layouts im Snapshot suchen, neues zuerst
+		`--include "/data/world/players/data/$U.dat" --include "/data/world/playerdata/$U.dat"`,
+		`if [ -d /data/world/players/data ]; then D=/data/world/players/data; else D=/data/world/playerdata; fi`,
 		".pre-restore-",
 		"set -eu",
-		`cp -p "/restore-out$F" "$F"`, // Ownership erhalten (MC-Server muss lesen können)
-		`chown "$(stat -c '%u:%g' /data/world/playerdata)" "$F"`, // Gürtel + Hosenträger
+		`cp -p "$S" "$F"`, // Ownership erhalten (MC-Server muss lesen können)
+		`chown "$(stat -c '%u:%g' "$D")" "$F"`, // Gürtel + Hosenträger
 	} {
 		if !strings.Contains(string(script), want) {
 			t.Errorf("script fehlt %q:\n%s", want, script)
