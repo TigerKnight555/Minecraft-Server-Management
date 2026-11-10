@@ -628,7 +628,7 @@ func (m *Manager) applyStagedLocked(profileName string) (string, int, []Change, 
 		return "", 0, nil, fmt.Errorf("%w für Profil %s", ErrNothingStaged, profileName)
 	}
 
-	label := time.Now().Format("2006-01-02_15-04-05")
+	label := newLabel(p, time.Now())
 	applied := 0
 	backupMan := stagingManifest{Created: time.Now()}
 	var changes []Change
@@ -857,4 +857,30 @@ func (m *Manager) invalidate(profileName string) {
 	m.mu.Lock()
 	delete(m.entries, profileName)
 	m.mu.Unlock()
+}
+
+// newLabel returns a backup-set label no category dir uses yet. Früher
+// sekundengenau: zwei Aktionen in derselben Sekunde landeten im selben
+// Satz, die zweite überschrieb dessen Manifest — die erste war danach
+// nicht mehr zurückrollbar (WSL-Test 2026-11-10). Millisekunden +
+// Zähler; die Sortierung nach Name (= Zeit) bleibt erhalten, auch
+// gegenüber alten sekundengenauen Labels.
+func newLabel(p Profile, now time.Time) string {
+	base := now.Format("2006-01-02_15-04-05.000")
+	label := base
+	for n := 2; ; n++ {
+		taken := false
+		for _, dir := range p.Dirs {
+			bdir := filepath.Join(dir, ".backup")
+			if _, err := os.Stat(filepath.Join(bdir, label)); err == nil {
+				taken = true
+			} else if _, err := os.Stat(filepath.Join(bdir, label+rolledBackSuffix)); err == nil {
+				taken = true
+			}
+		}
+		if !taken {
+			return label
+		}
+		label = fmt.Sprintf("%s-%d", base, n)
+	}
 }

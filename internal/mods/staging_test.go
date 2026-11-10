@@ -306,3 +306,51 @@ func TestRollbackOnlyNewestChangeAcrossCategories(t *testing.T) {
 		t.Error("zweiter Rollback hat den ersten wieder umgedreht")
 	}
 }
+
+// Zwei Aktionen direkt nacheinander (gleiche Sekunde) bekommen eigene
+// Sätze — vorher überschrieb die zweite das Manifest der ersten, die
+// danach nicht mehr zurückrollbar war (WSL-Test 2026-11-10).
+func TestBackToBackAppliesGetOwnSets(t *testing.T) {
+	m, p, dir := testProfile(t)
+	stage(t, p, map[string]string{"a.jar": "a"}, stagingItem{Category: "mods", NewFilename: "a.jar", Name: "A"})
+	l1, _, err := m.ApplyStaged(ProfileServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage(t, p, map[string]string{"b.jar": "b"}, stagingItem{Category: "mods", NewFilename: "b.jar", Name: "B"})
+	l2, _, err := m.ApplyStaged(ProfileServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l1 == l2 {
+		t.Fatalf("beide Aktionen im selben Satz %q", l1)
+	}
+	if _, err := m.Rollback(ProfileServer); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(filepath.Join(dir, "a.jar")) || exists(filepath.Join(dir, "b.jar")) {
+		t.Fatal("erster Rollback muss nur b.jar zurücknehmen")
+	}
+	if _, err := m.Rollback(ProfileServer); err != nil {
+		t.Fatal(err)
+	}
+	if exists(filepath.Join(dir, "a.jar")) {
+		t.Fatal("zweiter Rollback muss a.jar zurücknehmen")
+	}
+}
+
+func TestNewLabelAvoidsTakenNames(t *testing.T) {
+	_, p, dir := testProfile(t)
+	now := time.Date(2026, 11, 10, 21, 10, 40, 123e6, time.Local)
+	first := newLabel(p, now)
+	os.MkdirAll(filepath.Join(dir, ".backup", first), 0o755)
+	second := newLabel(p, now)
+	os.MkdirAll(filepath.Join(dir, ".backup", second+rolledBackSuffix), 0o755)
+	third := newLabel(p, now)
+	if first != "2026-11-10_21-10-40.123" || second == first || third == second || third == first {
+		t.Fatalf("labels = %q, %q, %q", first, second, third)
+	}
+	if !(first < second && second < third) {
+		t.Errorf("Reihenfolge nicht zeitlich sortierbar: %q %q %q", first, second, third)
+	}
+}
