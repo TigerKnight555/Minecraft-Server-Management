@@ -624,3 +624,24 @@ func TestRevertAppliedReportsStillDown(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// Fehlermeldung verspricht keinen laufenden Server, wenn er offline ist.
+func TestFailureHeadlineFollowsOnlineState(t *testing.T) {
+	s, store, _, _ := setup(t)
+	bus := events.New()
+	ch, _ := bus.Subscribe(8)
+	s.SetBus(bus)
+	var players atomic.Int32
+	var online atomic.Bool
+	s.SetMCStatus(mcState(&players, &online))
+	id, _ := store.CreateRoutine(context.Background(), storage.Routine{Name: "kaputt", Cron: "0 5 * * *", Kind: "restart", Payload: "", Enabled: true})
+	s.RunNow(context.Background(), id)
+	select {
+	case ev := <-ch:
+		if !strings.Contains(ev.Message, "gerade offline") {
+			t.Errorf("Message = %q, want Hinweis auf offline", ev.Message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("kein Event")
+	}
+}

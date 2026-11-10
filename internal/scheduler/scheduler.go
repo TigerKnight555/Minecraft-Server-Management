@@ -286,10 +286,16 @@ func (s *Scheduler) run(ctx context.Context, r storage.Routine) {
 		if r.Kind == "backup" {
 			typ = events.TypeBackupFailed // eigener Typ fürs Discord-Routing
 		}
+		// nur versprechen, was stimmt: nach gescheitertem Rückfall ist der
+		// Server offline (WSL-Test 2026-11-10)
+		head := "Der Server sollte trotzdem laufen — Details fürs Admin-Auge unten."
+		if TouchesServer(r.Kind) && s.mcStatus != nil && !s.mcStatus().Online {
+			head = "Der Server ist gerade offline — der Admin ist informiert, Details unten."
+		}
 		s.bus.Publish(events.Event{
 			Type: typ, Severity: events.SevError,
 			Title:   "⚠️ " + r.Name + " fehlgeschlagen",
-			Message: "Der Server sollte trotzdem laufen — Details fürs Admin-Auge unten.",
+			Message: head,
 			Fields:  []events.Field{{Name: "Details", Value: err.Error()}},
 		})
 	default:
