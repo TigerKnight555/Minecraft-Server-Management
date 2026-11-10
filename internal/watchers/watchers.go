@@ -26,6 +26,24 @@ type Crash struct {
 	bus      *events.Bus
 	log      *slog.Logger
 	Interval time.Duration
+
+	// Neustart-Zähler des MC-Containers: Docker erhöht ihn nur beim
+	// automatischen Neustart nach einem Prozess-Tod (nicht bei Stop/Start
+	// oder Restart durch MSM). Ein harter Absturz ohne Crash-Report (z. B.
+	// Speicher-Killer) blieb vorher völlig stumm — Spieler flogen raus,
+	// niemand erfuhr warum (WSL-Test 2026-11-10).
+	restarts     func(ctx context.Context) (int, error)
+	expectedDown func() bool
+	lastReport   time.Time
+}
+
+// WithRestartCount enables crash detection via the container's restart
+// counter; expectedDown blendet geplante Ausfälle (Routinen, MC-Update,
+// Wartung) aus.
+func (c *Crash) WithRestartCount(restarts func(ctx context.Context) (int, error), expectedDown func() bool) *Crash {
+	c.restarts = restarts
+	c.expectedDown = expectedDown
+	return c
 }
 
 func NewCrash(dataDir string, bus *events.Bus, log *slog.Logger) *Crash {
@@ -37,6 +55,12 @@ func (c *Crash) Run(ctx context.Context) {
 	seen := map[string]bool{}
 	for _, f := range c.list() {
 		seen[f] = true
+	}
+	baseRestarts := -1
+	if c.restarts != nil {
+		if n, err := c.restarts(ctx); err == nil {
+			baseRestarts = n
+		}
 	}
 	t := time.NewTicker(c.Interval)
 	defer t.Stop()
@@ -51,6 +75,7 @@ func (c *Crash) Run(ctx context.Context) {
 				continue
 			}
 			seen[f] = true
+			c.lastReport = time.Now()
 			c.bus.Publish(events.Event{
 				Type: events.TypeCrash, Severity: events.SevError,
 				Title:   "💥 Der Server ist abgestürzt",
@@ -58,6 +83,8 @@ func (c *Crash) Run(ctx context.Context) {
 				Fields:  []events.Field{{Name: "Report", Value: f}, {Name: "Details", Value: c.snippet(f)}},
 			})
 		}
+		// nach den Reports prüfen: ein Absturz mit Report wird so nur einmal gemeldet
+		baseRestarts = c.checkRestarts(ctx, baseRestarts)
 	}
 }
 
@@ -358,4 +385,37 @@ func (r *Resource) step(h collector.HostSample) {
 			r.memAlerted = false
 		}
 	}
+}
+
+// checkRestarts publishes a crash event when the restart counter grew —
+// außer bei geplantem Ausfall oder wenn gerade ein Crash-Report gemeldet
+// wurde (derselbe Absturz). base < 0: Zähler noch unbekannt.
+func (c *Crash) checkRestarts(ctx context.Context, base int) int {
+	if c.restarts == nil {
+		return base
+	}
+	n, err := c.restarts(ctx)
+	if err != nil {
+		return base
+	}
+	if base < 0 || n < base { // erster Wert oder Container neu erstellt
+		return n
+	}
+	if n == base {
+		return n
+	}
+	if c.expectedDown != nil && c.expectedDown() {
+		return n
+	}
+	if time.Since(c.lastReport) < 3*time.Minute {
+		return n // schon mit Crash-Report gemeldet
+	}
+	c.bus.Publish(events.Event{
+		Type: events.TypeCrash, Severity: events.SevError,
+		Title:   "💥 Der Server ist abgestürzt",
+		Message: "Er startet gerade automatisch neu. Falls nicht: der Admin wurde informiert.",
+		Fields: []events.Field{{Name: "Details", Value: fmt.Sprintf(
+			"Minecraft-Prozess beendet ohne Crash-Report — Docker hat den Container neu gestartet (%d×). Häufige Ursache: zu wenig Arbeitsspeicher.", n-base)}},
+	})
+	return n
 }

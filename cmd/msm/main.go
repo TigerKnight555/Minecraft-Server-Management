@@ -288,7 +288,7 @@ func main() {
 
 	// Wächter (Phase 4.7): Crash-Reports, unerwarteter Ausfall, Internet-
 	// Hysterese, Ressourcen-Schwellwerte — melden nur, greifen nie ein
-	go watchers.NewCrash(mcDataDir, bus, log).Run(ctx)
+	crashWatch := watchers.NewCrash(mcDataDir, bus, log)
 	desiredStopped := func() bool {
 		if ds, ok := admin.(hostctl.DesiredStore); ok {
 			states, err := ds.ListDesiredStates(context.Background())
@@ -445,10 +445,20 @@ func main() {
 	// nach echter Minecraft-Erreichbarkeit, nicht nach Container-Status —
 	// sonst gibt es Entwarnungen mitten in einer Absturzschleife.
 	upgradeActive := func() bool { return upgrader != nil && upgrader.Active() }
+	plannedDown := func() bool { return sched.ExpectedDown() || upgradeActive() || (maint != nil && maint.Active()) }
+	if in, ok := docker.(interface {
+		InspectContainer(context.Context, string) (collector.ContainerDetail, error)
+	}); ok {
+		crashWatch.WithRestartCount(func(ctx context.Context) (int, error) {
+			det, err := in.InspectContainer(ctx, upgrade.ResolveID(coll, mcName))
+			return det.RestartCount, err
+		}, plannedDown)
+	}
+	go crashWatch.Run(ctx)
 	go watchers.NewDown(coll, mcName,
 		// Wartungsfenster zählt als geplanter Ausfall — sonst folgte auf
 		// „✅ Wartung beendet" noch ein „✅ Server läuft wieder" (WSL-Test)
-		func() bool { return sched.ExpectedDown() || upgradeActive() || (maint != nil && maint.Active()) },
+		plannedDown,
 		desiredStopped, bus).
 		WithMCOnline(func() bool { return mcState().Online }).
 		Run(ctx)
