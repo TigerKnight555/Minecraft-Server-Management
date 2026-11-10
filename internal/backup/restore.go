@@ -56,6 +56,12 @@ echo "` + jobMarker + `"
 U="%s"
 if [ -d /data/world/players/data ]; then D=/data/world/players/data; O=/data/world/playerdata; else D=/data/world/playerdata; O=/data/world/players/data; fi
 F="$D/$U.dat"
+# /restore-out liegt in der Container-Schicht und überlebt Läufe — ohne
+# Leeren fand das Skript eine Datei aus einem FRÜHEREN Lauf und spielte sie
+# zurück, obwohl der neueste Snapshot sie nicht (oder anders) enthielt
+# (WSL-Test 2026-11-10)
+rm -rf /restore-out
+mkdir -p /restore-out
 restic restore latest --target /restore-out --include "/data/world/players/data/$U.dat" --include "/data/world/playerdata/$U.dat"
 S=""
 for C in "/restore-out$D/$U.dat" "/restore-out$O/$U.dat"; do

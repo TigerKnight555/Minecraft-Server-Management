@@ -35,7 +35,7 @@ func TestRestoreWritesScriptAndSupervises(t *testing.T) {
 	}
 	for _, want := range []string{
 		`U="069a79f4-44e9-4726-a5be-fca90e38aaf5"`,
-		"restic restore latest",
+		"rm -rf /restore-out\nmkdir -p /restore-out\nrestic restore latest", // nie Reste früherer Läufe
 		// beide Layouts im Snapshot suchen, neues zuerst
 		`--include "/data/world/players/data/$U.dat" --include "/data/world/playerdata/$U.dat"`,
 		`if [ -d /data/world/players/data ]; then D=/data/world/players/data; O=/data/world/playerdata; else D=/data/world/playerdata; O=/data/world/players/data; fi`,
