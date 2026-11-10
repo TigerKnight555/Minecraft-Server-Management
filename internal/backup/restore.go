@@ -37,6 +37,9 @@ func NewRestore(docker Docker, containers resolver, container, jobDir string, lo
 
 // dashed Mojang-UUID — exakt das Format der playerdata-Dateinamen. Streng
 // validiert, weil der Wert in ein Shell-Skript eingesetzt wird.
+// ValidUUID reports whether s is a dashed Mojang UUID.
+func ValidUUID(s string) bool { return uuidRe.MatchString(strings.TrimSpace(s)) }
+
 var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 // restoreScript: restores one player file from the newest snapshot.
@@ -48,6 +51,7 @@ var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[
 // gesucht — der Pflicht-Snapshot direkt vor einem MC-Update hat noch
 // world/playerdata, die Welt danach schon world/players/data.
 const restoreScript = `set -eu
+echo "` + jobMarker + `"
 U="%s"
 if [ -d /data/world/players/data ]; then D=/data/world/players/data; else D=/data/world/playerdata; fi
 F="$D/$U.dat"
@@ -117,10 +121,25 @@ func (r *Restore) RestorePlayer(ctx context.Context, uuid string) (string, error
 		return "", fmt.Errorf("restore %w", err)
 	}
 	dur := det.FinishedAt.Sub(started).Round(time.Second)
-	logs, _ := r.docker.TailLogs(ctx, id, 20)
+	logs, _ := r.docker.TailLogs(ctx, id, 40)
+	logs = currentJob(logs)
 	if det.ExitCode != 0 {
 		return "", fmt.Errorf("restore fehlgeschlagen (exit %d nach %s): %s",
 			det.ExitCode, dur, tailSummary(logs, 400))
 	}
 	return fmt.Sprintf("Spielerdaten %s in %s wiederhergestellt (Original als .pre-restore-* gesichert)", uuid, dur), nil
+}
+
+// jobMarker leitet jeden Restore-Lauf im Container-Log ein. Der Container
+// wird wiederverwendet, sein Log enthält also auch frühere Läufe — ohne
+// Schnitt zeigte eine Fehlermeldung die Ausgabe des vorigen Laufs mit
+// (WSL-Test 2026-11-10).
+const jobMarker = "### msm-restore-job"
+
+// currentJob returns the log part after the last job marker.
+func currentJob(logs string) string {
+	if i := strings.LastIndex(logs, jobMarker); i >= 0 {
+		return strings.TrimLeft(logs[i+len(jobMarker):], "\r\n")
+	}
+	return logs
 }

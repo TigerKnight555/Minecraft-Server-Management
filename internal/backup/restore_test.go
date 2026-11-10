@@ -89,3 +89,12 @@ func TestRestoreRefusesDoubleRun(t *testing.T) {
 		t.Fatalf("err = %v, want Doppelstart-Schutz", err)
 	}
 }
+
+func TestRestoreErrorShowsOnlyCurrentRun(t *testing.T) {
+	d := &fakeDocker{exitCode: 3, logs: jobMarker + "\nFEHLER: alt.dat fehlt\n" + jobMarker + "\nFEHLER: Spielerdatei neu.dat fehlt\n"}
+	r, _ := newRestoreRunner(t, d)
+	_, err := r.RestorePlayer(context.Background(), "069a79f4-44e9-4726-a5be-fca90e38aaf5")
+	if err == nil || strings.Contains(err.Error(), "alt.dat") || !strings.Contains(err.Error(), "neu.dat") {
+		t.Fatalf("err = %v, want nur Ausgabe des aktuellen Laufs", err)
+	}
+}
