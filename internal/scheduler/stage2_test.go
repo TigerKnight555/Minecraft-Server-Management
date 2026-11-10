@@ -574,3 +574,53 @@ func TestHostRebootPersistsNotifyFlag(t *testing.T) {
 		t.Errorf("kv = %v, want leeres Flag ohne Spieler", kv)
 	}
 }
+
+type rollbackApplier struct {
+	fakeApplier
+	rolled []string
+	onRoll func()
+}
+
+func (r *rollbackApplier) RollbackLabel(profile, label string) (int, error) {
+	r.rolled = append(r.rolled, profile+":"+label)
+	if r.onRoll != nil {
+		r.onRoll()
+	}
+	return 2, nil
+}
+
+// Server kommt mit den eingespielten Änderungen nicht hoch → genau dieser
+// Satz wird zurückgenommen, Server neu gestartet, Ursache in der Meldung.
+func TestRevertAppliedRestoresOldState(t *testing.T) {
+	s, _, docker, _ := setup(t)
+	var players atomic.Int32
+	var online atomic.Bool
+	s.SetMCStatus(mcState(&players, &online))
+	app := &rollbackApplier{onRoll: func() { online.Store(true) }}
+	s.SetStagedApplier(app)
+	s.SetStartDiagnosis(func(context.Context) string { return "Fabric hat den Start abgelehnt" })
+
+	err := s.revertApplied(context.Background(), "mc-fabric", "L1", 200*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "zurückgenommen, der Server läuft wieder mit dem alten Stand") || !strings.Contains(err.Error(), "Fabric hat den Start abgelehnt") {
+		t.Fatalf("err = %v", err)
+	}
+	if len(app.rolled) != 1 || app.rolled[0] != "server:L1" {
+		t.Errorf("rollback = %v, want server:L1", app.rolled)
+	}
+	got := docker.ActionLog()
+	if len(got) != 2 || !strings.HasPrefix(got[0], "stop:") || !strings.HasPrefix(got[1], "start:") {
+		t.Errorf("actions = %v, want [stop, start]", got)
+	}
+}
+
+func TestRevertAppliedReportsStillDown(t *testing.T) {
+	s, _, _, _ := setup(t)
+	var players atomic.Int32
+	var online atomic.Bool
+	s.SetMCStatus(mcState(&players, &online))
+	s.SetStagedApplier(&rollbackApplier{})
+	err := s.revertApplied(context.Background(), "mc-fabric", "L1", 50*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "auch danach nicht online") {
+		t.Fatalf("err = %v", err)
+	}
+}

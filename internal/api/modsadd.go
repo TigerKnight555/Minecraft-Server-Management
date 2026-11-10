@@ -259,7 +259,7 @@ func (s *Server) startAnnouncedApply(w http.ResponseWriter, r *http.Request) {
 	s.audit(r.Context(), "mods.apply", "profile=server (angekündigter Neustart, 5 min)")
 	go func() {
 		defer s.applyBusy.Store(false)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute) // 5 min Vorwarnung + 2× 10 min Watchdog (Rückfall)
 		defer cancel()
 		s.sched.RunAdhoc(ctx, storage.Routine{
 			Name: "Mod-Änderungen einspielen", Kind: "announce-restart", Payload: s.mcContainer,

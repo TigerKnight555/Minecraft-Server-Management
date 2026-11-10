@@ -403,6 +403,14 @@ func main() {
 			upgrader.TailLogs = func(ctx context.Context, lines int) (string, error) {
 				return lt.TailLogs(ctx, upgrade.ResolveID(coll, mcName), lines)
 			}
+			// gleiche Diagnose für den Rückfall nach gescheitertem Einspielen
+			sched.SetStartDiagnosis(func(ctx context.Context) string {
+				logs, err := lt.TailLogs(ctx, upgrade.ResolveID(coll, mcName), 400)
+				if err != nil {
+					return ""
+				}
+				return upgrade.Diagnose(logs)
+			})
 		}
 		// Rückfall auf die alte Version, wenn der Sprung scheitert und die
 		// Welt nachweislich unangetastet ist (Learning 19)
