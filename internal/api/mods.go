@@ -196,6 +196,10 @@ func (s *Server) handlePublishClientPack(w http.ResponseWriter, r *http.Request)
 		httpError(w, http.StatusConflict, "Dropbox nicht konfiguriert — App-Key/Secret/Refresh-Token im Einstellungen-Tab hinterlegen")
 		return
 	}
+	if dropbox.Publishing() {
+		httpError(w, http.StatusConflict, "das Client-Paket wird gerade schon verschickt — die Meldung kommt gleich in Discord")
+		return
+	}
 	s.audit(r.Context(), "mods.publish", "client-pack upload gestartet")
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)

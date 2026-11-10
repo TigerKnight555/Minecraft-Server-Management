@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"errors"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
@@ -13,7 +15,22 @@ import (
 // Publish zips the client profile dirs, uploads them and posts the shared
 // link to Discord — gemeinsamer Kern für den Mods-Tab-Button und die
 // automatische Veröffentlichung nach dem Ein-Klick-MC-Update.
+// ErrBusy: ein Paket-Versand läuft bereits.
+var ErrBusy = errors.New("client-Paket wird gerade schon verschickt")
+
+var publishing atomic.Bool
+
+// Publishing reports whether a pack upload is running right now.
+func Publishing() bool { return publishing.Load() }
+
 func Publish(ctx context.Context, c *Client, dirs map[string]string, bus *events.Bus, log *slog.Logger) error {
+	// nur ein Versand gleichzeitig: Knopf + automatischer Versand nach dem
+	// Neustart liefen im WSL-Test parallel — zwei Uploads, zwei
+	// „📦 Neues Mod-Paket"-Meldungen innerhalb von 3 s
+	if !publishing.CompareAndSwap(false, true) {
+		return ErrBusy
+	}
+	defer publishing.Store(false)
 	name := "/MSM/mc-clientpack-" + time.Now().Format("2006-01-02") + ".zip"
 
 	pr, pw := io.Pipe()
