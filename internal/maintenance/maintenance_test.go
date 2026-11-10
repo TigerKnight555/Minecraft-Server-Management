@@ -151,7 +151,7 @@ func TestAnnouncePhaseStages(t *testing.T) {
 	m.Tick(context.Background()) // 50 min vorher -> 1h-Stufe
 	m.Tick(context.Background()) // darf nicht doppeln
 	evs := drain(ch)
-	if len(evs) != 1 || evs[0].Type != events.TypeMaintAnnounce || !strings.Contains(evs[0].Title, "In einer Stunde") {
+	if len(evs) != 1 || evs[0].Type != events.TypeMaintAnnounce || !strings.Contains(evs[0].Title, "In 50 Minuten") {
 		t.Fatalf("events = %+v, want genau eine 1h-Ankündigung", evs)
 	}
 
@@ -160,8 +160,8 @@ func TestAnnouncePhaseStages(t *testing.T) {
 	m.Tick(context.Background())
 	m.Tick(context.Background())
 	evs = drain(ch)
-	if len(evs) != 1 || !strings.Contains(evs[0].Title, "Gleich geht's los") {
-		t.Fatalf("events = %+v, want genau eine 5m-Ankündigung", evs)
+	if len(evs) != 1 || !strings.Contains(evs[0].Title, "Gleich geht's los") || !strings.Contains(evs[0].Message, "in etwa 4 Minuten") {
+		t.Fatalf("events = %+v, want genau eine 5m-Ankündigung mit echter Vorlaufzeit", evs)
 	}
 	ws, _ := store.ListWindows(context.Background())
 	if !ws[0].Notified1h || !ws[0].Notified5m {
@@ -179,5 +179,17 @@ func TestAnnouncePhaseShortNoticeSkips1h(t *testing.T) {
 	evs := drain(ch)
 	if len(evs) != 1 || !strings.Contains(evs[0].Title, "Gleich geht's los") {
 		t.Fatalf("events = %+v, want nur die 5m-Ankündigung (keine falsche 1h)", evs)
+	}
+}
+
+func TestInTime(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		60 * time.Minute: "einer Stunde", 56 * time.Minute: "einer Stunde",
+		20 * time.Minute: "20 Minuten", 2*time.Minute - time.Second: "2 Minuten",
+		30 * time.Second: "einer Minute",
+	} {
+		if got := inTime(d); got != want {
+			t.Errorf("inTime(%v) = %q, want %q", d, got, want)
+		}
 	}
 }

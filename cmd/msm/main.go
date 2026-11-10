@@ -424,7 +424,9 @@ func main() {
 	// sonst gibt es Entwarnungen mitten in einer Absturzschleife.
 	upgradeActive := func() bool { return upgrader != nil && upgrader.Active() }
 	go watchers.NewDown(coll, mcName,
-		func() bool { return sched.ExpectedDown() || upgradeActive() },
+		// Wartungsfenster zählt als geplanter Ausfall — sonst folgte auf
+		// „✅ Wartung beendet" noch ein „✅ Server läuft wieder" (WSL-Test)
+		func() bool { return sched.ExpectedDown() || upgradeActive() || (maint != nil && maint.Active()) },
 		desiredStopped, bus).
 		WithMCOnline(func() bool { return mcState().Online }).
 		Run(ctx)
@@ -503,6 +505,7 @@ func main() {
 			PublishPack:       publishPack,
 			Upgrader:          upgrader,
 			Settings:          cfg,
+			DiscordTest:       notifier.Test,
 			SelfUpdate:        updater,
 			MCContainer:       envOr("MSM_MC_CONTAINER", "mc-fabric"),
 			FallbackMCVersion: os.Getenv("MC_VERSION"),

@@ -45,6 +45,7 @@ type Server struct {
 	publishPack       func(ctx context.Context) error // Client-Paket-Versand inkl. Zustands-Pflege
 	applyBusy         atomic.Bool                     // „Anwenden + Neustart" läuft
 	settings          *settings.Store
+	discordTest       func(ctx context.Context, ev events.Event) error
 	selfupdate        *selfupdate.Checker
 	mcContainer       string
 	fallbackMCVersion string
@@ -73,6 +74,7 @@ type Deps struct {
 	Upgrader          *upgrade.Orchestrator
 	PublishPack       func(ctx context.Context) error // optional; nil = dropbox.Publish direkt
 	Settings          *settings.Store
+	DiscordTest       func(ctx context.Context, ev events.Event) error // Testnachricht synchron zustellen
 	SelfUpdate        *selfupdate.Checker
 	MCContainer       string   // name of the minecraft container (mod apply restart)
 	FallbackMCVersion string   // used when query has no version yet
@@ -112,6 +114,7 @@ func New(d Deps) *Server {
 		upgrader:          d.Upgrader,
 		publishPack:       d.PublishPack,
 		settings:          d.Settings,
+		discordTest:       d.DiscordTest,
 		selfupdate:        d.SelfUpdate,
 		mcContainer:       d.MCContainer,
 		fallbackMCVersion: d.FallbackMCVersion,
