@@ -92,13 +92,35 @@ func (a *Announcer) OnApply(profile string, changes []mods.Change) {
 		a.gen++
 		a.set(keyDirty, "1") // jede Client-Änderung (auch Updates/Rollback) macht das Paket alt
 		if len(news) > 0 {
-			a.save(keyClient, append(a.load(keyClient), news...))
+			a.save(keyClient, merge(a.load(keyClient), news))
 		}
 	case mods.ProfileServer:
 		if len(news) > 0 {
-			a.save(keyServer, append(a.load(keyServer), news...))
+			a.save(keyServer, merge(a.load(keyServer), news))
 		}
 	}
+}
+
+// merge appends news to the pending list; eine Gegenänderung an derselben
+// Datei (Hinzufügen ↔ Entfernen, z. B. durch Rollback) hebt einen noch
+// nicht angekündigten Eintrag auf, statt beide zu melden. Sonst kündigte
+// der nächste Neustart längst zurückgerollte Mods als neu an
+// (WSL-Test 2026-11-10).
+func merge(list, news []mods.Change) []mods.Change {
+	for _, n := range news {
+		cancelled := false
+		for i := len(list) - 1; i >= 0; i-- {
+			if n.Filename != "" && list[i].Filename == n.Filename && list[i].Action != n.Action {
+				list = append(list[:i], list[i+1:]...)
+				cancelled = true
+				break
+			}
+		}
+		if !cancelled {
+			list = append(list, n)
+		}
+	}
+	return list
 }
 
 // BeginPublish returns the current client-change generation; vor dem

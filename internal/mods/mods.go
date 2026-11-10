@@ -116,7 +116,9 @@ type Change struct {
 }
 
 // SetChangeHook registers f; called after every successful ApplyStaged
-// (alle angewendeten Items) and every successful rollback (changes = nil).
+// (alle angewendeten Items) and every successful rollback (die Umkehrung:
+// zurückgenommenes Hinzufügen kommt als "remove", zurückgenommenes
+// Entfernen als "add" — so verschwinden sie aus den Mod-Neuigkeiten).
 func (m *Manager) SetChangeHook(f func(profile string, changes []Change)) { m.onChange = f }
 
 func (m *Manager) notify(profile string, changes []Change) {
@@ -332,6 +334,19 @@ func (it stagingItem) change(profile string) Change {
 	}
 	return Change{Action: it.action(), Profile: profile, Filename: file,
 		ProjectID: it.ProjectID, Name: name, ClientSide: it.ClientSide}
+}
+
+// inverse is the change a rollback of this item makes: Hinzufügen wird zu
+// Entfernen und umgekehrt, ein Update bleibt ein Update.
+func (it stagingItem) inverse(profile string) Change {
+	c := it.change(profile)
+	switch c.Action {
+	case "add":
+		c.Action = "remove"
+	case "remove":
+		c.Action = "add"
+	}
+	return c
 }
 
 type stagingManifest struct {
@@ -773,13 +788,17 @@ func (m *Manager) RollbackLabel(profileName, label string) (int, error) {
 		return 0, fmt.Errorf("ungültiges Backup-Label %q", label)
 	}
 	restored := 0
+	var changes []Change
 	for _, liveDir := range p.Dirs {
 		set := filepath.Join(liveDir, ".backup", label)
 		if _, err := os.Stat(set); err != nil {
 			continue
 		}
-		n, err := restoreSet(liveDir, set)
+		n, undone, err := restoreSet(liveDir, set)
 		restored += n
+		for _, it := range undone {
+			changes = append(changes, it.inverse(profileName))
+		}
 		if err != nil {
 			return restored, err
 		}
@@ -791,26 +810,29 @@ func (m *Manager) RollbackLabel(profileName, label string) (int, error) {
 		return 0, fmt.Errorf("backup-satz %s nicht gefunden oder bereits zurückgerollt", label)
 	}
 	m.invalidate(profileName)
-	m.notify(profileName, nil)
+	m.notify(profileName, changes)
 	return restored, nil
 }
 
 // restoreSet moves the new files out of liveDir (into the set, suffixed)
 // and the backed-up old files back in. Leere Namen (Hinzufügen/Entfernen)
 // werden übersprungen — filepath.Join(dir, "") wäre der Ordner selbst.
-func restoreSet(liveDir, set string) (int, error) {
+func restoreSet(liveDir, set string) (int, []stagingItem, error) {
 	man, err := readManifest(filepath.Join(set, "manifest.json"))
 	if err != nil {
-		return 0, nil
+		return 0, nil, nil
 	}
 	restored := 0
+	var undone []stagingItem
 	for _, it := range man.Items {
+		done := false
 		if it.NewFilename != "" {
 			newPath := filepath.Join(liveDir, it.NewFilename)
 			if _, err := os.Stat(newPath); err == nil {
 				os.Rename(newPath, filepath.Join(set, it.NewFilename+".rolledback"))
 				if it.OldFilename == "" {
 					restored++ // Hinzufügen rückgängig gemacht
+					done = true
 				}
 			}
 		}
@@ -818,13 +840,17 @@ func restoreSet(liveDir, set string) (int, error) {
 			oldBackup := filepath.Join(set, it.OldFilename)
 			if _, err := os.Stat(oldBackup); err == nil {
 				if err := os.Rename(oldBackup, filepath.Join(liveDir, it.OldFilename)); err != nil {
-					return restored, fmt.Errorf("rollback von %s: %w", it.OldFilename, err)
+					return restored, undone, fmt.Errorf("rollback von %s: %w", it.OldFilename, err)
 				}
 				restored++
+				done = true
 			}
 		}
+		if done {
+			undone = append(undone, it)
+		}
 	}
-	return restored, nil
+	return restored, undone, nil
 }
 
 func (m *Manager) invalidate(profileName string) {

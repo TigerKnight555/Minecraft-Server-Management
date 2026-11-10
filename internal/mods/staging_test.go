@@ -60,6 +60,10 @@ func TestApplyAndRollbackAddItem(t *testing.T) {
 	if exists(filepath.Join(dir, "jade-1.0.jar")) {
 		t.Error("Datei nach Rollback noch im Live-Ordner")
 	}
+	// Rollback meldet die Umkehrung, damit die Mod-Neuigkeiten sie streichen
+	if len(got) != 2 || got[1].Action != "remove" || got[1].Filename != "jade-1.0.jar" || got[1].Name != "Jade" {
+		t.Errorf("hook nach Rollback = %+v, want remove jade-1.0.jar", got)
+	}
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		t.Fatal("Live-Ordner beim Rollback beschädigt (leerer Dateiname!)")
 	}

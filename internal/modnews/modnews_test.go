@@ -200,3 +200,28 @@ func TestAfterRestartPublishHasTimeout(t *testing.T) {
 		t.Errorf("deadline = %v, want ≤ 45 min", deadline)
 	}
 }
+
+// Zurückgerollte, noch nicht angekündigte Änderungen dürfen beim nächsten
+// Neustart nicht als neu gemeldet werden (WSL-Test 2026-11-10: „Neu:
+// rb.zip … Entfernt: Sodium", obwohl beides zurückgerollt war).
+func TestRollbackCancelsPendingNews(t *testing.T) {
+	a, store, ch, _, _ := setup(t, true)
+	up := mods.Change{Action: "add", Profile: mods.ProfileClient, Name: "rb.zip", Filename: "rb.zip"}
+	so := mods.Change{Action: "remove", Profile: mods.ProfileClient, Name: "Sodium", Filename: "sodium.jar"}
+	keep := mods.Change{Action: "add", Profile: mods.ProfileClient, Name: "Jade", Filename: "jade.jar"}
+	a.OnApply(mods.ProfileClient, []mods.Change{up, keep})
+	a.OnApply(mods.ProfileClient, []mods.Change{so})
+	// Rollback meldet die Umkehrung
+	a.OnApply(mods.ProfileClient, []mods.Change{{Action: "add", Profile: mods.ProfileClient, Name: "Sodium", Filename: "sodium.jar"}})
+	a.OnApply(mods.ProfileClient, []mods.Change{{Action: "remove", Profile: mods.ProfileClient, Name: "rb.zip", Filename: "rb.zip"}})
+
+	a.AfterRestart(context.Background())
+	ev, ok := next(t, ch)
+	if !ok {
+		t.Fatal("keine Meldung — Jade ist weiterhin neu")
+	}
+	if !strings.Contains(ev.Message, "Jade") || strings.Contains(ev.Message, "rb.zip") || strings.Contains(ev.Message, "Sodium") {
+		t.Errorf("Meldung = %q, want nur Jade", ev.Message)
+	}
+	_ = store
+}
