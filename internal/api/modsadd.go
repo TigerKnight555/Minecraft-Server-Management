@@ -248,6 +248,10 @@ func (s *Server) startAnnouncedApply(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusConflict, "für den Server ist nichts vorgemerkt")
 		return
 	}
+	if busy := s.sched.Busy(); busy != "" {
+		httpError(w, http.StatusConflict, "es läuft gerade „"+busy+"“ — danach noch einmal versuchen")
+		return
+	}
 	if !s.applyBusy.CompareAndSwap(false, true) {
 		httpError(w, http.StatusConflict, "Einspielen läuft bereits")
 		return

@@ -89,7 +89,30 @@ type Scheduler struct {
 	// expectedDown is true while a chain intentionally has the MC server
 	// stopped — der Down-Wächter (Phase 4.7) schlägt dann keinen Alarm.
 	expectedDown atomic.Bool
+
+	// active is the name of the server routine running right now. Zwei
+	// Ketten am selben Server dürfen nie überlappen — im WSL-Test
+	// (2026-11-10) startete eine Ansage-Routine den Server mitten in der
+	// Backup-Kette neu, gesichert wurde dann eine laufende Welt.
+	active      atomic.Pointer[string]
+	upgradeBusy func() bool
 }
+
+// SetUpgradeCheck wires the MC-upgrade state: während eines Versionssprungs
+// werden Server-Routinen übersprungen (der Sprung stoppt/baut den Server).
+func (s *Scheduler) SetUpgradeCheck(f func() bool) { s.upgradeBusy = f }
+
+// Busy returns the name of the server routine currently running ("" = none).
+func (s *Scheduler) Busy() string {
+	if p := s.active.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// TouchesServer reports whether a routine kind stops/restarts the server
+// (und damit exklusiv laufen muss). Reine RCON-Befehle laufen frei.
+func TouchesServer(kind string) bool { return kind != "rcon" }
 
 // ExpectedDown reports whether a routine currently keeps the server down.
 func (s *Scheduler) ExpectedDown() bool { return s.expectedDown.Load() }
@@ -216,10 +239,20 @@ func (s *Scheduler) run(ctx context.Context, r storage.Routine) {
 	s.log.Info("routine started", "name", r.Name, "kind", r.Kind)
 	var msg string
 	affected := true
-	if s.maintActive != nil && s.maintActive() {
+	exclusive := TouchesServer(r.Kind)
+	name := r.Name
+	switch {
+	case s.maintActive != nil && s.maintActive():
 		err = errSkipped{reason: "Wartungsfenster aktiv"}
-	} else {
+	case exclusive && s.upgradeBusy != nil && s.upgradeBusy():
+		err = errSkipped{reason: "Minecraft-Update läuft"}
+	case exclusive && !s.active.CompareAndSwap(nil, &name):
+		err = errSkipped{reason: "andere Aufgabe läuft gerade („" + s.Busy() + "“)"}
+	default:
 		msg, affected, err = s.execute(ctx, r)
+		if exclusive {
+			s.active.Store(nil)
+		}
 	}
 	run := storage.RoutineRun{RoutineID: r.ID, Time: time.Now(), OK: err == nil, Message: msg}
 	var skipped errSkipped
@@ -748,6 +781,10 @@ func friendlySkipReason(reason string) string {
 		return "Es sind gerade Spieler online — der Lauf wurde verschoben, damit niemand rausfliegt."
 	case strings.Contains(reason, "Wartungsfenster"):
 		return "Gerade läuft eine Wartung — der Lauf wurde übersprungen."
+	case strings.Contains(reason, "Minecraft-Update"):
+		return "Gerade läuft ein Minecraft-Update — der Lauf wurde übersprungen."
+	case strings.Contains(reason, "andere Aufgabe"):
+		return "Am Server läuft gerade schon eine andere Aufgabe — dieser Lauf wurde übersprungen."
 	default:
 		return reason
 	}

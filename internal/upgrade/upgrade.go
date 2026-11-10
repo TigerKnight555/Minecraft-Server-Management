@@ -111,6 +111,11 @@ type Orchestrator struct {
 	// Optional; true = Start verweigern.
 	PendingChanges func() bool
 
+	// RoutineBusy nennt die gerade laufende Server-Routine ("" = keine) —
+	// ein Versionssprung mitten in einer Backup-/Neustart-Kette würde sich
+	// mit ihr um den Server streiten.
+	RoutineBusy func() string
+
 	// OnSuccess läuft nach einem erfolgreichen Sprung (z. B. Versions-Watch
 	// und Mod-Inventar sofort neu prüfen — sonst zeigt die Kachel bis zum
 	// nächsten Tageslauf den alten Stand und bietet dasselbe Update erneut an).
@@ -171,6 +176,12 @@ func (o *Orchestrator) Start(version string) error {
 	if o.running {
 		o.mu.Unlock()
 		return fmt.Errorf("es läuft bereits ein Upgrade (%s)", o.status)
+	}
+	if o.RoutineBusy != nil {
+		if busy := o.RoutineBusy(); busy != "" {
+			o.mu.Unlock()
+			return fmt.Errorf("gerade läuft „%s“ — das Update danach starten", busy)
+		}
 	}
 	if o.PendingChanges != nil && o.PendingChanges() {
 		o.mu.Unlock()

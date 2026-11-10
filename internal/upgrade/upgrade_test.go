@@ -418,6 +418,20 @@ func TestUpgradeRefusesWithPendingModChanges(t *testing.T) {
 	}
 }
 
+func TestUpgradeRefusesWhileRoutineRuns(t *testing.T) {
+	f := &fakes{backupOK: true}
+	f.online.Store(true)
+	o := newOrch(f, events.New())
+	o.RoutineBusy = func() string { return "Nacht-Backup" }
+	err := o.Start("26.2")
+	if err == nil || !strings.Contains(err.Error(), "Nacht-Backup") {
+		t.Fatalf("err = %v, want Hinweis auf laufende Routine", err)
+	}
+	if steps := f.list(); len(steps) != 0 {
+		t.Errorf("Kette lief trotzdem an: %v", steps)
+	}
+}
+
 // Nach einem erfolgreichen Sprung zeigte der Versions-Watch bis zu 24 h den
 // alten Stand ("26.3 verfügbar, aktuell 1.21.11") — der Knopf bot dasselbe
 // Update erneut an (WSL-Test 2026-11-09). OnSuccess stößt die Neuprüfung an.
