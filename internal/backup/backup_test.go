@@ -115,3 +115,17 @@ func TestResticSummary(t *testing.T) {
 		t.Errorf("leere summary = %q", s)
 	}
 }
+
+// Vorlauf im Log (früherer Lauf) + lange forget/prune-Ausgabe danach: die
+// Zahlen des aktuellen Laufs müssen gefunden werden.
+func TestResticSummaryUsesLastRunDespitePrune(t *testing.T) {
+	logs := "processed 1 files, 1 MiB in 0:01\nAdded to the repository: 1 MiB\nsnapshot 00000000 saved\n" +
+		"processed 215 files, 251.773 MiB in 0:01\nAdded to the repository: 9.5 MiB\nsnapshot e4fbc24f saved\n" +
+		strings.Repeat("[0:00] 100.00%  1 / 1 packs repacked\n", 60) + "done\n"
+	got := resticSummary(logs)
+	for _, want := range []string{"251.773 MiB geprüft", "215 Dateien", "9.5 MiB neu gesichert", "Stand e4fbc24f"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary %q fehlt %q", got, want)
+		}
+	}
+}
