@@ -465,3 +465,28 @@ func TestUpgradeRefusesWhenAlreadyOnTarget(t *testing.T) {
 		t.Errorf("Kette lief trotzdem an: %v", steps)
 	}
 }
+
+// Ein gelungener Sprung versiegelt seine Mod-Sätze — ein späterer
+// Rollback-Klick darf nicht Mods der alten Version einsetzen.
+func TestUpgradeSealsModSets(t *testing.T) {
+	f := &fakes{backupOK: true}
+	f.online.Store(true)
+	o := newOrch(f, events.New())
+	var mu sync.Mutex
+	var sealed []string
+	o.ModSeal = func(profile, label, version string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		sealed = append(sealed, profile+"@"+version)
+		return nil
+	}
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sealed) == 0 || sealed[0] != "server@26.2" {
+		t.Errorf("sealed = %v, want server@26.2 (und ggf. client)", sealed)
+	}
+}

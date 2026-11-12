@@ -99,6 +99,10 @@ type Orchestrator struct {
 	AutoRollback    bool
 	RollbackTimeout time.Duration
 	ModRollback     func(profile, label string) (int, error)
+	// ModSeal markiert die Mod-Sätze eines gelungenen Sprungs: ein späterer
+	// normaler Rollback darf nicht dahinter zurück (er setzte sonst Mods der
+	// alten MC-Version ein — Server startet nicht; WSL-Test 2026-11-12).
+	ModSeal func(profile, label, version string) error
 
 	// HostFailure liest die Rückmeldung des Host-Helfers (upgrade.failed):
 	// scheitert dort der Container-Neubau, steht die .env schon wieder auf
@@ -354,6 +358,7 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 	baseRestarts := -1 // Startwert erst beim ersten erfolgreichen Inspect
 	for time.Now().Before(deadline) {
 		if st := o.mcStatus(); freshOnline(st, version, signalled) {
+			o.seal("server", modLabel, version)
 			return o.finish(ctx, version)
 		}
 		// Host konnte den Container nicht neu erstellen: nicht bis zum
@@ -441,7 +446,8 @@ func (o *Orchestrator) finish(ctx context.Context, version string) error {
 	default:
 		if _, err := o.modmgr.Stage(ctx, "client", nil); err != nil {
 			clientErr = fmt.Errorf("client-mods herunterladen: %w", err)
-		} else if _, n, err := o.modmgr.ApplyStaged("client"); err == nil {
+		} else if label, n, err := o.modmgr.ApplyStaged("client"); err == nil {
+			o.seal("client", label, version)
 			clientUpdated = true
 			clientNote = fmt.Sprintf(" %d Client-Mods wurden aktualisiert.", n)
 		} else if !errors.Is(err, mods.ErrNothingStaged) {
@@ -521,4 +527,13 @@ func (o *Orchestrator) resolve() (id string, running bool) {
 		}
 	}
 	return o.mcName, false
+}
+
+func (o *Orchestrator) seal(profile, label, version string) {
+	if o.ModSeal == nil || label == "" {
+		return
+	}
+	if err := o.ModSeal(profile, label, version); err != nil {
+		o.log.Warn("mod-satz versiegeln fehlgeschlagen", "profile", profile, "label", label, "err", err)
+	}
 }

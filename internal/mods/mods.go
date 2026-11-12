@@ -758,6 +758,9 @@ func (m *Manager) Rollback(profileName string) (int, error) {
 			if !s.IsDir() || strings.HasSuffix(name, rolledBackSuffix) {
 				continue
 			}
+			if name <= label {
+				continue
+			}
 			if _, err := os.Stat(filepath.Join(liveDir, ".backup", name, "manifest.json")); err != nil {
 				continue // leerer Satz (z. B. Fehler beim ersten Item) — nichts zurückzunehmen
 			}
@@ -768,6 +771,11 @@ func (m *Manager) Rollback(profileName string) (int, error) {
 	}
 	if label == "" {
 		return 0, fmt.Errorf("kein Backup zum Zurückrollen gefunden")
+	}
+	for _, liveDir := range p.Dirs {
+		if v, err := os.ReadFile(filepath.Join(liveDir, ".backup", label, sealFile)); err == nil {
+			return 0, fmt.Errorf("der letzte Mod-Satz gehört zum Minecraft-Update auf %s — ein Rollback dahinter würde Mods der alten Version einsetzen und der Server startet nicht. Zurück auf die alte Version nur über ein Backup", strings.TrimSpace(string(v)))
+		}
 	}
 	return m.RollbackLabel(profileName, label)
 }
@@ -883,4 +891,34 @@ func newLabel(p Profile, now time.Time) string {
 		}
 		label = fmt.Sprintf("%s-%d", base, n)
 	}
+}
+
+// sealFile marks a backup set that belongs to a successful MC version jump.
+const sealFile = ".mc-update"
+
+// SealLabel marks the backup set label of a profile as belonging to the
+// MC update to version — Rollback stoppt davor (RollbackLabel nicht).
+func (m *Manager) SealLabel(profileName, label, version string) error {
+	p, err := m.profile(profileName)
+	if err != nil {
+		return err
+	}
+	if label == "" || label != filepath.Base(label) || strings.HasPrefix(label, ".") {
+		return fmt.Errorf("ungültiges Backup-Label %q", label)
+	}
+	sealed := false
+	for _, liveDir := range p.Dirs {
+		set := filepath.Join(liveDir, ".backup", label)
+		if _, err := os.Stat(set); err != nil {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(set, sealFile), []byte(version+"\n"), 0o644); err != nil {
+			return err
+		}
+		sealed = true
+	}
+	if !sealed {
+		return fmt.Errorf("backup-satz %s nicht gefunden", label)
+	}
+	return nil
 }

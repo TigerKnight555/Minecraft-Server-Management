@@ -415,6 +415,7 @@ func main() {
 		// Rückfall auf die alte Version, wenn der Sprung scheitert und die
 		// Welt nachweislich unangetastet ist (Learning 19)
 		upgrader.ModRollback = modmgr.RollbackLabel
+		upgrader.ModSeal = modmgr.SealLabel
 		// Routinen und Versionssprung schließen sich gegenseitig aus
 		upgrader.RoutineBusy = sched.Busy
 		sched.SetUpgradeCheck(upgrader.Active)

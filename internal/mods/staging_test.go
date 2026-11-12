@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"strings"
 	"time"
 )
 
@@ -352,5 +353,39 @@ func TestNewLabelAvoidsTakenNames(t *testing.T) {
 	}
 	if !(first < second && second < third) {
 		t.Errorf("Reihenfolge nicht zeitlich sortierbar: %q %q %q", first, second, third)
+	}
+}
+
+// Rollback darf nicht hinter ein MC-Update zurück (setzte Mods der alten
+// Version ein); Änderungen danach bleiben normal zurückrollbar.
+func TestRollbackStopsAtSealedUpgradeSet(t *testing.T) {
+	m, p, dir := testProfile(t)
+	os.WriteFile(filepath.Join(dir, "api-1.21.jar"), []byte("alt"), 0o644)
+	stage(t, p, map[string]string{"api-26.3.jar": "neu"},
+		stagingItem{Category: "mods", OldFilename: "api-1.21.jar", NewFilename: "api-26.3.jar", Name: "API"})
+	up, _, err := m.ApplyStaged(ProfileServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SealLabel(ProfileServer, up, "26.3"); err != nil {
+		t.Fatal(err)
+	}
+	stage(t, p, map[string]string{"jade.jar": "j"}, stagingItem{Category: "mods", NewFilename: "jade.jar", Name: "Jade"})
+	if _, _, err := m.ApplyStaged(ProfileServer); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Rollback(ProfileServer); err != nil {
+		t.Fatalf("Rollback der Änderung nach dem Update: %v", err)
+	}
+	_, err = m.Rollback(ProfileServer)
+	if err == nil || !strings.Contains(err.Error(), "26.3") {
+		t.Fatalf("err = %v, want Sperre mit Versionshinweis", err)
+	}
+	if !exists(filepath.Join(dir, "api-26.3.jar")) || exists(filepath.Join(dir, "api-1.21.jar")) {
+		t.Error("Mods des Updates wurden trotzdem zurückgerollt")
+	}
+	// gezielter Rückfall des Updates selbst bleibt möglich
+	if _, err := m.RollbackLabel(ProfileServer, up); err != nil {
+		t.Errorf("RollbackLabel: %v", err)
 	}
 }
