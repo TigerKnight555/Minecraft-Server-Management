@@ -99,12 +99,32 @@ type Orchestrator struct {
 	AutoRollback    bool
 	RollbackTimeout time.Duration
 	ModRollback     func(profile, label string) (int, error)
+	// ModSeal markiert die Mod-Sätze eines gelungenen Sprungs: ein späterer
+	// normaler Rollback darf nicht dahinter zurück (er setzte sonst Mods der
+	// alten MC-Version ein — Server startet nicht; WSL-Test 2026-11-12).
+	ModSeal func(profile, label, version string) error
 
 	// HostFailure liest die Rückmeldung des Host-Helfers (upgrade.failed):
 	// scheitert dort der Container-Neubau, steht die .env schon wieder auf
 	// der alten Version und der neue Server lief nie. Optional —
 	// hostctl.Signaler.UpgradeFailure erfüllt das.
 	HostFailure func() (string, bool)
+
+	// PendingChanges meldet manuell vorgemerkte Mod-Änderungen (Mods-Tab).
+	// Sie gehören zur ALTEN Version — ein Sprung würde sie mit einspielen.
+	// Optional; true = Start verweigern.
+	PendingChanges func() bool
+
+	// RoutineBusy nennt die gerade laufende Server-Routine ("" = keine) —
+	// ein Versionssprung mitten in einer Backup-/Neustart-Kette würde sich
+	// mit ihr um den Server streiten.
+	RoutineBusy func() string
+
+	// OnSuccess läuft nach einem erfolgreichen Sprung (z. B. Versions-Watch
+	// und Mod-Inventar sofort neu prüfen — sonst zeigt die Kachel bis zum
+	// nächsten Tageslauf den alten Stand und bietet dasselbe Update erneut an).
+	// Optional; muss selbst entscheiden, ob es asynchron läuft.
+	OnSuccess func(ctx context.Context, version string)
 
 	mu      sync.Mutex
 	running bool
@@ -160,6 +180,24 @@ func (o *Orchestrator) Start(version string) error {
 	if o.running {
 		o.mu.Unlock()
 		return fmt.Errorf("es läuft bereits ein Upgrade (%s)", o.status)
+	}
+	if o.RoutineBusy != nil {
+		if busy := o.RoutineBusy(); busy != "" {
+			o.mu.Unlock()
+			return fmt.Errorf("gerade läuft „%s“ — das Update danach starten", busy)
+		}
+	}
+	if o.PendingChanges != nil && o.PendingChanges() {
+		o.mu.Unlock()
+		return fmt.Errorf("im Mods-Tab sind Änderungen vorgemerkt — erst anwenden oder verwerfen, dann das Update starten")
+	}
+	// veralteter Versions-Watch darf keinen zweiten Sprung auf dieselbe
+	// Version auslösen (Backup + Neustart + Neubau für nichts)
+	if o.mcStatus != nil {
+		if cur := o.mcStatus().Version; cur != "" && cur == version {
+			o.mu.Unlock()
+			return fmt.Errorf("der Server läuft bereits auf Minecraft %s — Versions-Check mit „Jetzt prüfen“ aktualisieren", version)
+		}
 	}
 	// Guards VOR dem Start — der Button darf nur Grünes auslösen
 	last := o.watch.Last()
@@ -320,6 +358,7 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 	baseRestarts := -1 // Startwert erst beim ersten erfolgreichen Inspect
 	for time.Now().Before(deadline) {
 		if st := o.mcStatus(); freshOnline(st, version, signalled) {
+			o.seal("server", modLabel, version)
 			return o.finish(ctx, version)
 		}
 		// Host konnte den Container nicht neu erstellen: nicht bis zum
@@ -407,7 +446,8 @@ func (o *Orchestrator) finish(ctx context.Context, version string) error {
 	default:
 		if _, err := o.modmgr.Stage(ctx, "client", nil); err != nil {
 			clientErr = fmt.Errorf("client-mods herunterladen: %w", err)
-		} else if _, n, err := o.modmgr.ApplyStaged("client"); err == nil {
+		} else if label, n, err := o.modmgr.ApplyStaged("client"); err == nil {
+			o.seal("client", label, version)
 			clientUpdated = true
 			clientNote = fmt.Sprintf(" %d Client-Mods wurden aktualisiert.", n)
 		} else if !errors.Is(err, mods.ErrNothingStaged) {
@@ -453,6 +493,9 @@ func (o *Orchestrator) finish(ctx context.Context, version string) error {
 		Message: "Update fertig, es kann weitergehen." + clientNote,
 		Fields:  fields,
 	})
+	if o.OnSuccess != nil {
+		o.OnSuccess(ctx, version)
+	}
 	return nil
 }
 
@@ -484,4 +527,13 @@ func (o *Orchestrator) resolve() (id string, running bool) {
 		}
 	}
 	return o.mcName, false
+}
+
+func (o *Orchestrator) seal(profile, label, version string) {
+	if o.ModSeal == nil || label == "" {
+		return
+	}
+	if err := o.ModSeal(profile, label, version); err != nil {
+		o.log.Warn("mod-satz versiegeln fehlgeschlagen", "profile", profile, "label", label, "err", err)
+	}
 }

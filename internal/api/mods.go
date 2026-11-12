@@ -27,8 +27,10 @@ func (s *Server) handleModsList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) mcVersion() string {
-	if v := s.collector.MCVersion(); v != "" {
-		return v
+	if s.collector != nil {
+		if v := s.collector.MCVersion(); v != "" {
+			return v
+		}
 	}
 	return s.fallbackMCVersion
 }
@@ -62,6 +64,9 @@ func (s *Server) handleModsCheck(w http.ResponseWriter, r *http.Request) {
 
 // handleModsStage downloads selected updates into staging.
 func (s *Server) handleModsStage(w http.ResponseWriter, r *http.Request) {
+	if s.upgradeRunning(w) {
+		return
+	}
 	var req struct {
 		Profile   string   `json:"profile"`
 		Filenames []string `json:"filenames"`
@@ -96,8 +101,15 @@ func (s *Server) handleModsApply(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	if s.upgradeRunning(w) {
+		return
+	}
 	if req.Profile == "" {
 		req.Profile = "server"
+	}
+	if req.Restart && req.Profile == mods.ProfileServer && s.sched != nil {
+		s.startAnnouncedApply(w, r)
+		return
 	}
 	label, n, err := s.modmgr.ApplyStaged(req.Profile)
 	if err != nil {
@@ -135,6 +147,9 @@ func (s *Server) handleModsApply(w http.ResponseWriter, r *http.Request) {
 
 // handleModsRollback restores the newest backup set.
 func (s *Server) handleModsRollback(w http.ResponseWriter, r *http.Request) {
+	if s.upgradeRunning(w) {
+		return
+	}
 	var req struct {
 		Profile string `json:"profile"`
 	}
@@ -181,11 +196,19 @@ func (s *Server) handlePublishClientPack(w http.ResponseWriter, r *http.Request)
 		httpError(w, http.StatusConflict, "Dropbox nicht konfiguriert — App-Key/Secret/Refresh-Token im Einstellungen-Tab hinterlegen")
 		return
 	}
+	if dropbox.Publishing() {
+		httpError(w, http.StatusConflict, "das Client-Paket wird gerade schon verschickt — die Meldung kommt gleich in Discord")
+		return
+	}
 	s.audit(r.Context(), "mods.publish", "client-pack upload gestartet")
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 		defer cancel()
-		if err := dropbox.Publish(ctx, s.dropbox, clientDirs, s.bus, s.log); err != nil {
+		publish := func(ctx context.Context) error { return dropbox.Publish(ctx, s.dropbox, clientDirs, s.bus, s.log) }
+		if s.publishPack != nil {
+			publish = s.publishPack
+		}
+		if err := publish(ctx); err != nil {
 			s.audit(ctx, "mods.publish.failed", err.Error())
 		} else {
 			s.audit(ctx, "mods.publish.ok", "client-pack veröffentlicht")
@@ -243,6 +266,14 @@ func (s *Server) handleVersionWatchCheck(w http.ResponseWriter, r *http.Request)
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
+	// Inventar erst auffrischen (wie der Tageslauf): nach einem Rollback oder
+	// MSM-Neustart ist der Cache leer, der Check meldete dann „Server-Mods
+	// 0/0" und das Update wurde verweigert (WSL-Test 2026-11-12)
+	if s.modmgr != nil {
+		for _, p := range s.modmgr.Profiles() {
+			s.modmgr.CheckUpdates(ctx, p.Name, version)
+		}
+	}
 	status, err := s.watcher.Check(ctx, version)
 	if err != nil {
 		httpError(w, http.StatusBadGateway, err.Error())

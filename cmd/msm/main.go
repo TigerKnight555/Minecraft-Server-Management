@@ -28,6 +28,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -36,6 +38,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -59,6 +62,7 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mcrcon"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mcstatus"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mock"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modnews"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modrinth"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/netcheck"
@@ -284,7 +288,7 @@ func main() {
 
 	// Wächter (Phase 4.7): Crash-Reports, unerwarteter Ausfall, Internet-
 	// Hysterese, Ressourcen-Schwellwerte — melden nur, greifen nie ein
-	go watchers.NewCrash(mcDataDir, bus, log).Run(ctx)
+	crashWatch := watchers.NewCrash(mcDataDir, bus, log)
 	desiredStopped := func() bool {
 		if ds, ok := admin.(hostctl.DesiredStore); ok {
 			states, err := ds.ListDesiredStates(context.Background())
@@ -310,6 +314,24 @@ func main() {
 	loader := envOr("MSM_LOADER", "fabric")
 	modmgr := mods.NewManager(modAPI, loader, modProfiles)
 	sched.SetStagedApplier(modmgr)
+	// Mod-Neuigkeiten (Hinzufügen/Entfernen): sammelt angewendete
+	// Änderungen und meldet sie nach dem nächsten Neustart in Discord
+	news := modnews.New(kvGet, kvSet, bus, func() bool { return mcState().Online }, log)
+	modmgr.SetChangeHook(news.OnApply)
+	news.SetPendingServer(func() map[string]bool {
+		out := map[string]bool{}
+		for _, e := range modmgr.Entries(mods.ProfileServer) {
+			if e.Pending == "" {
+				continue
+			}
+			if e.ProjectID != "" {
+				out[e.ProjectID] = true
+			} else {
+				out[e.Name] = true
+			}
+		}
+		return out
+	})
 	watcher := mods.NewWatcher(modAPI, modmgr, loader)
 	watcher.SetBus(bus)
 	if kvGet != nil {
@@ -381,10 +403,42 @@ func main() {
 			upgrader.TailLogs = func(ctx context.Context, lines int) (string, error) {
 				return lt.TailLogs(ctx, upgrade.ResolveID(coll, mcName), lines)
 			}
+			// gleiche Diagnose für den Rückfall nach gescheitertem Einspielen
+			sched.SetStartDiagnosis(func(ctx context.Context) string {
+				logs, err := lt.TailLogs(ctx, upgrade.ResolveID(coll, mcName), 400)
+				if err != nil {
+					return ""
+				}
+				return upgrade.Diagnose(logs)
+			})
 		}
 		// Rückfall auf die alte Version, wenn der Sprung scheitert und die
 		// Welt nachweislich unangetastet ist (Learning 19)
 		upgrader.ModRollback = modmgr.RollbackLabel
+		upgrader.ModSeal = modmgr.SealLabel
+		// Routinen und Versionssprung schließen sich gegenseitig aus
+		upgrader.RoutineBusy = sched.Busy
+		sched.SetUpgradeCheck(upgrader.Active)
+		upgrader.PendingChanges = func() bool {
+			return modmgr.HasStaged(mods.ProfileServer) || modmgr.HasStaged(mods.ProfileClient)
+		}
+		// nach dem Sprung Versions-Watch + Mod-Inventar sofort auffrischen —
+		// sonst zeigt die Kachel bis zum Tageslauf „Update verfügbar" für die
+		// gerade installierte Version (WSL-Test 2026-11-09)
+		upgrader.OnSuccess = func(_ context.Context, version string) {
+			go func() {
+				rctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+				defer cancel()
+				for _, p := range modmgr.Profiles() {
+					modmgr.CheckUpdates(rctx, p.Name, version)
+				}
+				if st, err := watcher.Check(rctx, version); err == nil {
+					watcher.SetLast(st)
+				} else {
+					log.Warn("versions-watch nach update fehlgeschlagen", "err", err)
+				}
+			}()
+		}
 	}
 
 	// Down-Wächter erst jetzt: er muss den Upgrade-Zustand kennen, sonst
@@ -392,8 +446,20 @@ func main() {
 	// nach echter Minecraft-Erreichbarkeit, nicht nach Container-Status —
 	// sonst gibt es Entwarnungen mitten in einer Absturzschleife.
 	upgradeActive := func() bool { return upgrader != nil && upgrader.Active() }
+	plannedDown := func() bool { return sched.ExpectedDown() || upgradeActive() || (maint != nil && maint.Active()) }
+	if in, ok := docker.(interface {
+		InspectContainer(context.Context, string) (collector.ContainerDetail, error)
+	}); ok {
+		crashWatch.WithRestartCount(func(ctx context.Context) (int, error) {
+			det, err := in.InspectContainer(ctx, upgrade.ResolveID(coll, mcName))
+			return det.RestartCount, err
+		}, plannedDown)
+	}
+	go crashWatch.Run(ctx)
 	go watchers.NewDown(coll, mcName,
-		func() bool { return sched.ExpectedDown() || upgradeActive() },
+		// Wartungsfenster zählt als geplanter Ausfall — sonst folgte auf
+		// „✅ Wartung beendet" noch ein „✅ Server läuft wieder" (WSL-Test)
+		plannedDown,
 		desiredStopped, bus).
 		WithMCOnline(func() bool { return mcState().Online }).
 		Run(ctx)
@@ -401,24 +467,41 @@ func main() {
 	// Dropbox (Phase 4.8): Client liest die Credentials dynamisch aus dem
 	// Einstellungen-Store (.env als Fallback) — konfigurierbar im Dashboard.
 	dbx := dropbox.NewDynamic(cfg.DropboxConfig)
-	{
-		var clientDirs map[string]string
-		for _, p := range modProfiles {
-			if p.Name == "client" {
-				clientDirs = p.Dirs
-			}
-		}
-		if upgrader != nil && clientDirs != nil {
-			// nach dem Ein-Klick-MC-Update das frische Client-Paket
-			// automatisch verteilen — nur wenn Dropbox konfiguriert ist
-			upgrader.Publish = func(ctx context.Context) (bool, error) {
-				if !dbx.Ready() {
-					return false, nil // Feature aus — kein Fehler
-				}
-				return true, dropbox.Publish(ctx, dbx, clientDirs, bus, log)
-			}
+	var clientDirs map[string]string
+	for _, p := range modProfiles {
+		if p.Name == mods.ProfileClient {
+			clientDirs = p.Dirs
 		}
 	}
+	// publishPack ist der einzige Weg zum Paket-Versand (Button, MC-Update,
+	// Mod-Neuigkeiten) — jeder Erfolg löscht „Paket veraltet".
+	publishPack := func(ctx context.Context) error {
+		if clientDirs == nil {
+			return fmt.Errorf("kein Client-Profil konfiguriert")
+		}
+		gen := news.BeginPublish()
+		if err := dropbox.Publish(ctx, dbx, clientDirs, bus, log); err != nil {
+			return err
+		}
+		news.Published(gen)
+		return nil
+	}
+	if upgrader != nil && clientDirs != nil {
+		// nach dem Ein-Klick-MC-Update das frische Client-Paket
+		// automatisch verteilen — nur wenn Dropbox konfiguriert ist
+		upgrader.Publish = func(ctx context.Context) (bool, error) {
+			if !dbx.Ready() {
+				return false, nil // Feature aus — kein Fehler
+			}
+			return true, publishPack(ctx)
+		}
+	}
+	news.SetPublisher(dbx.Ready, publishPack)
+	if clientDirs != nil {
+		news.SetFingerprint(func() string { return packFingerprint(clientDirs) })
+	}
+	news.SetBusy(upgradeActive)
+	go news.Run(ctx)
 
 	passwordHash := os.Getenv("MSM_ADMIN_PASSWORD_HASH")
 	if passwordHash == "" && !*mockMode {
@@ -452,8 +535,10 @@ func main() {
 				return maint != nil && maint.Active()
 			},
 			Dropbox:           dbx,
+			PublishPack:       publishPack,
 			Upgrader:          upgrader,
 			Settings:          cfg,
+			DiscordTest:       notifier.Test,
 			SelfUpdate:        updater,
 			MCContainer:       envOr("MSM_MC_CONTAINER", "mc-fabric"),
 			FallbackMCVersion: os.Getenv("MC_VERSION"),
@@ -509,4 +594,30 @@ func pruneLoop(ctx context.Context, s *storage.SQLite, log *slog.Logger) {
 			}
 		}
 	}
+}
+
+// packFingerprint hashes the client pack listing (Kategorie, Name, Größe).
+// Reicht, um „inhaltlich wie zuletzt verschickt" zu erkennen, ohne alle
+// Dateien zu lesen.
+func packFingerprint(dirs map[string]string) string {
+	var lines []string
+	for cat, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("%s/%s/%d", cat, e.Name(), info.Size()))
+		}
+	}
+	sort.Strings(lines)
+	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+	return hex.EncodeToString(sum[:])
 }

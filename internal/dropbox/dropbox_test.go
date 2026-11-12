@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"errors"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -166,5 +167,16 @@ func TestMissingScopeExplained(t *testing.T) {
 	err := c.Upload(context.Background(), "/MSM/x.zip", strings.NewReader("data"))
 	if err == nil || !strings.Contains(err.Error(), "Permissions") || !strings.Contains(err.Error(), "neu autorisieren") {
 		t.Fatalf("err = %v, want Klartext-Hinweis zu fehlenden Rechten", err)
+	}
+}
+
+func TestPublishRefusesConcurrentRun(t *testing.T) {
+	publishing.Store(true)
+	defer publishing.Store(false)
+	if err := Publish(context.Background(), nil, nil, nil, nil); !errors.Is(err, ErrBusy) {
+		t.Fatalf("err = %v, want ErrBusy", err)
+	}
+	if !Publishing() {
+		t.Error("Publishing() = false während Versand")
 	}
 }

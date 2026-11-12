@@ -89,7 +89,40 @@ type Scheduler struct {
 	// expectedDown is true while a chain intentionally has the MC server
 	// stopped — der Down-Wächter (Phase 4.7) schlägt dann keinen Alarm.
 	expectedDown atomic.Bool
+
+	// active is the name of the server routine running right now. Zwei
+	// Ketten am selben Server dürfen nie überlappen — im WSL-Test
+	// (2026-11-10) startete eine Ansage-Routine den Server mitten in der
+	// Backup-Kette neu, gesichert wurde dann eine laufende Welt.
+	active      atomic.Pointer[string]
+	upgradeBusy func() bool
+	diagnose    func(ctx context.Context) string
 }
+
+// StagedRollbacker restores exactly one backup set (mods.Manager).
+type StagedRollbacker interface {
+	RollbackLabel(profile, label string) (int, error)
+}
+
+// SetStartDiagnosis wires a lookup that explains why the server did not
+// come up (z. B. „Fabric hat den Start abgelehnt …" aus dem MC-Log).
+func (s *Scheduler) SetStartDiagnosis(f func(ctx context.Context) string) { s.diagnose = f }
+
+// SetUpgradeCheck wires the MC-upgrade state: während eines Versionssprungs
+// werden Server-Routinen übersprungen (der Sprung stoppt/baut den Server).
+func (s *Scheduler) SetUpgradeCheck(f func() bool) { s.upgradeBusy = f }
+
+// Busy returns the name of the server routine currently running ("" = none).
+func (s *Scheduler) Busy() string {
+	if p := s.active.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// TouchesServer reports whether a routine kind stops/restarts the server
+// (und damit exklusiv laufen muss). Reine RCON-Befehle laufen frei.
+func TouchesServer(kind string) bool { return kind != "rcon" }
 
 // ExpectedDown reports whether a routine currently keeps the server down.
 func (s *Scheduler) ExpectedDown() bool { return s.expectedDown.Load() }
@@ -197,13 +230,39 @@ func (s *Scheduler) RunNow(ctx context.Context, routineID int64) {
 		s.log.Error("routine vanished", "id", routineID, "err", err)
 		return
 	}
+	s.run(ctx, r)
+}
+
+// RunAdhoc executes a routine definition that is not stored (z. B.
+// „Anwenden + Neustart" im Mods-Tab) — gleiche Kette, gleiche Meldungen,
+// aber kein Historien-Eintrag (ID 0). Läuft synchron.
+func (s *Scheduler) RunAdhoc(ctx context.Context, r storage.Routine) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r.ID = 0
+	s.run(ctx, r)
+}
+
+func (s *Scheduler) run(ctx context.Context, r storage.Routine) {
+	var err error
 	s.log.Info("routine started", "name", r.Name, "kind", r.Kind)
 	var msg string
 	affected := true
-	if s.maintActive != nil && s.maintActive() {
+	exclusive := TouchesServer(r.Kind)
+	name := r.Name
+	switch {
+	case s.maintActive != nil && s.maintActive():
 		err = errSkipped{reason: "Wartungsfenster aktiv"}
-	} else {
+	case exclusive && s.upgradeBusy != nil && s.upgradeBusy():
+		err = errSkipped{reason: "Minecraft-Update läuft"}
+	case exclusive && !s.active.CompareAndSwap(nil, &name):
+		err = errSkipped{reason: "andere Aufgabe läuft gerade („" + s.Busy() + "“)"}
+	default:
 		msg, affected, err = s.execute(ctx, r)
+		if exclusive {
+			s.active.Store(nil)
+		}
 	}
 	run := storage.RoutineRun{RoutineID: r.ID, Time: time.Now(), OK: err == nil, Message: msg}
 	var skipped errSkipped
@@ -227,10 +286,16 @@ func (s *Scheduler) RunNow(ctx context.Context, routineID int64) {
 		if r.Kind == "backup" {
 			typ = events.TypeBackupFailed // eigener Typ fürs Discord-Routing
 		}
+		// nur versprechen, was stimmt: nach gescheitertem Rückfall ist der
+		// Server offline (WSL-Test 2026-11-10)
+		head := "Der Server sollte trotzdem laufen — Details fürs Admin-Auge unten."
+		if TouchesServer(r.Kind) && s.mcStatus != nil && !s.mcStatus().Online {
+			head = "Der Server ist gerade offline — der Admin ist informiert, Details unten."
+		}
 		s.bus.Publish(events.Event{
 			Type: typ, Severity: events.SevError,
 			Title:   "⚠️ " + r.Name + " fehlgeschlagen",
-			Message: "Der Server sollte trotzdem laufen — Details fürs Admin-Auge unten.",
+			Message: head,
 			Fields:  []events.Field{{Name: "Details", Value: err.Error()}},
 		})
 	default:
@@ -249,9 +314,41 @@ func (s *Scheduler) RunNow(ctx context.Context, routineID int64) {
 			Fields:  []events.Field{{Name: "Details", Value: msg}},
 		})
 	}
+	if r.ID == 0 {
+		return // Ad-hoc-Lauf: keine Historie
+	}
 	if err := s.store.RecordRun(ctx, run); err != nil {
 		s.log.Error("record run failed", "routine", r.Name, "err", err)
 	}
+}
+
+// NextApply returns the earliest enabled routine that applies staged mod
+// changes (announce-restart/backup mit ApplyStaged) — für den Hinweis
+// „Wird aktiv: …" im Mods-Tab.
+func (s *Scheduler) NextApply(ctx context.Context, now time.Time) (string, time.Time, bool, error) {
+	routines, err := s.store.ListRoutines(ctx)
+	if err != nil {
+		return "", time.Time{}, false, err
+	}
+	var (
+		name string
+		at   time.Time
+		ok   bool
+	)
+	for _, r := range routines {
+		if !r.Enabled || !r.ApplyStaged || (r.Kind != "announce-restart" && r.Kind != "backup") {
+			continue
+		}
+		sched, err := cron.ParseStandard(r.Cron)
+		if err != nil {
+			continue
+		}
+		next := sched.Next(now)
+		if !ok || next.Before(at) {
+			name, at, ok = r.Name, next, true
+		}
+	}
+	return name, at, ok, nil
 }
 
 // playersAffected reports whether anyone is on the server right now — nur
@@ -364,6 +461,7 @@ func (s *Scheduler) announceRestart(ctx context.Context, r storage.Routine) (str
 	}
 
 	var steps []string
+	applied := "" // Backup-Label der eingespielten Änderungen (für den Rückfall)
 	if r.ApplyStaged {
 		// expliziter Stop → Tausch → Start, damit die neuen Mods sicher
 		// erst nach vollständigem Herunterfahren im Verzeichnis liegen
@@ -374,6 +472,9 @@ func (s *Scheduler) announceRestart(ctx context.Context, r storage.Routine) (str
 			return "", fmt.Errorf("stop %s: %w", r.Payload, err)
 		}
 		label, n, err := s.applier.ApplyStaged("server")
+		if err == nil && n > 0 {
+			applied = label
+		}
 		switch {
 		case errors.Is(err, mods.ErrNothingStaged):
 			steps = append(steps, "keine gestagten Updates")
@@ -382,7 +483,8 @@ func (s *Scheduler) announceRestart(ctx context.Context, r storage.Routine) (str
 			if startErr := s.controller.StartContainer(ctx, id); startErr != nil {
 				return "", fmt.Errorf("updates einspielen: %v; start danach AUCH fehlgeschlagen: %w", err, startErr)
 			}
-			return "", fmt.Errorf("updates einspielen (Server läuft wieder mit altem Stand): %w", err)
+			// ApplyStaged kann mittendrin abbrechen — kein „alter Stand" versprechen
+			return "", fmt.Errorf("Änderungen nur teilweise eingespielt — Details im Log; Rollback im Mods-Tab möglich: %w", err)
 		default:
 			steps = append(steps, fmt.Sprintf("%d Updates eingespielt (Backup %s)", n, label))
 		}
@@ -398,7 +500,11 @@ func (s *Scheduler) announceRestart(ctx context.Context, r storage.Routine) (str
 
 	// --- Watchdog: erst fertig, wenn der Server wieder antwortet ---
 	if r.WatchdogMinutes > 0 {
-		if err := s.watchdog(ctx, time.Duration(r.WatchdogMinutes)*time.Minute); err != nil {
+		timeout := time.Duration(r.WatchdogMinutes) * time.Minute
+		if err := s.watchdog(ctx, timeout); err != nil {
+			if applied != "" {
+				return "", s.revertApplied(ctx, id, applied, timeout)
+			}
 			return "", err
 		}
 		steps = append(steps, "Watchdog: Server wieder online")
@@ -474,16 +580,20 @@ func (s *Scheduler) backupChain(ctx context.Context, r storage.Routine) (string,
 
 	// gestagte Updates nur einspielen, wenn das Backup gelungen ist —
 	// Pflicht-Backup vor Update (Konzept: Mod-Verwaltung)
+	applied := ""
 	if backupErr == nil && r.ApplyStaged && running {
 		if s.applier == nil {
 			backupErr = fmt.Errorf("'Updates einspielen' braucht die Mod-Verwaltung (nicht verdrahtet)")
 		} else {
 			label, n, err := s.applier.ApplyStaged("server")
+			if err == nil && n > 0 {
+				applied = label
+			}
 			switch {
 			case errors.Is(err, mods.ErrNothingStaged):
 				steps = append(steps, "keine gestagten Updates")
 			case err != nil:
-				backupErr = fmt.Errorf("updates einspielen: %w", err)
+				backupErr = fmt.Errorf("Änderungen nur teilweise eingespielt — Details im Log; Rollback im Mods-Tab möglich: %w", err)
 			default:
 				steps = append(steps, fmt.Sprintf("%d Updates eingespielt (Backup %s)", n, label))
 			}
@@ -501,7 +611,11 @@ func (s *Scheduler) backupChain(ctx context.Context, r storage.Routine) (string,
 		}
 		steps = append(steps, "Server gestartet")
 		if backupErr == nil && r.WatchdogMinutes > 0 {
-			if err := s.watchdog(ctx, time.Duration(r.WatchdogMinutes)*time.Minute); err != nil {
+			timeout := time.Duration(r.WatchdogMinutes) * time.Minute
+			if err := s.watchdog(ctx, timeout); err != nil {
+				if applied != "" {
+					return "", s.revertApplied(ctx, id, applied, timeout)
+				}
 				return "", err
 			}
 			steps = append(steps, "Watchdog: Server wieder online")
@@ -699,6 +813,10 @@ func friendlySkipReason(reason string) string {
 		return "Es sind gerade Spieler online — der Lauf wurde verschoben, damit niemand rausfliegt."
 	case strings.Contains(reason, "Wartungsfenster"):
 		return "Gerade läuft eine Wartung — der Lauf wurde übersprungen."
+	case strings.Contains(reason, "Minecraft-Update"):
+		return "Gerade läuft ein Minecraft-Update — der Lauf wurde übersprungen."
+	case strings.Contains(reason, "andere Aufgabe"):
+		return "Am Server läuft gerade schon eine andere Aufgabe — dieser Lauf wurde übersprungen."
 	default:
 		return reason
 	}
@@ -710,4 +828,39 @@ func truncate(s string, n int) string {
 		return s[:n] + "…"
 	}
 	return s
+}
+
+// revertApplied is the fallback when the server does not come back after
+// staged changes were applied: Stop → genau diesen Backup-Satz zurück →
+// Start → Watchdog. Vorher blieb der Server in einer Absturzschleife
+// liegen (WSL-Test 2026-11-10: eine für 1.21.11 gebaute Datei auf 26.3 →
+// „Incompatible mods found!"), über Nacht bis der Admin aufwacht.
+// Liefert immer einen Fehler — die Routine gilt als fehlgeschlagen, die
+// Meldung sagt, ob der alte Stand wieder läuft.
+func (s *Scheduler) revertApplied(ctx context.Context, id, label string, timeout time.Duration) error {
+	cause := "Server kam mit den neuen Mod-Änderungen nicht hoch"
+	if s.diagnose != nil {
+		if d := s.diagnose(ctx); d != "" {
+			cause += " (" + d + ")"
+		}
+	}
+	rb, ok := s.applier.(StagedRollbacker)
+	if !ok {
+		return fmt.Errorf("%s — automatischer Rückfall nicht verfügbar, Rollback im Mods-Tab", cause)
+	}
+	s.log.Warn("server nach einspielen nicht online — rückfall", "label", label)
+	if err := s.controller.StopContainer(ctx, id); err != nil {
+		return fmt.Errorf("%s; Stopp für den Rückfall fehlgeschlagen: %w", cause, err)
+	}
+	n, rbErr := rb.RollbackLabel("server", label)
+	if err := s.controller.StartContainer(ctx, id); err != nil {
+		return fmt.Errorf("%s; Start nach dem Rückfall fehlgeschlagen: %w", cause, err)
+	}
+	if rbErr != nil {
+		return fmt.Errorf("%s; Rückfall fehlgeschlagen: %v — bitte im Mods-Tab prüfen", cause, rbErr)
+	}
+	if err := s.watchdog(ctx, timeout); err != nil {
+		return fmt.Errorf("%s; %d Änderung(en) automatisch zurückgenommen, aber der Server ist auch danach nicht online — bitte prüfen", cause, n)
+	}
+	return fmt.Errorf("%s — %d Änderung(en) automatisch zurückgenommen, der Server läuft wieder mit dem alten Stand", cause, n)
 }

@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	pathpkg "path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,7 +55,7 @@ func (s *Source) Sample(ctx context.Context) (collector.HostSample, error) {
 	if err == nil {
 		out.DiskTotal, out.DiskUsed = total, used
 	}
-	out.NASOnline = s.nasPath != "" && dirAccessible(s.nasPath)
+	out.NASOnline = s.nasPath != "" && s.nasMounted()
 	return out, nil
 }
 
@@ -151,4 +153,50 @@ func (s *Source) readUptime(out *collector.HostSample) error {
 func dirAccessible(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+// nasMounted checks the NAS against the HOST's mount table
+// (<procPath>/1/mountinfo). MSM_NAS_PATH ist ein Host-Pfad, der im
+// MSM-Container gar nicht eingebunden ist — die alte Ordner-Prüfung meldete
+// im Docker-Betrieb deshalb immer „offline" (WSL-Test 2026-11-10); und ein
+// leerer Mountpunkt-Ordner ohne NAS wäre umgekehrt „online" gewesen.
+// Ohne lesbares mountinfo (z. B. lokaler Start ohne /host/proc) bleibt es
+// bei der Ordner-Prüfung.
+func (s *Source) nasMounted() bool {
+	data, err := os.ReadFile(filepath.Join(s.procPath, "1", "mountinfo"))
+	if err != nil {
+		return dirAccessible(s.nasPath)
+	}
+	return mountedIn(string(data), s.nasPath)
+}
+
+// netFS are filesystem types for which a path BELOW the mount point counts
+// too (z. B. MSM_NAS_PATH=/mnt/nas/minecraft bei CIFS-Mount auf /mnt/nas).
+var netFS = map[string]bool{"cifs": true, "smb3": true, "nfs": true, "nfs4": true, "fuse.sshfs": true, "fuse.rclone": true}
+
+// mountedIn reports whether path is a mount point in the mountinfo text —
+// oder unterhalb eines Netzwerk-Mounts liegt.
+func mountedIn(mountinfo, path string) bool {
+	path = pathpkg.Clean(path) // Host-Pfad: immer /-getrennt
+	for _, line := range strings.Split(mountinfo, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+		mp := strings.ReplaceAll(fields[4], `\040`, " ")
+		if mp == path {
+			return true
+		}
+		fstype := ""
+		for i, f := range fields {
+			if f == "-" && i+1 < len(fields) {
+				fstype = fields[i+1]
+				break
+			}
+		}
+		if netFS[fstype] && strings.HasPrefix(path, mp+"/") {
+			return true
+		}
+	}
+	return false
 }

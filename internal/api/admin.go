@@ -239,6 +239,16 @@ func (s *Server) handleRunRoutine(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusServiceUnavailable, "Scheduler nicht aktiv")
 		return
 	}
+	if rt, err := s.admin.GetRoutine(r.Context(), id); err == nil && scheduler.TouchesServer(rt.Kind) {
+		if busy := s.sched.Busy(); busy != "" {
+			httpError(w, http.StatusConflict, "es läuft gerade „"+busy+"“ — bitte warten, bis das fertig ist")
+			return
+		}
+		if s.upgradeActive != nil && s.upgradeActive() {
+			httpError(w, http.StatusConflict, "Minecraft-Update läuft — Routinen sind so lange gesperrt")
+			return
+		}
+	}
 	s.audit(r.Context(), "routine.run-now", strconv.FormatInt(id, 10))
 	go s.sched.RunNow(context.Background(), id)
 	writeJSON(w, http.StatusAccepted, map[string]bool{"started": true})
@@ -354,6 +364,11 @@ func (s *Server) handleRestorePlayer(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	// Eingabefehler sind kein Restore-Fehlschlag: 400, kein Discord-Alarm
+	if !backup.ValidUUID(req.UUID) {
+		httpError(w, http.StatusBadRequest, "ungültige Spieler-UUID (erwartet Format mit Bindestrichen, z. B. 069a79f4-44e9-4726-a5be-fca90e38aaf5)")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Minute)

@@ -167,3 +167,56 @@ func TestRunPublishesOutcomeEvents(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 }
+
+// Zwei Server-Routinen dürfen nie überlappen (WSL-Test 2026-11-10: Ansage-
+// Neustart mitten in der Backup-Kette). Der zweite Lauf wird sichtbar
+// übersprungen, RCON-Routinen laufen trotzdem.
+func TestServerRoutinesAreExclusive(t *testing.T) {
+	s, store, docker, rcon := setup(t)
+	ctx := context.Background()
+	busy := "Nacht-Backup"
+	s.active.Store(&busy) // eine Kette läuft gerade
+	rid, _ := store.CreateRoutine(ctx, storage.Routine{Name: "neustart", Cron: "0 5 * * *", Kind: "restart", Payload: "mc-fabric", Enabled: true})
+	cid, _ := store.CreateRoutine(ctx, storage.Routine{Name: "sag", Cron: "0 5 * * *", Kind: "rcon", Payload: "say hi", Enabled: true})
+
+	s.RunNow(ctx, rid)
+	if n := len(docker.ActionLog()); n != 0 {
+		t.Fatalf("restart lief trotz laufender Kette: %v", docker.ActionLog())
+	}
+	runs, _ := store.RecentRuns(ctx, 10)
+	if len(runs) != 1 || !strings.Contains(runs[0].Message, "übersprungen") || !strings.Contains(runs[0].Message, busy) {
+		t.Fatalf("runs = %+v, want sichtbares Überspringen mit Namen der laufenden Kette", runs)
+	}
+	if s.Busy() != busy {
+		t.Errorf("Busy() = %q, die übersprungene Routine darf die Sperre nicht freigeben", s.Busy())
+	}
+
+	s.RunNow(ctx, cid)
+	if cmds := rcon.Commands(); len(cmds) != 1 {
+		t.Errorf("rcon-Routine muss frei laufen, cmds = %v", cmds)
+	}
+
+	s.active.Store(nil)
+	s.RunNow(ctx, rid)
+	if n := len(docker.ActionLog()); n != 1 {
+		t.Errorf("nach Ende der Kette muss restart laufen: %v", docker.ActionLog())
+	}
+	if s.Busy() != "" {
+		t.Errorf("Sperre nach Lauf nicht freigegeben: %q", s.Busy())
+	}
+}
+
+func TestServerRoutinesSkipDuringUpgrade(t *testing.T) {
+	s, store, docker, _ := setup(t)
+	ctx := context.Background()
+	s.SetUpgradeCheck(func() bool { return true })
+	id, _ := store.CreateRoutine(ctx, storage.Routine{Name: "neustart", Cron: "0 5 * * *", Kind: "restart", Payload: "mc-fabric", Enabled: true})
+	s.RunNow(ctx, id)
+	if n := len(docker.ActionLog()); n != 0 {
+		t.Fatalf("restart lief während MC-Update: %v", docker.ActionLog())
+	}
+	runs, _ := store.RecentRuns(ctx, 10)
+	if len(runs) != 1 || !strings.Contains(runs[0].Message, "Minecraft-Update") {
+		t.Fatalf("runs = %+v", runs)
+	}
+}

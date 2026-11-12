@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modrinth"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
@@ -70,6 +71,65 @@ func (m *Modrinth) Download(_ context.Context, url string) ([]byte, error) {
 	return fakeUpdateContent(filepath.Base(url)), nil
 }
 
+// mockFile builds a file whose hash matches what Download returns.
+func mockFile(name string) modrinth.File {
+	sum := sha512.Sum512(fakeUpdateContent(name))
+	f := modrinth.File{URL: "mock://" + name, Filename: name, Primary: true}
+	f.Hashes.SHA512 = hex.EncodeToString(sum[:])
+	return f
+}
+
+// mockCatalog: Suche/Hinzufügen im Mock-Modus. jade-mock braucht balm-mock.
+var mockCatalog = []struct {
+	project modrinth.Project
+	version modrinth.Version
+}{
+	{
+		modrinth.Project{ID: "jade-mock", Slug: "jade", Title: "Jade (Mock)", Description: "Zeigt an, worauf du schaust", ClientSide: "required", ServerSide: "optional", ProjectType: "mod"},
+		modrinth.Version{ID: "jade-v1", ProjectID: "jade-mock", Name: "Jade 1.0", VersionNumber: "1.0",
+			Files:        []modrinth.File{mockFile("jade-mock-1.0.jar")},
+			Dependencies: []modrinth.Dependency{{ProjectID: "balm-mock", DependencyType: "required"}}},
+	},
+	{
+		modrinth.Project{ID: "balm-mock", Slug: "balm", Title: "Balm (Mock)", Description: "Bibliothek", ClientSide: "required", ServerSide: "required", ProjectType: "mod"},
+		modrinth.Version{ID: "balm-v1", ProjectID: "balm-mock", Name: "Balm 1.0", VersionNumber: "1.0",
+			Files: []modrinth.File{mockFile("balm-mock-1.0.jar")}},
+	},
+}
+
+func (m *Modrinth) Search(_ context.Context, query, _, _ string, _ int) ([]modrinth.SearchHit, error) {
+	out := []modrinth.SearchHit{}
+	q := strings.ToLower(query)
+	for _, c := range mockCatalog {
+		if strings.Contains(strings.ToLower(c.project.Title), q) || strings.Contains(c.project.ID, q) {
+			out = append(out, modrinth.SearchHit{
+				ProjectID: c.project.ID, Slug: c.project.Slug, Title: c.project.Title,
+				Description: c.project.Description, Downloads: 1234,
+				ClientSide: c.project.ClientSide, ServerSide: c.project.ServerSide,
+			})
+		}
+	}
+	return out, nil
+}
+
+func (m *Modrinth) Project(_ context.Context, id string) (modrinth.Project, error) {
+	for _, c := range mockCatalog {
+		if c.project.ID == id || c.project.Slug == id {
+			return c.project, nil
+		}
+	}
+	return modrinth.Project{}, fmt.Errorf("modrinth /project/%s: 404 Not Found", id)
+}
+
+func (m *Modrinth) ProjectVersions(_ context.Context, id, _, _ string) ([]modrinth.Version, error) {
+	for _, c := range mockCatalog {
+		if c.project.ID == id {
+			return []modrinth.Version{c.version}, nil
+		}
+	}
+	return []modrinth.Version{}, nil
+}
+
 // CreateFakeProfiles writes a few dummy jars under baseDir and returns
 // profiles pointing at them (mock mode + tests).
 func CreateFakeProfiles(baseDir string) ([]mods.Profile, error) {
@@ -99,4 +159,18 @@ func CreateFakeProfiles(baseDir string) ([]mods.Profile, error) {
 		{Name: "server", Dirs: map[string]string{"mods": serverMods}},
 		{Name: "client", Dirs: map[string]string{"mods": clientMods, "shaderpacks": clientShaders}},
 	}, nil
+}
+
+// Projects returns catalog projects; unknown IDs are omitted (Anzeige fällt
+// dann auf den Versionsnamen zurück).
+func (m *Modrinth) Projects(_ context.Context, ids []string) ([]modrinth.Project, error) {
+	out := []modrinth.Project{}
+	for _, id := range ids {
+		for _, c := range mockCatalog {
+			if c.project.ID == id {
+				out = append(out, c.project)
+			}
+		}
+	}
+	return out, nil
 }

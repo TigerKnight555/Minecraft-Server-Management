@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -124,12 +125,26 @@ func (s *Server) handleTestDiscord(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusConflict, "kein Webhook konfiguriert")
 		return
 	}
-	s.bus.Publish(events.Event{
+	ev := events.Event{
 		Type:     events.TypeRoutineFailed, // "*"-Filter erreicht jeden Webhook; Fehltyp egal für den Test
 		Severity: events.SevInfo,
 		Title:    "🔔 Testnachricht vom MSM-Dashboard",
 		Message:  "Wenn du das liest, funktioniert die Discord-Anbindung. Gesendet: " + time.Now().Format("15:04:05"),
-	})
-	s.audit(r.Context(), "settings.discord.test", "testnachricht gesendet")
-	writeJSON(w, http.StatusOK, map[string]string{"message": "Testnachricht verschickt — im Discord-Channel nachsehen."})
+		Time:     time.Now(),
+	}
+	if s.discordTest == nil {
+		s.bus.Publish(ev)
+		s.audit(r.Context(), "settings.discord.test", "testnachricht gesendet")
+		writeJSON(w, http.StatusOK, map[string]string{"message": "Testnachricht verschickt — im Discord-Channel nachsehen."})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	defer cancel()
+	if err := s.discordTest(ctx, ev); err != nil {
+		s.audit(r.Context(), "settings.discord.test", "fehlgeschlagen: "+err.Error())
+		httpError(w, http.StatusBadGateway, "Discord hat die Testnachricht nicht angenommen — "+err.Error())
+		return
+	}
+	s.audit(r.Context(), "settings.discord.test", "testnachricht zugestellt")
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Testnachricht zugestellt — im Discord-Channel nachsehen."})
 }

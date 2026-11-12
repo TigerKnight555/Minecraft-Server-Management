@@ -3,12 +3,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/auth"
@@ -39,7 +41,11 @@ type Server struct {
 	maintActive       func() bool // Wartungsfenster gerade aktiv?
 	dropbox           *dropbox.Client
 	upgrader          *upgrade.Orchestrator
+	upgradeActive     func() bool                     // Ein-Klick-MC-Update läuft? (nil = nie)
+	publishPack       func(ctx context.Context) error // Client-Paket-Versand inkl. Zustands-Pflege
+	applyBusy         atomic.Bool                     // „Anwenden + Neustart" läuft
 	settings          *settings.Store
+	discordTest       func(ctx context.Context, ev events.Event) error
 	selfupdate        *selfupdate.Checker
 	mcContainer       string
 	fallbackMCVersion string
@@ -66,7 +72,9 @@ type Deps struct {
 	MaintActive       func() bool // maintenance.Manager.Active
 	Dropbox           *dropbox.Client
 	Upgrader          *upgrade.Orchestrator
+	PublishPack       func(ctx context.Context) error // optional; nil = dropbox.Publish direkt
 	Settings          *settings.Store
+	DiscordTest       func(ctx context.Context, ev events.Event) error // Testnachricht synchron zustellen
 	SelfUpdate        *selfupdate.Checker
 	MCContainer       string   // name of the minecraft container (mod apply restart)
 	FallbackMCVersion string   // used when query has no version yet
@@ -83,7 +91,12 @@ func New(d Deps) *Server {
 			managed[name] = true
 		}
 	}
+	var upgradeActive func() bool
+	if d.Upgrader != nil {
+		upgradeActive = d.Upgrader.Active
+	}
 	return &Server{
+		upgradeActive:     upgradeActive,
 		collector:         d.Collector,
 		docker:            d.Docker,
 		controller:        d.Controller,
@@ -99,7 +112,9 @@ func New(d Deps) *Server {
 		maintActive:       d.MaintActive,
 		dropbox:           d.Dropbox,
 		upgrader:          d.Upgrader,
+		publishPack:       d.PublishPack,
 		settings:          d.Settings,
+		discordTest:       d.DiscordTest,
 		selfupdate:        d.SelfUpdate,
 		mcContainer:       d.MCContainer,
 		fallbackMCVersion: d.FallbackMCVersion,
@@ -138,6 +153,14 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("POST /api/mods/stage", s.handleModsStage)
 		mux.HandleFunc("POST /api/mods/apply", s.handleModsApply)
 		mux.HandleFunc("POST /api/mods/rollback", s.handleModsRollback)
+		mux.HandleFunc("GET /api/mods/search", s.handleModsSearch)
+		mux.HandleFunc("GET /api/mods/plan", s.handleModsPlan)
+		mux.HandleFunc("POST /api/mods/add", s.handleModsAdd)
+		mux.HandleFunc("POST /api/mods/upload", s.handleModsUpload)
+		mux.HandleFunc("GET /api/mods/remove-info", s.handleModsRemoveInfo)
+		mux.HandleFunc("POST /api/mods/remove", s.handleModsRemove)
+		mux.HandleFunc("POST /api/mods/discard", s.handleModsDiscard)
+		mux.HandleFunc("GET /api/mods/apply-info", s.handleModsApplyInfo)
 		if s.dropbox != nil {
 			mux.HandleFunc("POST /api/mods/publish", s.handlePublishClientPack)
 		}

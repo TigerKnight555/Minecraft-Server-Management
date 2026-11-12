@@ -145,3 +145,37 @@ func contextWithTimeout(t *testing.T) (ctx context.Context, cancel func()) {
 	t.Helper()
 	return context.WithTimeout(context.Background(), 3*time.Second)
 }
+
+func TestCrashDetectsRestartWithoutReport(t *testing.T) {
+	bus := events.New()
+	ch, cancel := bus.Subscribe(16)
+	defer cancel()
+	c := NewCrash(t.TempDir(), bus, testLogger())
+	n, planned := 0, false
+	c.WithRestartCount(func(context.Context) (int, error) { return n, nil }, func() bool { return planned })
+	ctx := context.Background()
+
+	base := c.checkRestarts(ctx, -1) // erster Wert
+	if evs := drain(ch); len(evs) != 0 {
+		t.Fatalf("Start darf nichts melden: %+v", evs)
+	}
+	n = 1
+	base = c.checkRestarts(ctx, base)
+	evs := drain(ch)
+	if len(evs) != 1 || evs[0].Type != events.TypeCrash {
+		t.Fatalf("events = %+v, want ein Absturz", evs)
+	}
+	// geplanter Ausfall: still
+	planned, n = true, 2
+	base = c.checkRestarts(ctx, base)
+	// Container neu erstellt (Zähler fällt): still, neue Basis
+	planned, n = false, 0
+	base = c.checkRestarts(ctx, base)
+	// Absturz mit Crash-Report eben gemeldet: kein zweites 💥
+	c.lastReport = time.Now()
+	n = 1
+	c.checkRestarts(ctx, base)
+	if evs := drain(ch); len(evs) != 0 {
+		t.Errorf("unerwartete Meldungen: %+v", evs)
+	}
+}

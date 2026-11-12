@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"sync/atomic"
 	"time"
 
@@ -133,7 +134,7 @@ func (m *Manager) announcePhase(ctx context.Context, w storage.MaintenanceWindow
 		}
 		m.bus.Publish(events.Event{
 			Type: events.TypeMaintAnnounce, Severity: events.SevInfo,
-			Title:   "🔧 In einer Stunde: Wartung „" + w.Name + "“",
+			Title:   "🔧 In " + inTime(remaining) + ": Wartung „" + w.Name + "“",
 			Message: "Der Server geht heute von " + fmtSpan() + " offline. Meldung folgt, wenn er wieder da ist.",
 		})
 		return // pro Tick höchstens eine Stufe
@@ -146,7 +147,7 @@ func (m *Manager) announcePhase(ctx context.Context, w storage.MaintenanceWindow
 		m.bus.Publish(events.Event{
 			Type: events.TypeMaintAnnounce, Severity: events.SevWarn,
 			Title:   "🔧 Gleich geht's los: Wartung „" + w.Name + "“",
-			Message: "Der Server geht in etwa 5 Minuten offline (" + fmtSpan() + "). Bitte jetzt einen sicheren Ort suchen und ausloggen.",
+			Message: "Der Server geht in etwa " + inTime(remaining) + " offline (" + fmtSpan() + "). Bitte jetzt einen sicheren Ort suchen und ausloggen.",
 		})
 	}
 }
@@ -278,4 +279,19 @@ func (m *Manager) resolve() (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// inTime words the real lead time — kurzfristig angelegte Fenster bekamen
+// sonst „In einer Stunde" (20 min vorher) bzw. „in etwa 5 Minuten"
+// (2 min vorher; WSL-Test 2026-11-10).
+func inTime(d time.Duration) string {
+	n := int(math.Ceil(d.Minutes()))
+	switch {
+	case n >= 55:
+		return "einer Stunde"
+	case n <= 1:
+		return "einer Minute"
+	default:
+		return fmt.Sprintf("%d Minuten", n)
+	}
 }
