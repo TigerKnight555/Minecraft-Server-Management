@@ -266,6 +266,14 @@ func (s *Server) handleVersionWatchCheck(w http.ResponseWriter, r *http.Request)
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
+	// Inventar erst auffrischen (wie der Tageslauf): nach einem Rollback oder
+	// MSM-Neustart ist der Cache leer, der Check meldete dann „Server-Mods
+	// 0/0" und das Update wurde verweigert (WSL-Test 2026-11-12)
+	if s.modmgr != nil {
+		for _, p := range s.modmgr.Profiles() {
+			s.modmgr.CheckUpdates(ctx, p.Name, version)
+		}
+	}
 	status, err := s.watcher.Check(ctx, version)
 	if err != nil {
 		httpError(w, http.StatusBadGateway, err.Error())
