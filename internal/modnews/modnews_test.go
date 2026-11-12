@@ -292,3 +292,15 @@ func TestServerOnlyButClientRequiredSaysNeeded(t *testing.T) {
 		t.Errorf("Meldung = %q", ev.Message)
 	}
 }
+
+// Server-Rollback eines Mods, der im Client-Paket bleibt: kein „bitte
+// auch bei dir entfernen" (WSL-Test 2026-11-12).
+func TestServerRemovalOfClientRequiredSaysNothingToDo(t *testing.T) {
+	a, _, ch, _, _ := setup(t, true)
+	a.OnApply(mods.ProfileServer, []mods.Change{{Action: "remove", Profile: mods.ProfileServer, Name: "Waystones", Filename: "w.jar", ProjectID: "p-w", ClientSide: "required"}})
+	a.AfterRestart(context.Background())
+	ev, _ := next(t, ch)
+	if !strings.Contains(ev.Message, "Waystones — nichts zu tun") {
+		t.Errorf("Meldung = %q", ev.Message)
+	}
+}

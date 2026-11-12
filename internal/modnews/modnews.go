@@ -290,7 +290,7 @@ func compose(server, client []mods.Change) (text, title string, ok bool) {
 		return "", "", false
 	}
 	var b strings.Builder
-	write := func(head string, set map[string]*row, both, serverOnly, clientOnly string) {
+	write := func(head string, set map[string]*row, isAdd bool, both, serverOnly, clientOnly string) {
 		if len(set) == 0 {
 			return
 		}
@@ -303,9 +303,10 @@ func compose(server, client []mods.Change) (text, title string, ok bool) {
 		for _, r := range rows {
 			hint := serverOnly
 			switch {
-			case r.server && (r.client || r.clientNeeded):
-				// auch wenn der Client-Teil schon früher verteilt wurde:
-				// die Spieler brauchen den Mod
+			case r.server && (r.client || (r.clientNeeded && isAdd)):
+				// Neuzugang: auch wenn der Client-Teil schon früher verteilt
+				// wurde, brauchen die Spieler den Mod. Beim Entfernen nicht —
+				// solange er im Paket liegt, wäre „bitte entfernen" falsch.
 				hint = both
 			case r.client:
 				hint = clientOnly
@@ -313,8 +314,8 @@ func compose(server, client []mods.Change) (text, title string, ok bool) {
 			b.WriteString("• " + r.name + " — " + hint + "\n")
 		}
 	}
-	write("**Neu:**", added, "auch bei dir nötig", "nur Server, nichts zu tun", "nur bei dir (Client-Paket)")
-	write("**Entfernt:**", removed, "bitte auch bei dir entfernen", "nichts zu tun", "kann bei dir raus")
+	write("**Neu:**", added, true, "auch bei dir nötig", "nur Server, nichts zu tun", "nur bei dir (Client-Paket)")
+	write("**Entfernt:**", removed, false, "bitte auch bei dir entfernen", "nichts zu tun", "kann bei dir raus")
 	onServer := len(server) > 0
 	switch {
 	case len(added) > 0 && onServer:
