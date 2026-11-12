@@ -2,6 +2,7 @@ package upgrade
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
 )
 
 // Log eines Servers, der die Welt nie geöffnet hat (der reale 26.2-Fall).
@@ -73,7 +75,13 @@ func newRollbackOrch(t *testing.T, logText string, comeBack string) (*Orchestrat
 	o.RollbackTimeout = time.Second
 	o.CrashLimit = 0 // nur der Timeout-Pfad in diesem Test
 	o.TailLogs = func(context.Context, int) (string, error) { return logText, nil }
-	o.ModRollback = func(string) (int, error) { rf.modRolled.Store(true); return 2, nil }
+	o.ModRollback = func(_, label string) (int, error) {
+		if label != "L" {
+			t.Errorf("Mod-Rollback mit Label %q, want L (der Satz vom Sprung)", label)
+		}
+		rf.modRolled.Store(true)
+		return 2, nil
+	}
 	return o, rf, ch
 }
 
@@ -152,6 +160,124 @@ func TestNoRollbackWithoutLogAccess(t *testing.T) {
 
 	if got, _ := rf.signalled.Load().(string); got != "26.2" {
 		t.Errorf("Rückfall ohne Logeinsicht ausgelöst (Signal=%q)", got)
+	}
+}
+
+// Hat der Sprung keine Mods getauscht, darf der Rückfall auch keine Mods
+// anfassen — der neueste Backup-Satz stammt dann von einem älteren Update.
+func TestRollbackLeavesModsAloneWhenNothingWasApplied(t *testing.T) {
+	o, rf, _ := newRollbackOrch(t, logWorldUntouched, "1.21.11")
+	rf.fakes.applyErr = mods.ErrNothingStaged
+	rf.fakes.version.Store("1.21.11")
+	rf.fakes.online.Store(true)
+
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+
+	if got, _ := rf.signalled.Load().(string); got != "1.21.11" {
+		t.Errorf("Rückfall-Signal = %q, want 1.21.11", got)
+	}
+	if rf.modRolled.Load() {
+		t.Error("Mods zurückgerollt, obwohl der Sprung keine getauscht hat")
+	}
+}
+
+// Scheitert das Einspielen der Server-Mods mittendrin, werden die schon
+// getauschten zurückgerollt, bevor der alte Server wieder startet.
+func TestPartialModApplyIsRolledBack(t *testing.T) {
+	o, rf, _ := newRollbackOrch(t, logWorldUntouched, "1.21.11")
+	rf.fakes.applyErr = errors.New("disk full")
+	rf.fakes.version.Store("1.21.11")
+	rf.fakes.online.Store(true)
+
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+
+	if !rf.modRolled.Load() {
+		t.Error("teilweise getauschte Mods nicht zurückgerollt")
+	}
+	if got, _ := rf.signalled.Load().(string); got != "" {
+		t.Errorf("Host-Signal trotz Mod-Fehler: %q", got)
+	}
+	steps := rf.fakes.list()
+	if steps[len(steps)-1] != "start" {
+		t.Errorf("alter Server nicht wieder gestartet: %v", steps)
+	}
+}
+
+// Meldet der Host-Helfer einen gescheiterten Neubau, kommt der Rückfall
+// sofort — ohne Timeout und obwohl das Log (des alten Containers) eine
+// geöffnete Welt zeigt: die neue Version lief nie.
+func TestHostFailureTriggersImmediateRollback(t *testing.T) {
+	o, rf, ch := newRollbackOrch(t, logWorldOpened, "1.21.11")
+	o.OnlineTimeout = 30 * time.Second // der Rückfall muss lange vorher kommen
+	o.HostFailure = func() (string, bool) {
+		got, _ := rf.signalled.Load().(string)
+		return "compose up gescheitert", got == "26.2"
+	}
+	rf.fakes.version.Store("1.21.11")
+	rf.fakes.online.Store(true)
+
+	start := time.Now()
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+
+	if time.Since(start) > 3*time.Second {
+		t.Errorf("Rückfall kam erst nach %s — bis zum Timeout gewartet?", time.Since(start))
+	}
+	if got, _ := rf.signalled.Load().(string); got != "1.21.11" {
+		t.Errorf("Rückfall-Signal = %q, want 1.21.11", got)
+	}
+	if !rf.modRolled.Load() {
+		t.Error("Mods für die Zielversion nicht zurückgerollt")
+	}
+	var back bool
+	var details string
+	for _, ev := range drain(ch) {
+		if strings.Contains(ev.Title, "läuft wieder auf 1.21.11") {
+			back = true
+		}
+		for _, f := range ev.Fields {
+			details += f.Value
+		}
+	}
+	if !back {
+		t.Error("keine Meldung über den geglückten Rückfall")
+	}
+	if !strings.Contains(details, "compose up gescheitert") {
+		t.Errorf("Ursache vom Host fehlt in den Details: %q", details)
+	}
+}
+
+// Ein veralteter „online"-Snapshot von vor dem Stopp ist kein Beleg, dass
+// der alte Server zurück ist (in der Testumgebung beobachtet: Erfolgsmeldung
+// vor dem Container-Neubau).
+func TestStaleStatusIsNoRollbackSuccess(t *testing.T) {
+	o, rf, ch := newRollbackOrch(t, logWorldOpened, "")
+	o.RollbackTimeout = 100 * time.Millisecond
+	o.HostFailure = func() (string, bool) {
+		got, _ := rf.signalled.Load().(string)
+		return "compose up gescheitert", got == "26.2"
+	}
+	rf.fakes.version.Store("1.21.11")
+	rf.fakes.online.Store(true)
+	rf.fakes.staleStatus.Store(true)
+
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+
+	for _, ev := range drain(ch) {
+		if strings.Contains(ev.Title, "läuft wieder") {
+			t.Errorf("Erfolg auf Basis eines veralteten Snapshots gemeldet: %q", ev.Title)
+		}
 	}
 }
 

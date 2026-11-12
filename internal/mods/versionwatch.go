@@ -275,7 +275,11 @@ func (w *Watcher) Check(ctx context.Context, currentVersion string) (*WatchStatu
 		entries := w.mgr.Entries(p.Name)
 		pr := ProfileReady{Profile: p.Name}
 		for _, e := range entries {
-			if !e.Managed {
+			// nur Mods: Shader und Resourcepacks führt Modrinth unter
+			// anderen Loadern (iris/optifine bzw. minecraft) — mit dem
+			// Mod-Loader abgefragt wären sie ewige Nachzügler, und die
+			// Update-Meldung riete den Spielern, sie zu entfernen
+			if !e.Managed || e.Category != "mods" {
 				continue
 			}
 			pr.Total++

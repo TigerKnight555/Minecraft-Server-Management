@@ -60,6 +60,11 @@ type Collector struct {
 	// survives short offline windows (e.g. restart after mod apply) so
 	// update checks never run with an empty version
 	lastMCVersion string
+	// optionaler Speicher für lastMCVersion: nach einem Ein-Klick-Update
+	// steht in MC_VERSION der Umgebung noch die ALTE Version. Ohne
+	// Persistenz würde jeder Check direkt nach dem Boot (MSM ist schneller
+	// oben als Minecraft) mit dieser alten Version laufen (Learning 21).
+	versionSet func(string)
 
 	pending   []Sample
 	pendingMu sync.Mutex
@@ -145,6 +150,24 @@ func (c *Collector) MCVersion() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.lastMCVersion
+}
+
+// SetVersionStore lädt die zuletzt gesehene Minecraft-Version aus get und
+// speichert jede neu erkannte Version über set.
+// Run läuft schon, bevor der Store verdrahtet ist: hat der erste Poll die
+// Version bereits erkannt, wird sie hier nachträglich gespeichert — sonst
+// bliebe der Store bis zum nächsten Versionswechsel leer bzw. veraltet.
+func (c *Collector) SetVersionStore(get func() string, set func(string)) {
+	c.mu.Lock()
+	c.versionSet = set
+	seen := c.lastMCVersion
+	if seen == "" && get != nil {
+		c.lastMCVersion = get()
+	}
+	c.mu.Unlock()
+	if seen != "" && set != nil && (get == nil || get() != seen) {
+		set(seen)
+	}
 }
 
 func (c *Collector) Containers() []Container {
@@ -261,10 +284,15 @@ func (c *Collector) pollMC(ctx context.Context) {
 	}
 	c.mu.Lock()
 	c.lastMC = s
-	if s.Online && s.Version != "" {
+	var persist func(string)
+	if s.Online && s.Version != "" && s.Version != c.lastMCVersion {
 		c.lastMCVersion = s.Version
+		persist = c.versionSet
 	}
 	c.mu.Unlock()
+	if persist != nil {
+		persist(s.Version)
+	}
 	c.publish(Event{Type: "mc", Data: s})
 	online := 0.0
 	if s.Online {

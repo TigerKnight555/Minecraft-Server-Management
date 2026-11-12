@@ -44,21 +44,32 @@ func WorldOpened(logText string) bool {
 // recover versucht nach einem gescheiterten Sprung den alten Zustand
 // wiederherzustellen. Der Rückgabewert ist immer ein Fehler — er beschreibt,
 // was passiert ist; der Aufrufer meldet ihn nach Discord.
-func (o *Orchestrator) recover(ctx context.Context, from string, cause error) error {
+//
+// modLabel ist der Backup-Satz, den die Kette beim Sprung angelegt hat ("" =
+// es wurden keine Mods getauscht). Nur dieser Satz wird zurückgerollt — der
+// neueste .backup-Ordner kann sonst von einem älteren Mod-Update stammen.
+//
+// neverStarted: der Host-Helfer hat gemeldet, dass der Container mit der
+// neuen Version gar nicht erst erstellt wurde. Dann ist die Welt sicher
+// unangetastet — und die Logprüfung wäre sogar irreführend, weil das Log
+// des alten Containers natürlich eine geöffnete Welt zeigt.
+func (o *Orchestrator) recover(ctx context.Context, from, modLabel string, cause error, neverStarted bool) error {
 	if !o.AutoRollback || from == "" || o.signal == nil {
 		return cause
 	}
-	// Ohne Logeinsicht kein automatischer Eingriff — zu riskant.
-	if o.TailLogs == nil {
-		return fmt.Errorf("%w — automatischer Rückfall übersprungen (keine Logeinsicht)", cause)
-	}
-	logText, err := o.TailLogs(ctx, 2000)
-	if err != nil {
-		return fmt.Errorf("%w — automatischer Rückfall übersprungen (Log nicht lesbar: %v)", cause, err)
-	}
-	if WorldOpened(logText) {
-		return fmt.Errorf("%w — KEIN automatischer Rückfall: die Welt wurde bereits geladen und ggf. konvertiert. "+
-			"Ein Versionsrücksprung würde sie nicht mehr öffnen. Rückweg ist das Backup von vor dem Update", cause)
+	if !neverStarted {
+		// Ohne Logeinsicht kein automatischer Eingriff — zu riskant.
+		if o.TailLogs == nil {
+			return fmt.Errorf("%w — automatischer Rückfall übersprungen (keine Logeinsicht)", cause)
+		}
+		logText, err := o.TailLogs(ctx, 2000)
+		if err != nil {
+			return fmt.Errorf("%w — automatischer Rückfall übersprungen (Log nicht lesbar: %v)", cause, err)
+		}
+		if WorldOpened(logText) {
+			return fmt.Errorf("%w — KEIN automatischer Rückfall: die Welt wurde bereits geladen und ggf. konvertiert. "+
+				"Ein Versionsrücksprung würde sie nicht mehr öffnen. Rückweg ist das Backup von vor dem Update", cause)
+		}
 	}
 
 	o.setStatus("Rückfall auf " + from)
@@ -71,13 +82,14 @@ func (o *Orchestrator) recover(ctx context.Context, from string, cause error) er
 	// Mods gehören zur Version: die Kette hat sie auf die Zielversion
 	// gehoben, für den alten Server müssen sie zurück.
 	modNote := ""
-	if o.ModRollback != nil {
-		if n, err := o.ModRollback("server"); err != nil {
+	if o.ModRollback != nil && modLabel != "" {
+		if n, err := o.ModRollback("server", modLabel); err != nil {
 			modNote = fmt.Sprintf(" (Mod-Rollback fehlgeschlagen: %v — im Mods-Tab prüfen)", err)
 		} else {
 			modNote = fmt.Sprintf(" (%d Mod-Datei(en) zurückgerollt)", n)
 		}
 	}
+	requested := time.Now()
 	if err := o.signal.RequestUpgrade(from); err != nil {
 		return fmt.Errorf("%w — Rückfall auf %s ebenfalls fehlgeschlagen: %v", cause, from, err)
 	}
@@ -85,13 +97,18 @@ func (o *Orchestrator) recover(ctx context.Context, from string, cause error) er
 	// kurzer Watchdog: kommt der alte Stand wieder hoch?
 	deadline := time.Now().Add(o.RollbackTimeout)
 	for time.Now().Before(deadline) {
-		if st := o.mcStatus(); st.Online && st.Version == from {
+		if st := o.mcStatus(); freshOnline(st, from, requested) {
 			o.bus.Publish(events.Event{
 				Type: events.TypeServerUp, Severity: events.SevSuccess,
 				Title:   "✅ Server läuft wieder auf " + from,
 				Message: "Das Update hat nicht geklappt, der alte Stand ist zurück — die Welt ist unversehrt." + modNote,
 			})
 			return fmt.Errorf("%w — Server wurde automatisch auf %s zurückgesetzt und läuft wieder%s", cause, from, modNote)
+		}
+		if o.HostFailure != nil {
+			if msg, failed := o.HostFailure(); failed {
+				return fmt.Errorf("%w — Rückfall auf %s ebenfalls gescheitert (Host-Helfer: %s)%s", cause, from, msg, modNote)
+			}
 		}
 		select {
 		case <-ctx.Done():

@@ -2,7 +2,7 @@
 // Entscheidung #15): der Checker fragt GitHub nach dem neuesten Tag (Releases
 // werden auf master getaggt), die UI zeigt „Update verfügbar", der Klick
 // schreibt eine Signaldatei — der Host-Helfer macht `git checkout <tag>` +
-// `docker compose up -d --build msm`. MSM stirbt beim Rebuild und kommt als
+// `docker compose up -d --no-deps --build msm`. MSM stirbt beim Rebuild und kommt als
 // neue Version wieder; schlägt der Build fehl, läuft der alte Container
 // weiter (compose baut zuerst).
 package selfupdate

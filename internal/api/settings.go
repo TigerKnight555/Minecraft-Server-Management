@@ -33,28 +33,52 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if req.DiscordWebhook != nil {
-		v := strings.TrimSpace(*req.DiscordWebhook)
-		if v != "" && !strings.HasPrefix(v, "https://discord.com/api/webhooks/") {
+	// Unveränderte Felder überspringen: das UI zeigt die wirksamen Werte
+	// (auch aus der .env) und schickte sie früher alle mit. Folge: ein
+	// .env-Webhook, der die Prüfung nicht besteht (alte discordapp.com-URL,
+	// Test-Attrappe), blockierte das Speichern der Dropbox-Daten komplett —
+	// und jeder Speichervorgang kopierte .env-Werte in die DB (überstimmte
+	// damit z. B. die MSM_DISCORD_WEBHOOKS-Aufteilung).
+	current := s.settings.Values()
+	changed := func(ptr *string, field string) (string, bool) {
+		if ptr == nil {
+			return "", false
+		}
+		v := strings.TrimSpace(*ptr)
+		return v, v != current[field]
+	}
+	if v, ok := changed(req.DiscordWebhook, "discordWebhook"); ok {
+		if v != "" && !validWebhook(v) {
 			httpError(w, http.StatusBadRequest, "Webhook-URL muss mit https://discord.com/api/webhooks/ beginnen")
 			return
 		}
 		s.settings.Set(settings.KeyDiscordWebhook, v)
 		s.audit(r.Context(), "settings.discord", "webhook geändert (Wert nicht protokolliert)")
 	}
-	set := func(ptr *string, key, name string) {
-		if ptr != nil {
-			s.settings.Set(key, *ptr)
+	set := func(ptr *string, field, key, name string) {
+		if v, ok := changed(ptr, field); ok {
+			s.settings.Set(key, v)
 			s.audit(r.Context(), "settings.dropbox", name+" geändert (Wert nicht protokolliert)")
 		}
 	}
-	set(req.DropboxKey, settings.KeyDropboxKey, "app-key")
-	set(req.DropboxSecret, settings.KeyDropboxSecret, "app-secret")
-	set(req.DropboxToken, settings.KeyDropboxToken, "refresh-token")
+	set(req.DropboxKey, "dropboxKey", settings.KeyDropboxKey, "app-key")
+	set(req.DropboxSecret, "dropboxSecret", settings.KeyDropboxSecret, "app-secret")
+	set(req.DropboxToken, "dropboxToken", settings.KeyDropboxToken, "refresh-token")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"view":   s.settings.View(),
 		"values": s.settings.Values(),
 	})
+}
+
+// validWebhook accepts Discord webhook URLs incl. the legacy discordapp.com
+// domain and the ptb/canary clients — Discord liefert alle weiterhin aus.
+func validWebhook(v string) bool {
+	for _, host := range []string{"discord.com", "discordapp.com", "ptb.discord.com", "canary.discord.com"} {
+		if strings.HasPrefix(v, "https://"+host+"/api/webhooks/") {
+			return true
+		}
+	}
+	return false
 }
 
 // handleSelfUpdateStatus returns current/latest MSM version; ?check=1

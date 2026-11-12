@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -71,8 +72,9 @@ type Orchestrator struct {
 	PollStep      time.Duration
 
 	// Publish veröffentlicht das Client-Paket (Dropbox + Discord-Link) —
-	// optional; läuft automatisch nach erfolgreichem Client-Mod-Update
-	Publish func(ctx context.Context) error
+	// optional; läuft automatisch nach erfolgreichem Client-Mod-Update.
+	// published=false: Veröffentlichung ist nicht eingerichtet (kein Fehler)
+	Publish func(ctx context.Context) (published bool, err error)
 
 	// JavaProbe meldet die Java-Hauptversion des laufenden Container-Images
 	// (0 = unbekannt). Neuere Minecraft-Versionen verlangen neueres Java;
@@ -92,11 +94,17 @@ type Orchestrator struct {
 
 	// AutoRollback setzt den Server nach einem gescheiterten Sprung selbst
 	// auf die alte Version zurück — aber nur, wenn die Welt nachweislich
-	// nicht geöffnet wurde (Learning 19). ModRollback holt die zur alten
-	// Version passenden Mods zurück (mods.Manager.Rollback).
+	// nicht geöffnet wurde (Learning 19). ModRollback holt genau den beim
+	// Sprung ersetzten Mod-Satz zurück (mods.Manager.RollbackLabel).
 	AutoRollback    bool
 	RollbackTimeout time.Duration
-	ModRollback     func(profile string) (int, error)
+	ModRollback     func(profile, label string) (int, error)
+
+	// HostFailure liest die Rückmeldung des Host-Helfers (upgrade.failed):
+	// scheitert dort der Container-Neubau, steht die .env schon wieder auf
+	// der alten Version und der neue Server lief nie. Optional —
+	// hostctl.Signaler.UpgradeFailure erfüllt das.
+	HostFailure func() (string, bool)
 
 	mu      sync.Mutex
 	running bool
@@ -178,9 +186,12 @@ func (o *Orchestrator) Start(version string) error {
 	// Container-Neubau) und der Server landete in einer Neustart-Schleife.
 	// Nur blocken, wenn beide Werte bekannt sind — sonst lieber durchlassen.
 	if last.RequiredJava > 0 && o.JavaProbe != nil {
+		// Die Probe liest den CONTAINER, nicht das Image: ein bloßes pull
+		// ändert daran nichts, der Container muss neu erstellt werden. Mit
+		// unveränderter MC_VERSION ist das gefahrlos (gleiche Version).
 		if have := o.JavaProbe(context.Background()); have > 0 && have < last.RequiredJava {
 			o.mu.Unlock()
-			return fmt.Errorf("minecraft %s benötigt Java %d, das Container-Image liefert nur Java %d — Image aktualisieren: docker compose pull mc-fabric",
+			return fmt.Errorf("minecraft %s benötigt Java %d, der Server-Container läuft mit Java %d — auf dem Host im Repo-Verzeichnis: docker compose pull mc-fabric && docker compose up -d mc-fabric (bleibt auf der aktuellen Version), danach Update erneut starten",
 				version, last.RequiredJava, have)
 		}
 	}
@@ -277,14 +288,27 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 	if _, err := o.modmgr.Stage(ctx, "server", nil); err != nil {
 		return restartOld(fmt.Errorf("mods stagen: %w", err))
 	}
-	if _, n, err := o.modmgr.ApplyStaged("server"); err != nil && !errors.Is(err, mods.ErrNothingStaged) {
-		return restartOld(fmt.Errorf("mods einspielen: %w", err))
+	// modLabel: genau dieser Backup-Satz gehört zum Sprung — nur er darf
+	// beim Rückfall zurückgerollt werden, nie ein älteres Mod-Update
+	modLabel := ""
+	if label, n, err := o.modmgr.ApplyStaged("server"); err != nil && !errors.Is(err, mods.ErrNothingStaged) {
+		// Teil-Tausch: was schon getauscht ist, muss zurück — sonst startet
+		// der alte Server mit einem Mix aus alten und neuen Mods
+		cause := fmt.Errorf("mods einspielen: %w", err)
+		if label != "" && o.ModRollback != nil {
+			if _, rbErr := o.ModRollback("server", label); rbErr != nil {
+				cause = fmt.Errorf("%w; Zurückrollen der teilweise getauschten Mods ebenfalls fehlgeschlagen: %v", cause, rbErr)
+			}
+		}
+		return restartOld(cause)
 	} else if err == nil {
-		o.log.Info("server-mods für zielversion eingespielt", "count", n)
+		modLabel = label
+		o.log.Info("server-mods für zielversion eingespielt", "count", n, "backup", label)
 	}
 
 	// 5. Host-Helfer: MC_VERSION setzen + Container neu erstellen
 	o.setStatus("erstelle Server mit " + version + " neu (Host-Helfer)")
+	signalled := time.Now()
 	if err := o.signal.RequestUpgrade(version); err != nil {
 		return restartOld(err)
 	}
@@ -295,8 +319,17 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 	deadline := time.Now().Add(o.OnlineTimeout)
 	baseRestarts := -1 // Startwert erst beim ersten erfolgreichen Inspect
 	for time.Now().Before(deadline) {
-		if st := o.mcStatus(); st.Online && st.Version == version {
+		if st := o.mcStatus(); freshOnline(st, version, signalled) {
 			return o.finish(ctx, version)
+		}
+		// Host konnte den Container nicht neu erstellen: nicht bis zum
+		// Timeout warten — die neue Version lief nie, die Welt ist sicher
+		// unangetastet, der Rückfall braucht keine Logprüfung
+		if o.HostFailure != nil {
+			if msg, failed := o.HostFailure(); failed {
+				return o.recover(ctx, prevVersion, modLabel,
+					fmt.Errorf("host-helfer konnte den Server nicht mit %s neu erstellen: %s", version, msg), true)
+			}
 		}
 		// Absturzschleife? Dann nicht bis zum Timeout warten — der Server
 		// startet reproduzierbar nicht (Learning 18).
@@ -305,8 +338,8 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 				if baseRestarts < 0 {
 					baseRestarts = det.RestartCount
 				} else if det.RestartCount-baseRestarts >= o.CrashLimit {
-					return o.recover(ctx, prevVersion, fmt.Errorf("server startet nicht (%d Fehlversuche in Folge): %s",
-						det.RestartCount-baseRestarts, o.explain(ctx)))
+					return o.recover(ctx, prevVersion, modLabel, fmt.Errorf("server startet nicht (%d Fehlversuche in Folge): %s",
+						det.RestartCount-baseRestarts, o.explain(ctx)), false)
 				}
 			}
 		}
@@ -316,8 +349,18 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 		case <-time.After(o.PollStep):
 		}
 	}
-	return o.recover(ctx, prevVersion, fmt.Errorf("server meldete sich nach %s nicht mit Version %s: %s",
-		o.OnlineTimeout, version, o.explain(ctx)))
+	return o.recover(ctx, prevVersion, modLabel, fmt.Errorf("server meldete sich nach %s nicht mit Version %s: %s",
+		o.OnlineTimeout, version, o.explain(ctx)), false)
+}
+
+// freshOnline: der Server meldet sich mit der erwarteten Version — und zwar
+// in einer Abfrage NACH since. Ältere Werte zählen nicht: ist der Container
+// weg, hängt die Abfrage in der Namensauflösung (bis ~1 min), und bis dahin
+// steht noch „online" von vor dem Stopp im Snapshot. In der Testumgebung
+// meldete der Rückfall deshalb Erfolg, bevor der Container überhaupt
+// neu erstellt war.
+func freshOnline(st collector.MCStatus, version string, since time.Time) bool {
+	return st.Online && st.Version == version && !st.Time.Before(since)
 }
 
 // explain liest das Container-Log und übersetzt bekannte Startfehler in
@@ -342,30 +385,96 @@ func (o *Orchestrator) finish(ctx context.Context, version string) error {
 	o.setStatus("aktualisiere Client-Mods")
 	clientNote := ""
 	clientUpdated := false
-	if _, err := o.modmgr.CheckUpdates(ctx, "client", version); err == nil {
-		if _, err := o.modmgr.Stage(ctx, "client", nil); err == nil {
-			if _, n, err := o.modmgr.ApplyStaged("client"); err == nil {
-				clientUpdated = true
-				clientNote = fmt.Sprintf(" %d Client-Mods wurden aktualisiert — Download-Link folgt.", n)
-			} else if !errors.Is(err, mods.ErrNothingStaged) {
-				clientNote = " (Client-Mods konnten nicht automatisch aktualisiert werden — siehe Mods-Tab.)"
-			}
+	// Jeder Fehler auf dem Client-Weg wird sichtbar — bisher endete ein
+	// gescheiterter Check/Download stumm: kein Paket, kein Hinweis.
+	var clientErr error
+	// Mods, für die der Check gerade einen Build zur Zielversion gefunden
+	// hat, sind keine Nachzügler mehr — auch wenn der (bis zu 24 h alte)
+	// Versions-Watch das noch behauptet
+	nowAvailable := map[string]bool{}
+	entries, err := o.modmgr.CheckUpdates(ctx, "client", version)
+	for _, e := range entries {
+		if e.UpdateVersion != "" && e.Name != "" {
+			nowAvailable[e.Name] = true
 		}
+	}
+	switch {
+	case err != nil:
+		clientErr = fmt.Errorf("client-mod-check: %w", err)
+	case len(entries) == 0:
+		// leeres Client-Paket: nichts zu tun — Stage würde sonst mit
+		// „erst Update-Check ausführen" einen Fehlalarm auslösen
+	default:
+		if _, err := o.modmgr.Stage(ctx, "client", nil); err != nil {
+			clientErr = fmt.Errorf("client-mods herunterladen: %w", err)
+		} else if _, n, err := o.modmgr.ApplyStaged("client"); err == nil {
+			clientUpdated = true
+			clientNote = fmt.Sprintf(" %d Client-Mods wurden aktualisiert.", n)
+		} else if !errors.Is(err, mods.ErrNothingStaged) {
+			clientErr = fmt.Errorf("client-mods einspielen: %w", err)
+		}
+	}
+	var fields []events.Field
+	if clientErr != nil {
+		o.log.Error("client-mods nach upgrade", "err", clientErr)
+		clientNote = " (Client-Mods konnten nicht automatisch aktualisiert werden — der Admin kümmert sich.)"
+		fields = append(fields, events.Field{Name: "Details", Value: clientErr.Error()})
 	}
 	// neues Paket automatisch verteilen, damit niemand mit alten Mods
 	// gegen den neuen Server anrennt
-	if clientUpdated && o.Publish != nil {
-		o.setStatus("veröffentliche Client-Paket")
-		if err := o.Publish(ctx); err != nil {
-			clientNote += " (Paket-Upload fehlgeschlagen — im Mods-Tab manuell veröffentlichen.)"
+	// Den Link nur ankündigen, wenn er wirklich gepostet wurde — ohne
+	// eingerichtete Veröffentlichung kam bisher „Download-Link folgt" und
+	// dann nichts (in der Testumgebung beobachtet).
+	if clientUpdated {
+		published := false
+		var pubErr error
+		if o.Publish != nil {
+			o.setStatus("veröffentliche Client-Paket")
+			published, pubErr = o.Publish(ctx)
 		}
+		switch {
+		case pubErr != nil:
+			clientNote += " (Paket-Upload fehlgeschlagen — im Mods-Tab manuell veröffentlichen.)"
+		case published:
+			clientNote += " Den Download-Link findet ihr in der Meldung „📦 Neues Mod-Paket“."
+		default:
+			clientNote += " Das neue Mod-Paket verteilt der Admin."
+		}
+	}
+	// Client-Mods ohne Build für die neue Version bleiben im Paket auf dem
+	// alten Stand — die Spieler müssen wissen, welche sie vorerst entfernen
+	if lagging := o.clientStragglers(version, nowAvailable); len(lagging) > 0 {
+		clientNote += fmt.Sprintf(" Noch nicht für %s verfügbar (vorerst aus dem mods-Ordner nehmen): %s.",
+			version, strings.Join(lagging, ", "))
 	}
 	o.bus.Publish(events.Event{
 		Type: events.TypeUpgradeOK, Severity: events.SevSuccess,
 		Title:   "🎉 Server läuft jetzt auf Minecraft " + version + "!",
 		Message: "Update fertig, es kann weitergehen." + clientNote,
+		Fields:  fields,
 	})
 	return nil
+}
+
+// clientStragglers listet die Client-Mods, für die der Versions-Watch keine
+// passende Version zur Zielversion gefunden hat (sortiert).
+//
+// Nur ein Watch-Ergebnis für genau diese Zielversion zählt: läuft der Watch
+// zwischendurch erneut, ist die Liste leer bzw. bezieht sich auf etwas
+// anderes.
+func (o *Orchestrator) clientStragglers(version string, nowAvailable map[string]bool) []string {
+	last := o.watch.Last()
+	if last == nil || last.LatestVersion != version {
+		return nil
+	}
+	var out []string
+	for name, profile := range last.Stragglers {
+		if profile == "client" && !nowAvailable[name] {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (o *Orchestrator) resolve() (id string, running bool) {

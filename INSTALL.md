@@ -118,7 +118,7 @@ Client-Mods → neues Mod-Paket für die Spieler (wenn Dropbox eingerichtet).
 Einstellungen-Tab → „MSM-Version" → „Auf vX.Y.Z aktualisieren", sobald ein
 neuer Release-Tag existiert. Das Dashboard baut sich selbst neu (~1–2 min
 weg), Minecraft läuft ungestört weiter. Manuell geht immer:
-`git pull && docker compose up -d --build msm` — **niemals `docker compose
+`git pull && docker compose up -d --no-deps --build msm` — **niemals `docker compose
 down`, das stoppt auch den Minecraft-Server!**
 
 ## Client-Mods einspielen/aktualisieren

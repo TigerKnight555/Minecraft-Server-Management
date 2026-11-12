@@ -206,6 +206,12 @@ func main() {
 	}
 	cfg := settings.New(kvGet, kvSet)
 
+	// zuletzt gesehene MC-Version überlebt Neustarts — MC_VERSION in der
+	// MSM-Umgebung ist nach einem Ein-Klick-Update veraltet
+	coll.SetVersionStore(
+		func() string { return kvGet("mc.version") },
+		func(v string) { kvSet("mc.version", v) })
+
 	notifier := notify.NewDiscord(cfg.DiscordHooks, log)
 	{
 		ch, _ := bus.Subscribe(64)
@@ -309,12 +315,32 @@ func main() {
 	if kvGet != nil {
 		watcher.SetAnnounceStore(kvGet, kvSet)
 	}
-	go watcher.Run(ctx, func() string {
-		if v := coll.MCVersion(); v != "" {
-			return v
+	go func() {
+		// Erster Lauf direkt nach dem (Host-)Start: kurz auf die LIVE-Version
+		// warten. Die gespeicherte Version stimmt nach einem bewussten
+		// Rückschritt (Backup-Restore auf ältere Version) nicht — der Watch
+		// hielte die Welt dann 24 h lang für neuer, als sie ist.
+		wait := time.NewTimer(5 * time.Minute)
+		defer wait.Stop()
+		tick := time.NewTicker(5 * time.Second)
+		defer tick.Stop()
+	waitLive:
+		for !mcState().Online {
+			select {
+			case <-ctx.Done():
+				return
+			case <-wait.C:
+				break waitLive
+			case <-tick.C:
+			}
 		}
-		return os.Getenv("MC_VERSION")
-	})
+		watcher.Run(ctx, func() string {
+			if v := coll.MCVersion(); v != "" {
+				return v
+			}
+			return os.Getenv("MC_VERSION")
+		})
+	}()
 
 	// MSM-Selbst-Update (Entscheidung #15): Checker fragt GitHub nach dem
 	// neuesten Release-Tag; der Klick geht als Signaldatei an den Host-Helfer
@@ -333,8 +359,11 @@ func main() {
 	var upgrader *upgrade.Orchestrator
 	if bd, ok := docker.(backup.Docker); ok {
 		bkRunner := backup.New(bd, coll, envOr("MSM_BACKUP_CONTAINER", "mc-backup"), log)
+		upgradeSignal := hostctl.NewSignaler(signalDir)
 		upgrader = upgrade.New(rcon, controller, coll, mcState, bkRunner, modmgr,
-			watcher, hostctl.NewSignaler(signalDir), bus, mcName, log)
+			watcher, upgradeSignal, bus, mcName, log)
+		// Rückmeldung des Host-Helfers: gescheiterter Container-Neubau
+		upgrader.HostFailure = upgradeSignal.UpgradeFailure
 		// Java-Guard: Zielversion verlangt Java N, Image liefert Java M —
 		// passt es nicht, bricht die Kette ab, statt in eine Neustart-
 		// Schleife zu laufen (Learning 15).
@@ -355,7 +384,7 @@ func main() {
 		}
 		// Rückfall auf die alte Version, wenn der Sprung scheitert und die
 		// Welt nachweislich unangetastet ist (Learning 19)
-		upgrader.ModRollback = modmgr.Rollback
+		upgrader.ModRollback = modmgr.RollbackLabel
 	}
 
 	// Down-Wächter erst jetzt: er muss den Upgrade-Zustand kennen, sonst
@@ -382,11 +411,11 @@ func main() {
 		if upgrader != nil && clientDirs != nil {
 			// nach dem Ein-Klick-MC-Update das frische Client-Paket
 			// automatisch verteilen — nur wenn Dropbox konfiguriert ist
-			upgrader.Publish = func(ctx context.Context) error {
+			upgrader.Publish = func(ctx context.Context) (bool, error) {
 				if !dbx.Ready() {
-					return nil // Feature aus — kein Fehler, kein Hinweis nötig
+					return false, nil // Feature aus — kein Fehler
 				}
-				return dropbox.Publish(ctx, dbx, clientDirs, bus, log)
+				return true, dropbox.Publish(ctx, dbx, clientDirs, bus, log)
 			}
 		}
 	}

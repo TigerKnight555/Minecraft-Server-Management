@@ -26,8 +26,12 @@ type fakes struct {
 	steps    []string
 	backupOK bool
 	applyErr error
-	version  atomic.Value // string: was der "Server" nach dem Upgrade meldet
-	online   atomic.Bool
+	// clientCheckErr lässt den Client-Mod-Check nach dem Sprung scheitern
+	clientCheckErr error
+	emptyClient    bool         // Client-Paket ohne Dateien
+	version        atomic.Value // string: was der "Server" nach dem Upgrade meldet
+	online         atomic.Bool
+	staleStatus    atomic.Bool // mcStatus liefert einen veralteten Snapshot
 }
 
 func (f *fakes) rec(s string) {
@@ -76,6 +80,15 @@ func (f *fakes) Run(context.Context) (string, error) {
 // ModManager
 func (f *fakes) CheckUpdates(_ context.Context, profile, v string) ([]mods.Entry, error) {
 	f.rec("check:" + profile + "@" + v)
+	if profile == "client" {
+		if f.clientCheckErr != nil {
+			return nil, f.clientCheckErr
+		}
+		if f.emptyClient {
+			return nil, nil
+		}
+		return []mods.Entry{{Profile: "client", Filename: "sodium.jar"}}, nil
+	}
 	return nil, nil
 }
 func (f *fakes) Stage(_ context.Context, profile string, _ []string) (int, error) {
@@ -106,7 +119,11 @@ func (f *fakes) RequestUpgrade(version string) error {
 
 func (f *fakes) mcStatus() collector.MCStatus {
 	v, _ := f.version.Load().(string)
-	return collector.MCStatus{Online: f.online.Load(), Version: v}
+	at := time.Now()
+	if f.staleStatus.Load() {
+		at = at.Add(-time.Hour) // Snapshot von vor dem Stopp
+	}
+	return collector.MCStatus{Online: f.online.Load(), Version: v, Time: at}
 }
 
 func newOrch(f *fakes, bus *events.Bus) *Orchestrator {
@@ -220,4 +237,169 @@ func TestUpgradeGuards(t *testing.T) {
 		t.Errorf("doppelstart akzeptiert: %v", err)
 	}
 	waitDone(t, o)
+}
+
+// Scheitert der Client-Weg, darf das nicht mehr stumm bleiben: kein
+// Paket-Upload, aber ein sichtbarer Hinweis samt Details in der Meldung.
+func TestClientModFailureIsReported(t *testing.T) {
+	f := &fakes{backupOK: true, clientCheckErr: errors.New("modrinth 503")}
+	f.online.Store(true)
+	bus := events.New()
+	ch, cancel := bus.Subscribe(16)
+	defer cancel()
+	o := newOrch(f, bus)
+	published := false
+	o.Publish = func(context.Context) (bool, error) { published = true; return true, nil }
+
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+
+	if published {
+		t.Error("Paket veröffentlicht, obwohl die Client-Mods nicht aktualisiert wurden")
+	}
+	var ok *events.Event
+	for _, ev := range drain(ch) {
+		if ev.Type == events.TypeUpgradeOK {
+			ev := ev
+			ok = &ev
+		}
+	}
+	if ok == nil {
+		t.Fatal("keine Erfolgsmeldung — der Server-Sprung selbst hat geklappt")
+	}
+	if !strings.Contains(ok.Message, "Client-Mods konnten nicht") {
+		t.Errorf("kein Hinweis für die Spieler: %q", ok.Message)
+	}
+	if len(ok.Fields) == 0 || !strings.Contains(ok.Fields[0].Value, "modrinth 503") {
+		t.Errorf("Fehlerdetails fehlen: %+v", ok.Fields)
+	}
+}
+
+// Client-Nachzügler aus dem Versions-Watch werden in der Erfolgsmeldung
+// genannt — sonst starten Spieler mit inkompatiblen Mods.
+func TestClientStragglersAreNamed(t *testing.T) {
+	f := &fakes{backupOK: true}
+	f.online.Store(true)
+	bus := events.New()
+	ch, cancel := bus.Subscribe(16)
+	defer cancel()
+	st := readyFor("26.2", 0)
+	st.Stragglers = map[string]string{"Xaero's Minimap": "client", "Lithium": "server"}
+	o := New(f, f, f, f.mcStatus, f, f, fixedReadiness{st}, f, bus, "mc-fabric", testLogger())
+	o.WarnMinutes = 1
+	o.WarnStep = time.Millisecond
+	o.PollStep = time.Millisecond
+
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+
+	for _, ev := range drain(ch) {
+		if ev.Type != events.TypeUpgradeOK {
+			continue
+		}
+		if !strings.Contains(ev.Message, "Xaero's Minimap") {
+			t.Errorf("Client-Nachzügler nicht genannt: %q", ev.Message)
+		}
+		if strings.Contains(ev.Message, "Lithium") {
+			t.Errorf("Server-Mod als Client-Nachzügler genannt: %q", ev.Message)
+		}
+		return
+	}
+	t.Fatal("keine Erfolgsmeldung")
+}
+
+// Ein leeres Client-Paket ist kein Fehler — kein Stage, kein Fehlalarm.
+func TestEmptyClientPackIsNoError(t *testing.T) {
+	f := &fakes{backupOK: true, emptyClient: true}
+	f.online.Store(true)
+	bus := events.New()
+	ch, cancel := bus.Subscribe(16)
+	defer cancel()
+	o := newOrch(f, bus)
+
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+
+	for _, s := range f.list() {
+		if s == "stage:client" {
+			t.Error("Stage für leeres Client-Paket aufgerufen")
+		}
+	}
+	for _, ev := range drain(ch) {
+		if ev.Type == events.TypeUpgradeOK && (strings.Contains(ev.Message, "konnten nicht") || len(ev.Fields) > 0) {
+			t.Errorf("Fehlalarm bei leerem Client-Paket: %q %+v", ev.Message, ev.Fields)
+		}
+	}
+}
+
+// Nachzügler aus einem Watch-Lauf für eine andere Version werden ignoriert.
+func TestStaleStragglersIgnored(t *testing.T) {
+	f := &fakes{backupOK: true}
+	st := readyFor("26.2", 0)
+	st.Stragglers = map[string]string{"Xaero's Minimap": "client"}
+	o := New(f, f, f, f.mcStatus, f, f, fixedReadiness{st}, f, events.New(), "mc-fabric", testLogger())
+	if got := o.clientStragglers("26.3", nil); len(got) != 0 {
+		t.Errorf("Nachzügler einer anderen Zielversion übernommen: %v", got)
+	}
+	if got := o.clientStragglers("26.2", nil); len(got) != 1 {
+		t.Errorf("Nachzügler der Zielversion fehlen: %v", got)
+	}
+}
+
+// Hat der Client-Check gerade einen Build zur Zielversion gefunden, ist der
+// Mod kein Nachzügler mehr — auch wenn der ältere Watch-Lauf das behauptet.
+func TestFreshlyUpdatedModIsNoStraggler(t *testing.T) {
+	f := &fakes{backupOK: true}
+	st := readyFor("26.2", 0)
+	st.Stragglers = map[string]string{"Xaero's Minimap": "client", "Iris": "client"}
+	o := New(f, f, f, f.mcStatus, f, f, fixedReadiness{st}, f, events.New(), "mc-fabric", testLogger())
+	got := o.clientStragglers("26.2", map[string]bool{"Iris": true})
+	if fmt.Sprint(got) != "[Xaero's Minimap]" {
+		t.Errorf("Nachzügler = %v, want nur Xaero's Minimap", got)
+	}
+}
+
+// Der Download-Link wird nur angekündigt, wenn das Paket wirklich
+// veröffentlicht wurde.
+func TestDownloadLinkOnlyAnnouncedWhenPublished(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		publish   func(context.Context) (bool, error)
+		want, not string
+	}{
+		{"veröffentlicht", func(context.Context) (bool, error) { return true, nil }, "Download-Link", "verteilt der Admin"},
+		{"nicht eingerichtet", func(context.Context) (bool, error) { return false, nil }, "verteilt der Admin", "Download-Link"},
+		{"ohne Publish", nil, "verteilt der Admin", "Download-Link"},
+		{"Upload-Fehler", func(context.Context) (bool, error) { return true, errors.New("dropbox weg") }, "Paket-Upload fehlgeschlagen", "Download-Link findet"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakes{backupOK: true}
+			f.online.Store(true)
+			bus := events.New()
+			ch, cancel := bus.Subscribe(16)
+			defer cancel()
+			o := newOrch(f, bus)
+			o.Publish = tc.publish
+			if err := o.Start("26.2"); err != nil {
+				t.Fatal(err)
+			}
+			waitDone(t, o)
+			for _, ev := range drain(ch) {
+				if ev.Type != events.TypeUpgradeOK {
+					continue
+				}
+				if !strings.Contains(ev.Message, tc.want) || strings.Contains(ev.Message, tc.not) {
+					t.Errorf("Meldung = %q (want %q, nicht %q)", ev.Message, tc.want, tc.not)
+				}
+				return
+			}
+			t.Fatal("keine Erfolgsmeldung")
+		})
+	}
 }

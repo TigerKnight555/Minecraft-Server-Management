@@ -1,6 +1,6 @@
 #!/bin/sh
 # MSM Host-Watcher: aktualisiert MSM selbst auf einen Release-Tag.
-# Fähigkeiten: git fetch/checkout im Repo + docker compose up --build msm.
+# Fähigkeiten: git fetch/checkout im Repo + docker compose up --no-deps --build msm.
 # Schlägt der Build fehl, läuft der alte Container unverändert weiter.
 SIGNAL_FILE="${MSM_SIGNAL_FILE:?nicht gesetzt — kommt aus dem systemd-Unit (deploy/host-watcher/install.sh)}"
 REPO_DIR="${MSM_REPO_DIR:?nicht gesetzt — kommt aus dem systemd-Unit (deploy/host-watcher/install.sh)}"
@@ -35,5 +35,8 @@ fi
 runuser -u "$OWNER" -- git checkout -f "$TAG" >>/var/log/msm-selfupdate.log 2>&1
 logger -t msm-host-watcher "MSM-Selbst-Update: Stand $TAG ausgecheckt, baue neu"
 
-docker compose up -d --build msm >>/var/log/msm-selfupdate.log 2>&1
+# --no-deps: msm hängt von mc-fabric ab — ohne den Schalter darf Compose
+# mc-fabric mit neu erstellen (Server-Neustart ohne Vorwarnung, ggf. mit
+# einer abweichenden MC_VERSION aus der .env = ungewolltes Welt-Upgrade)
+docker compose up -d --no-deps --build msm >>/var/log/msm-selfupdate.log 2>&1
 logger -t msm-host-watcher "MSM-Selbst-Update auf $TAG abgeschlossen (exit $?)"
