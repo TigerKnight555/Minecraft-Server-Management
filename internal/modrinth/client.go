@@ -11,7 +11,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strconv"
 	"strings"
@@ -46,26 +48,50 @@ func NewWithBase(base string) *Client {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-c.throttle:
-	}
 	var rdr io.Reader
+	ctype := ""
 	if body != nil {
 		buf, err := json.Marshal(body)
 		if err != nil {
 			return err
 		}
 		rdr = bytes.NewReader(buf)
+		ctype = "application/json"
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, rdr)
+	return c.send(ctx, method, path, "", ctype, rdr, out)
+}
+
+// APIError is a non-2xx answer from Modrinth — Aufrufer prüfen den Status
+// (401 = Token ungültig/ohne Recht, 400 = z. B. Versionsnummer vergeben).
+type APIError struct {
+	Path   string
+	Status int
+	Body   string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("modrinth %s: %d %s: %s", e.Path, e.Status, http.StatusText(e.Status), e.Body)
+}
+
+// send performs one throttled request. token (optional) geht unverändert in
+// den Authorization-Header — Modrinth erwartet den Personal Access Token
+// ohne „Bearer"-Präfix.
+func (c *Client) send(ctx context.Context, method, path, token, ctype string, body io.Reader, out any) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.throttle:
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("User-Agent", userAgent)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if ctype != "" {
+		req.Header.Set("Content-Type", ctype)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", token)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -75,9 +101,12 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return fmt.Errorf("modrinth rate limit erreicht (429)")
 	}
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("modrinth %s: %s: %s", path, resp.Status, strings.TrimSpace(string(b)))
+		return &APIError{Path: path, Status: resp.StatusCode, Body: strings.TrimSpace(string(b))}
+	}
+	if out == nil {
+		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
@@ -102,6 +131,7 @@ type File struct {
 	Size     int64  `json:"size"`
 	Hashes   struct {
 		SHA512 string `json:"sha512"`
+		SHA1   string `json:"sha1"`
 	} `json:"hashes"`
 }
 
@@ -124,6 +154,7 @@ type Project struct {
 	ClientSide  string `json:"client_side"`
 	ServerSide  string `json:"server_side"`
 	ProjectType string `json:"project_type"`
+	Status      string `json:"status"`
 }
 
 // SearchHit is one result of /search.
@@ -275,4 +306,81 @@ func (c *Client) Download(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("download %s: %s", url, resp.Status)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, 256<<20)) // 256 MB Schutzgrenze
+}
+
+// User is the token owner (GET /user).
+type User struct {
+	ID       string `json:"id"`
+	Username string `json:"username"`
+}
+
+// NewVersion is the `data` part of POST /version.
+type NewVersion struct {
+	Name          string       `json:"name"`
+	VersionNumber string       `json:"version_number"`
+	Changelog     string       `json:"changelog"`
+	Dependencies  []Dependency `json:"dependencies"`
+	GameVersions  []string     `json:"game_versions"`
+	VersionType   string       `json:"version_type"`
+	Loaders       []string     `json:"loaders"`
+	Featured      bool         `json:"featured"`
+	ProjectID     string       `json:"project_id"`
+	FileParts     []string     `json:"file_parts"`
+	PrimaryFile   string       `json:"primary_file"`
+}
+
+// AuthProject fetches a project with the owner's token — so sind auch noch
+// nicht freigegebene Projekte (Entwurf) sichtbar.
+func (c *Client) AuthProject(ctx context.Context, token, project string) (Project, error) {
+	var p Project
+	err := c.send(ctx, http.MethodGet, "/project/"+url.PathEscape(project), token, "", nil, &p)
+	return p, err
+}
+
+// AuthProjectVersions lists all versions of a project (mit Token, auch Entwürfe).
+func (c *Client) AuthProjectVersions(ctx context.Context, token, project string) ([]Version, error) {
+	var out []Version
+	err := c.send(ctx, http.MethodGet, "/project/"+url.PathEscape(project)+"/version", token, "", nil, &out)
+	return out, err
+}
+
+// CurrentUser returns the token owner — Token-Prüfung für „Verbindung prüfen".
+func (c *Client) CurrentUser(ctx context.Context, token string) (User, error) {
+	var u User
+	err := c.send(ctx, http.MethodGet, "/user", token, "", nil, &u)
+	return u, err
+}
+
+// CreateVersion uploads one .mrpack as a new project version (POST /version).
+func (c *Client) CreateVersion(ctx context.Context, token string, v NewVersion, fileName string, data []byte) (Version, error) {
+	if v.Dependencies == nil {
+		v.Dependencies = []Dependency{} // Modrinth will ein Array, kein null
+	}
+	v.FileParts = []string{"file"}
+	v.PrimaryFile = "file"
+	meta, err := json.Marshal(v)
+	if err != nil {
+		return Version{}, err
+	}
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	if err := mw.WriteField("data", string(meta)); err != nil {
+		return Version{}, err
+	}
+	h := textproto.MIMEHeader{}
+	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename=%q`, fileName))
+	h.Set("Content-Type", "application/x-modrinth-modpack+zip")
+	part, err := mw.CreatePart(h)
+	if err != nil {
+		return Version{}, err
+	}
+	if _, err := part.Write(data); err != nil {
+		return Version{}, err
+	}
+	if err := mw.Close(); err != nil {
+		return Version{}, err
+	}
+	var out Version
+	err = c.send(ctx, http.MethodPost, "/version", token, mw.FormDataContentType(), &buf, &out)
+	return out, err
 }
