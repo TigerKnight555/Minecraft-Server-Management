@@ -63,6 +63,7 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mcstatus"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mock"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modnews"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modpack"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modrinth"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/netcheck"
@@ -474,10 +475,20 @@ func main() {
 			clientDirs = p.Dirs
 		}
 	}
-	// Versandwege für das Client-Paket (packpub): heute Dropbox; jeder Kanal
-	// merkt sich seinen zuletzt verschickten Stand selbst
-	packs := packpub.New(func() string { return packFingerprint(clientDirs) }, kvGet, kvSet, bus, log,
-		dropbox.Channel{C: dbx, Dirs: clientDirs})
+	// Modrinth-Modpack (zweiter Versandweg): nur mit echtem Modrinth-Client,
+	// im Mock-Modus bleibt der Kanal aus
+	var mpChannel *modpack.Channel
+	if mrc, ok := modAPI.(*modrinth.Client); ok && clientDirs != nil {
+		mpChannel = modpack.New(mrc, cfg.ModrinthConfig, clientDirs, mcDataDir,
+			func() string { return mcState().Version }, kvGet, kvSet, log)
+	}
+	channels := []packpub.Channel{dropbox.Channel{C: dbx, Dirs: clientDirs}}
+	if mpChannel != nil {
+		channels = append(channels, mpChannel)
+	}
+	// Versandwege für das Client-Paket (packpub): Dropbox und Modrinth; jeder
+	// Kanal merkt sich seinen zuletzt verschickten Stand selbst
+	packs := packpub.New(func() string { return packFingerprint(clientDirs) }, kvGet, kvSet, bus, log, channels...)
 	// publishPack ist der einzige Weg zum Paket-Versand (Button, MC-Update,
 	// Mod-Neuigkeiten). „Paket veraltet" wird nur gelöscht, wenn ALLE
 	// Kanäle erfolgreich waren — ein gescheiterter wird beim nächsten
@@ -549,6 +560,7 @@ func main() {
 				return maint != nil && maint.Active()
 			},
 			Packs:             packs,
+			Modpack:           mpChannel,
 			PublishPack:       publishPack,
 			Upgrader:          upgrader,
 			Settings:          cfg,
