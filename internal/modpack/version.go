@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Entry is one published file (Projekt-ID, Dateiname, Modrinth-Versionsnummer).
@@ -157,18 +158,31 @@ var reServerJar = regexp.MustCompile(`^fabric-server-mc\.(.+)-loader\.(.+)-launc
 
 // DetectLoader reads the Fabric loader version from the server launcher JAR
 // in the MC data dir (z. B. fabric-server-mc.26.3-loader.0.20.1-launcher.1.1.2.jar)
-// — genau der Loader, mit dem der Server läuft. "" = nicht gefunden.
+// — genau der Loader, mit dem der Server läuft. Liegen mehrere Launcher-JARs
+// für dieselbe MC-Version (alte Loader-Version nach einem Update), gewinnt
+// das mit der neuesten Änderungszeit: das hat der Server zuletzt geladen.
+// "" = nicht gefunden.
 func DetectLoader(dataDir, mc string) string {
 	entries, err := os.ReadDir(dataDir)
 	if err != nil {
 		return ""
 	}
+	loader := ""
+	var newest time.Time
 	for _, e := range entries {
-		if m := reServerJar.FindStringSubmatch(e.Name()); m != nil && m[1] == mc {
-			return m[2]
+		m := reServerJar.FindStringSubmatch(e.Name())
+		if m == nil || m[1] != mc || e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if loader == "" || info.ModTime().After(newest) {
+			loader, newest = m[2], info.ModTime()
 		}
 	}
-	return ""
+	return loader
 }
 
 // Changelog describes cur against prev (Markdown für die Modrinth-Seite).

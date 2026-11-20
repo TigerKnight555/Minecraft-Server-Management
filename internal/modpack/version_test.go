@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func st(version, mc, loader string, files ...Entry) State {
@@ -70,6 +71,33 @@ func TestDetectLoader(t *testing.T) {
 	}
 	if l := DetectLoader(filepath.Join(dir, "fehlt"), "26.3"); l != "" {
 		t.Errorf("fehlender Ordner = %q", l)
+	}
+}
+
+func TestDetectLoaderPrefersNewestJar(t *testing.T) {
+	dir := t.TempDir()
+	older := filepath.Join(dir, "fabric-server-mc.26.3-loader.0.21.0-launcher.1.1.2.jar")
+	newer := filepath.Join(dir, "fabric-server-mc.26.3-loader.0.9.0-launcher.1.1.2.jar")
+	for _, p := range []string{older, newer} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now()
+	if err := os.Chtimes(older, now.Add(-time.Hour), now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(newer, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if l := DetectLoader(dir, "26.3"); l != "0.9.0" {
+		t.Errorf("loader = %q, want 0.9.0 (neueste JAR)", l)
+	}
+	if err := os.Chtimes(older, now.Add(time.Hour), now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if l := DetectLoader(dir, "26.3"); l != "0.21.0" {
+		t.Errorf("loader = %q, want 0.21.0 (neueste JAR)", l)
 	}
 }
 
