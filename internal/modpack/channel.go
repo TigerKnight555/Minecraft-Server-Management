@@ -113,8 +113,8 @@ func explain(err error, project string) error {
 	var apiErr *modrinth.APIError
 	if errors.As(err, &apiErr) {
 		switch apiErr.Status {
-		case http.StatusUnauthorized:
-			return fmt.Errorf("Modrinth lehnt den Token ab (401) — Token gültig und mit den Rechten „Create versions“ und „Read projects“? (%w)", err)
+		case http.StatusUnauthorized, http.StatusForbidden:
+			return fmt.Errorf("Modrinth lehnt den Token ab (%d) — Token gültig und mit den Rechten „Create versions“ und „Read projects“? (%w)", apiErr.Status, err)
 		case http.StatusNotFound:
 			return fmt.Errorf("Modrinth-Projekt „%s“ nicht gefunden — Slug/ID prüfen (%w)", project, err)
 		}
@@ -309,7 +309,12 @@ func (c *Channel) Publish(ctx context.Context) (packpub.Outcome, error) {
 		// Versionsnummer inzwischen vergeben (z. B. von Hand hochgeladen):
 		// höchste neu lesen und einmal weiterzählen
 		if h := Highest([]string{highest(), cur.Version}); h != "" {
-			cur.Version = Next(State{Version: h, MC: mc, Loader: loader, Files: entries}, cur, cfg.StartVersion, "")
+			base := prev
+			if prev.Version == "" {
+				// Erstveröffentlichung: keine Sprungart vorhanden, also Patch-Schritt auf h
+				base = State{Version: h, MC: mc, Loader: loader, Files: entries}
+			}
+			cur.Version = Next(base, cur, cfg.StartVersion, h)
 			err = upload(cur.Version)
 		}
 	}

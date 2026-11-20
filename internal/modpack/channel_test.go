@@ -199,6 +199,29 @@ func TestDuplicateVersionRetriesOnce(t *testing.T) {
 	}
 }
 
+func TestDuplicateVersionKeepsMinorBump(t *testing.T) {
+	e := newEnv(t, "approved")
+	e.addMod("sodium.jar", "P-sod", "1", true)
+	if _, err := e.ch.Publish(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	e.addMod("jade.jar", "P-jade", "1", true)
+	e.api.failNext = 1 // 1.1.0 gilt plötzlich als vergeben
+	if _, err := e.ch.Publish(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.api.created) != 2 || e.api.created[1].VersionNumber != "1.2.0" {
+		t.Errorf("created = %+v, want zweiter Upload mit 1.2.0 (Minor bleibt Minor)", e.api.created)
+	}
+}
+
+func TestExplainForbidden(t *testing.T) {
+	err := explain(&modrinth.APIError{Path: "/version", Status: 403}, "p")
+	if err == nil || !strings.Contains(err.Error(), "Token") {
+		t.Errorf("err = %v, want Hinweis auf Token-Rechte", err)
+	}
+}
+
 func TestHigherVersionOnModrinthWins(t *testing.T) {
 	e := newEnv(t, "approved")
 	e.api.versions = []modrinth.Version{{VersionNumber: "2.3.0"}}
