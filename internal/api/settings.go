@@ -53,39 +53,47 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		v := strings.TrimSpace(*ptr)
 		return v, v != current[field]
 	}
+	// Phase 1: alle Werte prüfen und Schreibvorgänge sammeln — noch nichts
+	// speichern. Eine ungültige Eingabe lässt so nichts halb gespeichert zurück.
+	var writes []func()
 	if v, ok := changed(req.DiscordWebhook, "discordWebhook"); ok {
 		if v != "" && !validWebhook(v) {
 			httpError(w, http.StatusBadRequest, "Webhook-URL muss mit https://discord.com/api/webhooks/ beginnen")
 			return
 		}
-		s.settings.Set(settings.KeyDiscordWebhook, v)
-		s.audit(r.Context(), "settings.discord", "webhook geändert (Wert nicht protokolliert)")
+		writes = append(writes, func() {
+			s.settings.Set(settings.KeyDiscordWebhook, v)
+			s.audit(r.Context(), "settings.discord", "webhook geändert (Wert nicht protokolliert)")
+		})
 	}
 	if v, ok := changed(req.ModrinthStartVersion, "modrinthStartVersion"); ok {
 		if v != "" && !modpack.ValidVersion(v) {
 			httpError(w, http.StatusBadRequest, "Startversion muss die Form 1.0.0 haben")
 			return
 		}
-		s.settings.Set(settings.KeyModrinthStart, v)
-		s.audit(r.Context(), "settings.modrinth", "startversion="+v)
+		writes = append(writes, func() {
+			s.settings.Set(settings.KeyModrinthStart, v)
+			s.audit(r.Context(), "settings.modrinth", "startversion="+v)
+		})
 	}
-	set := func(ptr *string, field, key, name string) {
+	collect := func(ptr *string, field, key, category, name string) {
 		if v, ok := changed(ptr, field); ok {
-			s.settings.Set(key, v)
-			s.audit(r.Context(), "settings.dropbox", name+" geändert (Wert nicht protokolliert)")
+			writes = append(writes, func() {
+				s.settings.Set(key, v)
+				s.audit(r.Context(), category, name+" geändert (Wert nicht protokolliert)")
+			})
 		}
 	}
-	set(req.DropboxKey, "dropboxKey", settings.KeyDropboxKey, "app-key")
-	set(req.DropboxSecret, "dropboxSecret", settings.KeyDropboxSecret, "app-secret")
-	set(req.DropboxToken, "dropboxToken", settings.KeyDropboxToken, "refresh-token")
-	setMR := func(ptr *string, field, key, name string) {
-		if v, ok := changed(ptr, field); ok {
-			s.settings.Set(key, v)
-			s.audit(r.Context(), "settings.modrinth", name+" geändert (Wert nicht protokolliert)")
-		}
+	collect(req.DropboxKey, "dropboxKey", settings.KeyDropboxKey, "settings.dropbox", "app-key")
+	collect(req.DropboxSecret, "dropboxSecret", settings.KeyDropboxSecret, "settings.dropbox", "app-secret")
+	collect(req.DropboxToken, "dropboxToken", settings.KeyDropboxToken, "settings.dropbox", "refresh-token")
+	collect(req.ModrinthProject, "modrinthProject", settings.KeyModrinthProject, "settings.modrinth", "projekt")
+	collect(req.ModrinthToken, "modrinthToken", settings.KeyModrinthToken, "settings.modrinth", "token")
+
+	// Phase 2: erst nach vollständiger Prüfung persistieren.
+	for _, write := range writes {
+		write()
 	}
-	setMR(req.ModrinthProject, "modrinthProject", settings.KeyModrinthProject, "projekt")
-	setMR(req.ModrinthToken, "modrinthToken", settings.KeyModrinthToken, "token")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"view":   s.settings.View(),
 		"values": s.settings.Values(),
