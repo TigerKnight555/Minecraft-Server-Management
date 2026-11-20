@@ -3,16 +3,30 @@
   import AddMod from './AddMod.svelte'
   import {
     listMods, checkMods, stageMods, applyMods, rollbackMods,
-    versionWatch, versionWatchCheck, publishClientPack,
+    versionWatch, versionWatchCheck, publishClientPack, modpackStatus,
     removeInfo, removeMod, discardMod,
   } from './stream.js'
 
-  async function doPublish() {
-    if (!confirm('Client-Paket als ZIP zu Dropbox hochladen und den Link in Discord posten?\nVorher einmal Mod-Lizenzen geprüft?')) return
+  let modpack = $state(null)
+  async function loadModpack() {
     try {
-      const res = await publishClientPack()
+      modpack = await modpackStatus()
+    } catch {
+      modpack = null // Feature aus (Route fehlt) oder nicht erreichbar
+    }
+  }
+  onMount(loadModpack)
+
+  async function doPublish(channel) {
+    const text = channel === 'modrinth'
+      ? 'Client-Paket jetzt als neue Version des Modrinth-Modpacks hochladen?'
+      : 'Client-Paket als ZIP zu Dropbox hochladen und den Link in Discord posten?\nVorher einmal Mod-Lizenzen geprüft?'
+    if (!confirm(text)) return
+    try {
+      const res = await publishClientPack(channel)
       info = res.message
       error = ''
+      if (channel === 'modrinth') setTimeout(loadModpack, 15000)
     } catch (err) {
       error = err.message
     }
@@ -165,9 +179,25 @@
     </button>
     <button class="btn danger" onclick={doRollback} disabled={busy}>Rollback</button>
     {#if profile === 'client'}
-      <button class="btn" onclick={doPublish} disabled={busy}>Client-Paket veröffentlichen (Dropbox)</button>
+      <button class="btn" onclick={() => doPublish('dropbox')} disabled={busy}>Client-Paket veröffentlichen (Dropbox)</button>
+      {#if modpack?.ready}
+        <button class="btn" onclick={() => doPublish('modrinth')} disabled={busy}>Modpack veröffentlichen (Modrinth)</button>
+      {/if}
     {/if}
   </div>
+
+  {#if profile === 'client' && modpack?.ready}
+    <div class="dim-sm">
+      Modrinth-Modpack: {modpack.version ? `zuletzt ${modpack.version} (MC ${modpack.mc} · Fabric ${modpack.loader})` : 'noch nicht veröffentlicht'}
+      {#if modpack.projectUrl} · <a href={modpack.projectUrl} target="_blank" rel="noreferrer">Projektseite</a>{/if}
+    </div>
+    {#if modpack.omitted?.length}
+      <div class="warn-msg">⚠️ Nicht im Modpack (nicht auf Modrinth): {modpack.omitted.join(', ')}</div>
+    {/if}
+    {#if modpack.lastError}
+      <div class="err-msg">Letzter Modpack-Versand fehlgeschlagen: {modpack.lastError}</div>
+    {/if}
+  {/if}
 
   {#if entries.length === 0}
     <div class="empty">Keine Daten — „Updates prüfen" ausführen.</div>
@@ -249,6 +279,7 @@
   .badge.remove { background: #3a1c1c; color: var(--err); }
   .row-actions { white-space: nowrap; }
   .row-actions .btn { margin-right: 0.3rem; }
+  .warn-msg { color: var(--warn); font-size: 0.85rem; margin: 0.3rem 0; }
   .err-msg { color: var(--err); font-size: 0.85rem; margin-bottom: 0.6rem; }
   .info-msg { color: var(--accent); font-size: 0.85rem; margin-bottom: 0.6rem; }
 </style>

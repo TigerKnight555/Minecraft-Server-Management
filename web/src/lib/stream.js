@@ -157,7 +157,10 @@ export const endMaintenance = (id) => apiFetch(`/api/maintenance/${id}/end`, { m
 export const deleteMaintenance = (id) => apiFetch(`/api/maintenance/${id}`, { method: 'DELETE' })
 
 // --- Client-Pack-Veröffentlichung (Phase 4.8) ---
-export const publishClientPack = () => apiFetch('/api/mods/publish', { method: 'POST' })
+export const publishClientPack = (channel) =>
+  apiFetch(`/api/mods/publish${channel ? `?channel=${encodeURIComponent(channel)}` : ''}`, { method: 'POST' })
+export const modpackStatus = () => apiFetch('/api/modpack')
+export const testModrinth = () => apiFetch('/api/settings/modrinth/test', { method: 'POST' })
 
 // --- Mods hinzufügen/entfernen ---
 export const searchMods = (q) => apiFetch(`/api/mods/search?q=${encodeURIComponent(q)}`)

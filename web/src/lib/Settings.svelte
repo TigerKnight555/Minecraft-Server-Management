@@ -1,13 +1,13 @@
 <script>
   import { onMount } from 'svelte'
-  import { getSettings, saveSettings, testDiscord, selfUpdateStatus, selfUpdateApply } from './stream.js'
+  import { getSettings, saveSettings, testDiscord, testModrinth, selfUpdateStatus, selfUpdateApply } from './stream.js'
 
   let view = $state(null)
   let error = $state('')
   let info = $state('')
   // Felder zeigen immer die aktuell wirksamen Werte (Nutzer-Entscheidung:
   // konfigurierte Werte sind sichtbar). Leeren + Speichern = löschen.
-  let fields = $state({ discordWebhook: '', dropboxKey: '', dropboxSecret: '', dropboxToken: '' })
+  let fields = $state({ discordWebhook: '', dropboxKey: '', dropboxSecret: '', dropboxToken: '', modrinthProject: '', modrinthToken: '', modrinthStartVersion: '' })
 
   function apply(res) {
     view = res.view
@@ -34,6 +34,9 @@
         dropboxKey: fields.dropboxKey.trim(),
         dropboxSecret: fields.dropboxSecret.trim(),
         dropboxToken: fields.dropboxToken.trim(),
+        modrinthProject: fields.modrinthProject.trim(),
+        modrinthToken: fields.modrinthToken.trim(),
+        modrinthStartVersion: fields.modrinthStartVersion.trim(),
       }))
       info = 'Gespeichert — wirkt sofort, kein Neustart nötig.'
     } catch (err) {
@@ -45,6 +48,17 @@
     error = ''
     try {
       const res = await testDiscord()
+      info = res.message
+    } catch (err) {
+      error = err.message
+    }
+  }
+
+  async function doTestModrinth() {
+    error = ''
+    info = ''
+    try {
+      const res = await testModrinth()
       info = res.message
     } catch (err) {
       error = err.message
@@ -120,6 +134,20 @@ Das Dashboard ist während des Neubaus (~1-2 min) kurz nicht erreichbar. Der Min
         <input type="text" bind:value={fields.dropboxToken} /></label>
     </div>
 
+    <h3>Modrinth-Modpack (Updates in der Modrinth App)</h3>
+    <p class="dim">Status: <strong>{view.modrinthReady ? '✔ eingerichtet — mit „Verbindung prüfen" testen' : 'nicht eingerichtet — Anleitung unten'}</strong></p>
+    <div class="grid">
+      <label>Projekt (Slug oder ID) <span class="dim">({status(view.modrinthProject)})</span>
+        <input type="text" bind:value={fields.modrinthProject} placeholder="mein-server-pack" /></label>
+      <label>Personal Access Token <span class="dim">({status(view.modrinthToken)})</span>
+        <input type="text" bind:value={fields.modrinthToken} placeholder="mrp_…" /></label>
+      <label>Startversion <span class="dim">(Standard 1.0.0 — gilt nur für die erste Veröffentlichung)</span>
+        <input type="text" bind:value={fields.modrinthStartVersion} placeholder="1.0.0" /></label>
+    </div>
+    {#if view.modrinthReady}
+      <div class="row"><button class="btn" onclick={doTestModrinth}>Verbindung prüfen</button></div>
+    {/if}
+
     <button class="btn accent" onclick={save}>Speichern</button>
 
     <h3>MSM-Version (Selbst-Update)</h3>
@@ -158,6 +186,17 @@ Das Dashboard ist während des Neubaus (~1-2 min) kurz nicht erreichbar. Der Min
         <li><strong>Speichern</strong> → Status muss auf „✔ einsatzbereit" springen → Probelauf: Mods-Tab → Profil „Client-Paket" → „Client-Paket veröffentlichen"</li>
       </ol>
       <p class="dim">Der Refresh-Token läuft nicht ab; MSM holt sich damit selbstständig kurzlebige Zugriffstoken. Bei Fehler „invalid_grant": Code war abgelaufen/verbraucht — Schritt 5+6 wiederholen.</p>
+    </details>
+    <details class="howto">
+      <summary>📖 Anleitung: Modrinth-Modpack einrichten (einmalig, ~5 Minuten)</summary>
+      <ol>
+        <li><a href="https://modrinth.com" target="_blank" rel="noreferrer">modrinth.com</a> → anmelden → <strong>„Create a project"</strong> → Typ <strong>Modpack</strong> → Name, kurze Beschreibung, Lizenz und Icon eintragen. Den <strong>Slug</strong> (Teil der Adresse, z. B. <code>mein-server-pack</code>) oben als Projekt eintragen.</li>
+        <li>Profilbild → <strong>Settings → Personal access tokens</strong> → „Create a PAT" → Name z. B. <code>MSM</code>, Rechte <strong>Create versions</strong> und <strong>Read projects</strong> → Token (beginnt mit <code>mrp_</code>) oben eintragen. <em>Der Token wird nur einmal angezeigt.</em></li>
+        <li><strong>Speichern</strong> → <strong>„Verbindung prüfen"</strong> muss „✔ Verbunden …" melden.</li>
+        <li>Mods-Tab → Profil „Client-Paket" → <strong>„Modpack veröffentlichen (Modrinth)"</strong> → die erste Version wird hochgeladen.</li>
+        <li>Auf Modrinth beim Projekt <strong>„Submit for review"</strong> — erst nach der Freigabe durch Modrinth ist das Modpack öffentlich. Ab dann lädt MSM jede Änderung automatisch hoch, und die Spieler bekommen in der Modrinth App einen „Update"-Knopf.</li>
+      </ol>
+      <p class="dim">Spieler installieren das Modpack einmal über die Modrinth App (Modpack suchen → Installieren). Danach genügt bei jeder neuen Version ein Klick auf „Update"; Welten und Einstellungen bleiben erhalten.</p>
     </details>
   {:else}
     <div class="empty">Lade …</div>
