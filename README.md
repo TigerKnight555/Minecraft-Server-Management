@@ -56,7 +56,14 @@ Homeserver getestet.
   Wechsel selbst ist ein Klick und läuft automatisch ab, inklusive
   vorherigem Backup als Rollback-Punkt
 - **Client-Paket:** die Mods für die Spieler werden als ZIP zu Dropbox
-  hochgeladen, der Download-Link wird in den Discord-Channel gepostet
+  hochgeladen, der Download-Link wird in den Discord-Channel gepostet.
+  Zusätzlich kann das Client-Paket als Version eines eigenen
+  Modrinth-Modpacks veröffentlicht werden (Upload nach Neustarts und
+  Minecraft-Updates automatisch, sonst per Knopf im Mods-Tab); die Spieler
+  klicken dann in der Modrinth App nur noch auf „Update". Einrichtung
+  (Projekt anlegen, Token eintragen) laut Anleitung im Einstellungen-Tab;
+  die Versionsnummer folgt MAJOR = Minecraft-Version, MINOR = Loader oder
+  Inhalt, PATCH = Mod-Updates
 - **Discord-Benachrichtigungen:** verständlich formuliert; Erfolgsmeldungen
   nur, wenn Spieler betroffen waren, Fehler und Ausfälle immer
 - **Wartungsfenster:** geplante Auszeiten mit Ankündigung (1 h und 5 min
