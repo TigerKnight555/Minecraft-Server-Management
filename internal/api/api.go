@@ -16,9 +16,9 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/auth"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/backup"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
-	"github.com/TigerKnight555/Minecraft-Server-Management/internal/dropbox"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/packpub"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/selfupdate"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/settings"
@@ -39,11 +39,11 @@ type Server struct {
 	restore           *backup.Restore
 	mcDataDir         string      // read-only mount of the MC data dir ("" = feature off)
 	maintActive       func() bool // Wartungsfenster gerade aktiv?
-	dropbox           *dropbox.Client
+	packs             *packpub.Publisher
 	upgrader          *upgrade.Orchestrator
-	upgradeActive     func() bool                     // Ein-Klick-MC-Update läuft? (nil = nie)
-	publishPack       func(ctx context.Context) error // Client-Paket-Versand inkl. Zustands-Pflege
-	applyBusy         atomic.Bool                     // „Anwenden + Neustart" läuft
+	upgradeActive     func() bool                                                    // Ein-Klick-MC-Update läuft? (nil = nie)
+	publishPack       func(ctx context.Context, channels []string, force bool) error // Client-Paket-Versand inkl. Zustands-Pflege
+	applyBusy         atomic.Bool                                                    // „Anwenden + Neustart" läuft
 	settings          *settings.Store
 	discordTest       func(ctx context.Context, ev events.Event) error
 	selfupdate        *selfupdate.Checker
@@ -70,9 +70,9 @@ type Deps struct {
 	Restore           *backup.Restore
 	MCDataDir         string      // read-only MC data dir for the player list
 	MaintActive       func() bool // maintenance.Manager.Active
-	Dropbox           *dropbox.Client
+	Packs             *packpub.Publisher
 	Upgrader          *upgrade.Orchestrator
-	PublishPack       func(ctx context.Context) error // optional; nil = dropbox.Publish direkt
+	PublishPack       func(ctx context.Context, channels []string, force bool) error // Paket-Versand inkl. Zustands-Pflege
 	Settings          *settings.Store
 	DiscordTest       func(ctx context.Context, ev events.Event) error // Testnachricht synchron zustellen
 	SelfUpdate        *selfupdate.Checker
@@ -110,7 +110,7 @@ func New(d Deps) *Server {
 		restore:           d.Restore,
 		mcDataDir:         d.MCDataDir,
 		maintActive:       d.MaintActive,
-		dropbox:           d.Dropbox,
+		packs:             d.Packs,
 		upgrader:          d.Upgrader,
 		publishPack:       d.PublishPack,
 		settings:          d.Settings,
@@ -161,7 +161,7 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("POST /api/mods/remove", s.handleModsRemove)
 		mux.HandleFunc("POST /api/mods/discard", s.handleModsDiscard)
 		mux.HandleFunc("GET /api/mods/apply-info", s.handleModsApplyInfo)
-		if s.dropbox != nil {
+		if s.packs != nil && s.publishPack != nil {
 			mux.HandleFunc("POST /api/mods/publish", s.handlePublishClientPack)
 		}
 	}

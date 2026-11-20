@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -13,8 +14,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mock"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/packpub"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
 )
 
@@ -271,5 +274,41 @@ func TestAnnouncedApplyRefusedDuringMaintenance(t *testing.T) {
 	rec = do(srv, "POST", "/api/mods/apply", `{"profile":"server","restart":true}`)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Wartungsfenster aktiv") {
 		t.Errorf("apply = %d %s, want 409 Wartungsfenster", rec.Code, rec.Body)
+	}
+}
+
+type stubChannel struct{ ready bool }
+
+func (c stubChannel) Name() string  { return "dropbox" }
+func (c stubChannel) Label() string { return "Dropbox" }
+func (c stubChannel) Ready() bool   { return c.ready }
+func (c stubChannel) Publish(context.Context) (packpub.Outcome, error) {
+	return packpub.Outcome{}, nil
+}
+
+func TestPublishChannelValidation(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := mods.NewManager(nil, "fabric", nil)
+	packs := packpub.New(nil, func(string) string { return "" }, func(string, string) {}, events.New(), log, stubChannel{ready: true})
+	called := make(chan []string, 1)
+	srv := New(Deps{ModManager: mgr, Packs: packs, Log: log,
+		PublishPack: func(_ context.Context, ch []string, force bool) error { called <- ch; return nil }})
+
+	post := func(q string) int {
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/api/mods/publish"+q, nil))
+		return rec.Code
+	}
+	if c := post("?channel=ftp"); c != http.StatusBadRequest {
+		t.Errorf("unbekannter Kanal: %d", c)
+	}
+	if c := post("?channel=modrinth"); c != http.StatusConflict {
+		t.Errorf("nicht eingerichteter Kanal: %d", c)
+	}
+	if c := post("?channel=dropbox"); c != http.StatusAccepted {
+		t.Fatalf("dropbox: %d", c)
+	}
+	if ch := <-called; len(ch) != 1 || ch[0] != "dropbox" {
+		t.Errorf("channels = %v", ch)
 	}
 }

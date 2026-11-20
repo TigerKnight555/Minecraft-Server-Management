@@ -67,6 +67,7 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/netcheck"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/notify"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/packpub"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/selfupdate"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/settings"
@@ -473,14 +474,20 @@ func main() {
 			clientDirs = p.Dirs
 		}
 	}
+	// Versandwege für das Client-Paket (packpub): heute Dropbox; jeder Kanal
+	// merkt sich seinen zuletzt verschickten Stand selbst
+	packs := packpub.New(func() string { return packFingerprint(clientDirs) }, kvGet, kvSet, bus, log,
+		dropbox.Channel{C: dbx, Dirs: clientDirs})
 	// publishPack ist der einzige Weg zum Paket-Versand (Button, MC-Update,
-	// Mod-Neuigkeiten) — jeder Erfolg löscht „Paket veraltet".
-	publishPack := func(ctx context.Context) error {
+	// Mod-Neuigkeiten). „Paket veraltet" wird nur gelöscht, wenn ALLE
+	// Kanäle erfolgreich waren — ein gescheiterter wird beim nächsten
+	// Neustart nachgeholt, aktuelle überspringt packpub.
+	publishPack := func(ctx context.Context, channels []string, force bool) error {
 		if clientDirs == nil {
 			return fmt.Errorf("kein Client-Profil konfiguriert")
 		}
 		gen := news.BeginPublish()
-		if err := dropbox.Publish(ctx, dbx, clientDirs, bus, log); err != nil {
+		if err := packs.Run(ctx, channels, force); err != nil {
 			return err
 		}
 		news.Published(gen)
@@ -488,15 +495,17 @@ func main() {
 	}
 	if upgrader != nil && clientDirs != nil {
 		// nach dem Ein-Klick-MC-Update das frische Client-Paket
-		// automatisch verteilen — nur wenn Dropbox konfiguriert ist
+		// automatisch verteilen — nur wenn ein Versandweg eingerichtet ist
 		upgrader.Publish = func(ctx context.Context) (bool, error) {
-			if !dbx.Ready() {
+			if !packs.Ready("") {
 				return false, nil // Feature aus — kein Fehler
 			}
-			return true, publishPack(ctx)
+			return true, publishPack(ctx, nil, false)
 		}
 	}
-	news.SetPublisher(dbx.Ready, publishPack)
+	news.SetPublisher(func() bool { return packs.Ready("") }, func(ctx context.Context) error {
+		return publishPack(ctx, nil, false)
+	})
 	if clientDirs != nil {
 		news.SetFingerprint(func() string { return packFingerprint(clientDirs) })
 	}
@@ -534,7 +543,7 @@ func main() {
 			MaintActive: func() bool {
 				return maint != nil && maint.Active()
 			},
-			Dropbox:           dbx,
+			Packs:             packs,
 			PublishPack:       publishPack,
 			Upgrader:          upgrader,
 			Settings:          cfg,
