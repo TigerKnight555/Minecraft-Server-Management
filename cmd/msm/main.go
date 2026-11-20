@@ -490,7 +490,12 @@ func main() {
 		if err := packs.Run(ctx, channels, force); err != nil {
 			return err
 		}
-		news.Published(gen)
+		// Nur ein Lauf über alle Kanäle löscht „Paket veraltet". Ein Lauf nur
+		// für einen Kanal (Knopf ?channel=…) darf das Flag nicht löschen,
+		// sonst bliebe der andere Kanal unbemerkt veraltet.
+		if len(channels) == 0 {
+			news.Published(gen)
+		}
 		return nil
 	}
 	if upgrader != nil && clientDirs != nil {

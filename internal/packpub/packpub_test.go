@@ -123,7 +123,11 @@ func TestNotReadyAndBusy(t *testing.T) {
 	p2, _, _ := setup(&fp, slow)
 	done := make(chan error)
 	go func() { done <- p2.Run(context.Background(), nil, true) }()
+	deadline := time.Now().Add(2 * time.Second)
 	for !p2.Busy() {
+		if time.Now().After(deadline) {
+			t.Fatal("Run wurde nie busy")
+		}
 		time.Sleep(time.Millisecond)
 	}
 	if err := p2.Run(context.Background(), nil, true); !errors.Is(err, ErrBusy) {
