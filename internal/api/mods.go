@@ -12,6 +12,11 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/packpub"
 )
 
+// handleModpackStatus liefert den letzten Modrinth-Modpack-Stand fürs Dashboard.
+func (s *Server) handleModpackStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.modpack.Status())
+}
+
 // handleModsList returns the cached entries of a profile (runs a check first
 // if the cache is empty).
 func (s *Server) handleModsList(w http.ResponseWriter, r *http.Request) {

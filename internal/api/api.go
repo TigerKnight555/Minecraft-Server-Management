@@ -17,6 +17,7 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/backup"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modpack"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/packpub"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
@@ -40,6 +41,7 @@ type Server struct {
 	mcDataDir         string      // read-only mount of the MC data dir ("" = feature off)
 	maintActive       func() bool // Wartungsfenster gerade aktiv?
 	packs             *packpub.Publisher
+	modpack           *modpack.Channel
 	upgrader          *upgrade.Orchestrator
 	upgradeActive     func() bool                                                    // Ein-Klick-MC-Update läuft? (nil = nie)
 	publishPack       func(ctx context.Context, channels []string, force bool) error // Client-Paket-Versand inkl. Zustands-Pflege
@@ -71,6 +73,7 @@ type Deps struct {
 	MCDataDir         string      // read-only MC data dir for the player list
 	MaintActive       func() bool // maintenance.Manager.Active
 	Packs             *packpub.Publisher
+	Modpack           *modpack.Channel
 	Upgrader          *upgrade.Orchestrator
 	PublishPack       func(ctx context.Context, channels []string, force bool) error // Paket-Versand inkl. Zustands-Pflege
 	Settings          *settings.Store
@@ -111,6 +114,7 @@ func New(d Deps) *Server {
 		mcDataDir:         d.MCDataDir,
 		maintActive:       d.MaintActive,
 		packs:             d.Packs,
+		modpack:           d.Modpack,
 		upgrader:          d.Upgrader,
 		publishPack:       d.PublishPack,
 		settings:          d.Settings,
@@ -186,6 +190,12 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 		mux.HandleFunc("PUT /api/settings", s.handleSaveSettings)
 		mux.HandleFunc("POST /api/settings/discord/test", s.handleTestDiscord)
+	}
+	if s.modpack != nil {
+		mux.HandleFunc("GET /api/modpack", s.handleModpackStatus)
+		if s.settings != nil {
+			mux.HandleFunc("POST /api/settings/modrinth/test", s.handleModrinthTest)
+		}
 	}
 	// MSM-Selbst-Update
 	if s.selfupdate != nil {

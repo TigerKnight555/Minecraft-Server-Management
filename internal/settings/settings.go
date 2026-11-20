@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/dropbox"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modpack"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/notify"
 )
 
@@ -20,6 +21,10 @@ const (
 	KeyDropboxKey     = "settings.dropbox.key"
 	KeyDropboxSecret  = "settings.dropbox.secret"
 	KeyDropboxToken   = "settings.dropbox.token"
+
+	KeyModrinthProject = "settings.modrinth.project"
+	KeyModrinthToken   = "settings.modrinth.token"
+	KeyModrinthStart   = "settings.modrinth.startversion"
 )
 
 // Store liest/schreibt Einstellungen. get/set kommen aus SQLite (app_state);
@@ -75,6 +80,22 @@ func (s *Store) DropboxConfig() dropbox.Config {
 	}
 }
 
+// ModrinthConfig returns the effective Modrinth-Modpack settings (DB vor
+// .env; der Startwert existiert nur im Dashboard).
+func (s *Store) ModrinthConfig() modpack.Config {
+	pick := func(key, env string) string {
+		if v := s.value(key); v != "" {
+			return v
+		}
+		return strings.TrimSpace(os.Getenv(env))
+	}
+	return modpack.Config{
+		Project:      pick(KeyModrinthProject, "MSM_MODRINTH_PROJECT"),
+		Token:        pick(KeyModrinthToken, "MSM_MODRINTH_TOKEN"),
+		StartVersion: s.value(KeyModrinthStart),
+	}
+}
+
 // Masked liefert die UI-Ansicht: nie den Wert, nur gesetzt/Quelle/Endung.
 type Masked struct {
 	Set    bool   `json:"set"`
@@ -99,6 +120,10 @@ type View struct {
 	DropboxSecret  Masked `json:"dropboxSecret"`
 	DropboxToken   Masked `json:"dropboxToken"`
 	DropboxReady   bool   `json:"dropboxReady"`
+
+	ModrinthProject Masked `json:"modrinthProject"`
+	ModrinthToken   Masked `json:"modrinthToken"`
+	ModrinthReady   bool   `json:"modrinthReady"`
 }
 
 func (s *Store) View() View {
@@ -108,6 +133,10 @@ func (s *Store) View() View {
 		DropboxSecret:  s.masked(KeyDropboxSecret, "MSM_DROPBOX_APP_SECRET"),
 		DropboxToken:   s.masked(KeyDropboxToken, "MSM_DROPBOX_REFRESH_TOKEN"),
 		DropboxReady:   s.DropboxConfig().Complete(),
+
+		ModrinthProject: s.masked(KeyModrinthProject, "MSM_MODRINTH_PROJECT"),
+		ModrinthToken:   s.masked(KeyModrinthToken, "MSM_MODRINTH_TOKEN"),
+		ModrinthReady:   s.ModrinthConfig().Complete(),
 	}
 }
 
@@ -120,11 +149,16 @@ func (s *Store) Values() map[string]string {
 		webhook = strings.TrimSpace(os.Getenv("MSM_DISCORD_WEBHOOK_URL"))
 	}
 	dbx := s.DropboxConfig()
+	mr := s.ModrinthConfig()
 	return map[string]string{
 		"discordWebhook": webhook,
 		"dropboxKey":     dbx.AppKey,
 		"dropboxSecret":  dbx.AppSecret,
 		"dropboxToken":   dbx.RefreshToken,
+
+		"modrinthProject":      mr.Project,
+		"modrinthToken":        mr.Token,
+		"modrinthStartVersion": mr.StartVersion,
 	}
 }
 

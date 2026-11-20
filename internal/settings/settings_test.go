@@ -63,3 +63,27 @@ func TestViewNeverLeaksValues(t *testing.T) {
 		t.Errorf("hint = %q, want nur die letzten 4 Zeichen", v.DropboxToken.Hint)
 	}
 }
+
+func TestModrinthConfigDBBeforeEnv(t *testing.T) {
+	t.Setenv("MSM_MODRINTH_PROJECT", "env-pack")
+	t.Setenv("MSM_MODRINTH_TOKEN", "env-token")
+	db := map[string]string{}
+	s := New(func(k string) string { return db[k] }, func(k, v string) { db[k] = v })
+	if c := s.ModrinthConfig(); c.Project != "env-pack" || c.Token != "env-token" || c.StartVersion != "" {
+		t.Errorf("env-fallback = %+v", c)
+	}
+	s.Set(KeyModrinthProject, "mein-pack")
+	s.Set(KeyModrinthStart, "2.0.0")
+	c := s.ModrinthConfig()
+	if c.Project != "mein-pack" || c.Token != "env-token" || c.StartVersion != "2.0.0" {
+		t.Errorf("config = %+v", c)
+	}
+	v := s.View()
+	if !v.ModrinthReady || v.ModrinthProject.Source != "dashboard" || v.ModrinthToken.Source != "env" {
+		t.Errorf("view = %+v", v)
+	}
+	vals := s.Values()
+	if vals["modrinthProject"] != "mein-pack" || vals["modrinthToken"] != "env-token" || vals["modrinthStartVersion"] != "2.0.0" {
+		t.Errorf("values = %v", vals)
+	}
+}

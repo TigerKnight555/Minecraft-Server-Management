@@ -64,3 +64,17 @@ func TestSaveSettingsWebhookValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestSaveModrinthSettings(t *testing.T) {
+	srv, db := settingsServer(t)
+	rec := putSettings(srv, `{"modrinthProject":" mein-pack ","modrinthToken":"mrp_x","modrinthStartVersion":"1.2.0"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if db[settings.KeyModrinthProject] != "mein-pack" || db[settings.KeyModrinthToken] != "mrp_x" || db[settings.KeyModrinthStart] != "1.2.0" {
+		t.Errorf("db = %v", db)
+	}
+	if rec := putSettings(srv, `{"modrinthStartVersion":"v1"}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("ungültige Startversion: status = %d", rec.Code)
+	}
+}
