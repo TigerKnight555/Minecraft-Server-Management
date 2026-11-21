@@ -12,15 +12,17 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 )
 
-// WatchStatus answers "lohnt sich der Umstieg schon?" (concept chapter on
-// Versions-Watch): newest MC release, Fabric loader support and per-mod
-// Modrinth readiness for both profiles.
 // BasepackReady meldet, ob das Basis-Modpack für die neueste MC-Version existiert.
+// Error ist gesetzt, wenn Modrinth nicht geprüft werden konnte (dann Ready=false).
 type BasepackReady struct {
 	Name  string `json:"name"`
 	Ready bool   `json:"ready"`
+	Error string `json:"error,omitempty"`
 }
 
+// WatchStatus answers "lohnt sich der Umstieg schon?" (concept chapter on
+// Versions-Watch): newest MC release, Fabric loader support and per-mod
+// Modrinth readiness for both profiles.
 type WatchStatus struct {
 	Checked        time.Time         `json:"checked"`
 	CurrentVersion string            `json:"currentVersion"`
@@ -63,7 +65,7 @@ type Watcher struct {
 	annGet func(key string) string
 	annSet func(key, value string)
 
-	basepack func(ctx context.Context, mc string) (string, bool, bool)
+	basepack func(ctx context.Context, mc string) (string, bool, bool, error)
 }
 
 func NewWatcher(api ModrinthAPI, mgr *Manager, loader string) *Watcher {
@@ -88,7 +90,7 @@ func (w *Watcher) WithLogger(l *slog.Logger) *Watcher {
 
 // SetBasepack lets the watch report whether the base modpack exists for the
 // newest MC version (Kachel; Client-Paket ohne passendes Pack wäre kaputt).
-func (w *Watcher) SetBasepack(f func(ctx context.Context, mc string) (string, bool, bool)) {
+func (w *Watcher) SetBasepack(f func(ctx context.Context, mc string) (string, bool, bool, error)) {
 	w.basepack = f
 }
 
@@ -316,7 +318,9 @@ func (w *Watcher) Check(ctx context.Context, currentVersion string) (*WatchStatu
 		status.Profiles = append(status.Profiles, pr)
 	}
 	if w.basepack != nil && status.LatestVersion != "" {
-		if name, ready, set := w.basepack(ctx, status.LatestVersion); set {
+		if name, ready, set, err := w.basepack(ctx, status.LatestVersion); err != nil {
+			status.Basepack = &BasepackReady{Name: name, Error: err.Error()}
+		} else if set {
 			status.Basepack = &BasepackReady{Name: name, Ready: ready}
 		}
 	}

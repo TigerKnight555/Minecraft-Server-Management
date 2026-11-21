@@ -122,8 +122,8 @@ type Orchestrator struct {
 	// mit ihr um den Server streiten.
 	RoutineBusy func() string
 	// BasepackReady: gibt es das Basis-Modpack für die Zielversion?
-	// set=false = kein Basis-Pack eingerichtet.
-	BasepackReady func(ctx context.Context, mc string) (name string, ready, set bool)
+	// set=false = kein Basis-Pack eingerichtet; err = Modrinth nicht erreichbar.
+	BasepackReady func(ctx context.Context, mc string) (name string, ready, set bool, err error)
 	// BasepackSwitch stellt das Basis-Modpack nach dem Sprung um.
 	BasepackSwitch func(ctx context.Context, mc string) error
 
@@ -181,57 +181,39 @@ func (o *Orchestrator) setStatus(s string) {
 	}
 }
 
-// Start validates the request and launches the chain in the background.
-func (o *Orchestrator) Start(version string) error {
-	o.mu.Lock()
+// checkLocked führt die billigen Vorab-Prüfungen aus. o.mu muss gehalten sein.
+func (o *Orchestrator) checkLocked(version string) error {
 	if o.running {
-		o.mu.Unlock()
 		return fmt.Errorf("es läuft bereits ein Upgrade (%s)", o.status)
 	}
 	if o.RoutineBusy != nil {
 		if busy := o.RoutineBusy(); busy != "" {
-			o.mu.Unlock()
 			return fmt.Errorf("gerade läuft „%s“ — das Update danach starten", busy)
 		}
 	}
-	if o.BasepackReady != nil {
-		bctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		name, ready, set := o.BasepackReady(bctx, version)
-		cancel()
-		if set && !ready {
-			o.mu.Unlock()
-			return fmt.Errorf("Basis-Modpack „%s“ gibt es noch nicht für Minecraft %s — abwarten oder Basis-Pack im Mods-Tab entfernen", name, version)
-		}
-	}
 	if o.PendingChanges != nil && o.PendingChanges() {
-		o.mu.Unlock()
 		return fmt.Errorf("im Mods-Tab sind Änderungen vorgemerkt — erst anwenden oder verwerfen, dann das Update starten")
 	}
 	// veralteter Versions-Watch darf keinen zweiten Sprung auf dieselbe
 	// Version auslösen (Backup + Neustart + Neubau für nichts)
 	if o.mcStatus != nil {
 		if cur := o.mcStatus().Version; cur != "" && cur == version {
-			o.mu.Unlock()
 			return fmt.Errorf("der Server läuft bereits auf Minecraft %s — Versions-Check mit „Jetzt prüfen“ aktualisieren", version)
 		}
 	}
 	// Guards VOR dem Start — der Button darf nur Grünes auslösen
 	last := o.watch.Last()
 	if last == nil || !last.NewerAvailable {
-		o.mu.Unlock()
 		return fmt.Errorf("kein Update verfügbar (Versions-Watch lief noch nicht?)")
 	}
 	if version != last.LatestVersion {
-		o.mu.Unlock()
 		return fmt.Errorf("angefragte Version %q ist nicht die geprüfte Zielversion %q", version, last.LatestVersion)
 	}
 	if !last.LoaderReady {
-		o.mu.Unlock()
 		return fmt.Errorf("fabric-Loader unterstützt %s noch nicht", version)
 	}
 	for _, p := range last.Profiles {
 		if p.Profile == "server" && (p.Total == 0 || p.Ready < p.Total) {
-			o.mu.Unlock()
 			return fmt.Errorf("noch nicht alle Server-Mods für %s bereit (%d/%d)", version, p.Ready, p.Total)
 		}
 	}
@@ -244,10 +226,41 @@ func (o *Orchestrator) Start(version string) error {
 		// ändert daran nichts, der Container muss neu erstellt werden. Mit
 		// unveränderter MC_VERSION ist das gefahrlos (gleiche Version).
 		if have := o.JavaProbe(context.Background()); have > 0 && have < last.RequiredJava {
-			o.mu.Unlock()
 			return fmt.Errorf("minecraft %s benötigt Java %d, der Server-Container läuft mit Java %d — auf dem Host im Repo-Verzeichnis: docker compose pull mc-fabric && docker compose up -d mc-fabric (bleibt auf der aktuellen Version), danach Update erneut starten",
 				version, last.RequiredJava, have)
 		}
+	}
+	return nil
+}
+
+// Start validates the request and launches the chain in the background.
+func (o *Orchestrator) Start(version string) error {
+	o.mu.Lock()
+	err := o.checkLocked(version)
+	o.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	// Basis-Pack-Abfrage = Netzwerk (bis 30 s): ohne o.mu, sonst hängen
+	// Status()/Active() und damit die UI-Abfrage so lange.
+	if o.BasepackReady != nil {
+		bctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		name, ready, set, berr := o.BasepackReady(bctx, version)
+		cancel()
+		switch {
+		case berr != nil:
+			name = nameOr(name, "Basis-Modpack")
+			return fmt.Errorf("Basis-Modpack „%s“ konnte bei Modrinth nicht geprüft werden (%v) — später noch einmal versuchen", name, berr)
+		case set && !ready:
+			return fmt.Errorf("Basis-Modpack „%s“ gibt es noch nicht für Minecraft %s — abwarten oder Basis-Pack im Mods-Tab entfernen", name, version)
+		}
+	}
+	// Zustand kann sich währenddessen geändert haben (zweiter Start, neue
+	// Vormerkung) — unter Sperre erneut prüfen, dann erst running setzen.
+	o.mu.Lock()
+	if err := o.checkLocked(version); err != nil {
+		o.mu.Unlock()
+		return err
 	}
 	o.running = true
 	o.mu.Unlock()
@@ -272,6 +285,13 @@ func (o *Orchestrator) Start(version string) error {
 		}
 	}()
 	return nil
+}
+
+func nameOr(name, fallback string) string {
+	if name == "" {
+		return fallback
+	}
+	return name
 }
 
 func (o *Orchestrator) run(ctx context.Context, version string) error {
@@ -451,7 +471,6 @@ func (o *Orchestrator) finish(ctx context.Context, version string) error {
 	// Jeder Fehler auf dem Client-Weg wird sichtbar — bisher endete ein
 	// gescheiterter Check/Download stumm: kein Paket, kein Hinweis.
 	var clientErr error
-	clientErr = clientErrPre
 	// Mods, für die der Check gerade einen Build zur Zielversion gefunden
 	// hat, sind keine Nachzügler mehr — auch wenn der (bis zu 24 h alte)
 	// Versions-Watch das noch behauptet
@@ -479,6 +498,7 @@ func (o *Orchestrator) finish(ctx context.Context, version string) error {
 			clientErr = fmt.Errorf("client-mods einspielen: %w", err)
 		}
 	}
+	clientErr = errors.Join(clientErrPre, clientErr)
 	var fields []events.Field
 	if clientErr != nil {
 		o.log.Error("client-mods nach upgrade", "err", clientErr)

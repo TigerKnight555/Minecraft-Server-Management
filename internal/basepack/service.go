@@ -653,13 +653,17 @@ func (s *Service) Available(ctx context.Context, mc string) (*modrinth.Version, 
 
 // Ready reports whether the base pack has a version for mc.
 // set=false: kein Basis-Pack eingerichtet.
-func (s *Service) Ready(ctx context.Context, mc string) (string, bool, bool) {
+// err: Modrinth-/Netzwerkfehler — dann ist ready bedeutungslos.
+func (s *Service) Ready(ctx context.Context, mc string) (name string, ready, set bool, err error) {
 	st, ok := s.State()
 	if !ok {
-		return "", true, false
+		return "", true, false, nil
 	}
 	vs, err := s.api.ProjectVersions(ctx, st.ProjectID, loader, mc)
-	return st.Title, err == nil && len(vs) > 0, true
+	if err != nil {
+		return st.Title, false, true, err
+	}
+	return st.Title, len(vs) > 0, true, nil
 }
 
 // SwitchMC moves the pack to its newest version for mc (MC-Update).

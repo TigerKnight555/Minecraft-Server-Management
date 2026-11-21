@@ -25,6 +25,7 @@ type fakeAPI struct {
 	packs    map[string][]byte             // version id → .mrpack
 	blobs    map[string][]byte             // url → Datei
 	byHash   map[string]modrinth.Version
+	versionsErr error // lässt ProjectVersions scheitern
 }
 
 func (f *fakeAPI) SearchModpacks(context.Context, string, string, string, int) ([]modrinth.SearchHit, error) {
@@ -37,6 +38,9 @@ func (f *fakeAPI) Project(_ context.Context, id string) (modrinth.Project, error
 	return modrinth.Project{ID: id, Slug: strings.ToLower(id), Title: "Pack " + id, ProjectType: "modpack"}, nil
 }
 func (f *fakeAPI) ProjectVersions(_ context.Context, _, _, mc string) ([]modrinth.Version, error) {
+	if f.versionsErr != nil {
+		return nil, f.versionsErr
+	}
 	return f.versions[mc], nil
 }
 func (f *fakeAPI) VersionsByHash(_ context.Context, hs []string) (map[string]modrinth.Version, error) {
@@ -227,14 +231,14 @@ func TestUpdateKeepsDisabledAndFollowsPack(t *testing.T) {
 
 func TestReadySwitchAndRemove(t *testing.T) {
 	s, api, files, _, _ := setup(t)
-	if _, _, set := s.Ready(context.Background(), "26.4"); set {
+	if _, _, set, _ := s.Ready(context.Background(), "26.4"); set {
 		t.Error("ohne Basis-Pack darf Ready nicht gesetzt melden")
 	}
 	api.addPackVersion(t, "26.3", "6.4.0", map[string]string{"sodium-1.jar": "s1"}, map[string]string{"config/a.json": "A"})
 	if _, err := s.Apply(context.Background(), "FO", "6.4.0", "26.3", map[string]bool{"config/a.json": true}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ready, set := s.Ready(context.Background(), "26.4"); !set || ready {
+	if _, ready, set, _ := s.Ready(context.Background(), "26.4"); !set || ready {
 		t.Error("26.4 gibt es noch nicht — ready muss false sein")
 	}
 	api.addPackVersion(t, "26.4", "7.0.0", map[string]string{"sodium-3.jar": "s3"}, map[string]string{"config/a.json": "A2"})
@@ -373,5 +377,18 @@ func TestDropAbsorbedHint(t *testing.T) {
 	last := (*notes)[len(*notes)-1]
 	if len(last) != 2 || !strings.Contains(last[1].Name, "entfällt — war vorher auch deine eigene Mod") {
 		t.Errorf("notes = %+v", last)
+	}
+}
+
+func TestReadyReturnsModrinthError(t *testing.T) {
+	s, api, _, _, _ := setup(t)
+	api.addPackVersion(t, "26.3", "6.4.0", map[string]string{"sodium-1.jar": "s1"}, map[string]string{"config/a.json": "A"})
+	if _, err := s.Apply(context.Background(), "FO", "6.4.0", "26.3", map[string]bool{"config/a.json": true}); err != nil {
+		t.Fatal(err)
+	}
+	api.versionsErr = errors.New("modrinth 503")
+	name, ready, set, err := s.Ready(context.Background(), "26.4")
+	if err == nil || ready || !set || name == "" {
+		t.Errorf("Ready = %q %v %v %v, want Fehler mit set=true, ready=false", name, ready, set, err)
 	}
 }

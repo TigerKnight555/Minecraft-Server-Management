@@ -537,7 +537,7 @@ func TestUpgradeRefusesWithoutBasepackVersion(t *testing.T) {
 	f := &fakes{backupOK: true}
 	f.online.Store(true)
 	o := newOrch(f, events.New())
-	o.BasepackReady = func(context.Context, string) (string, bool, bool) { return "Fabulously Optimized", false, true }
+	o.BasepackReady = func(context.Context, string) (string, bool, bool, error) { return "Fabulously Optimized", false, true, nil }
 	err := o.Start("26.2")
 	if err == nil || !strings.Contains(err.Error(), "Fabulously Optimized") || !strings.Contains(err.Error(), "26.2") {
 		t.Fatalf("err = %v", err)
@@ -552,7 +552,7 @@ func TestUpgradeSwitchesBasepack(t *testing.T) {
 	f.online.Store(true)
 	o := newOrch(f, events.New())
 	var switched atomic.Value
-	o.BasepackReady = func(context.Context, string) (string, bool, bool) { return "FO", true, true }
+	o.BasepackReady = func(context.Context, string) (string, bool, bool, error) { return "FO", true, true, nil }
 	o.BasepackSwitch = func(_ context.Context, mc string) error { switched.Store(mc); return nil }
 	if err := o.Start("26.2"); err != nil {
 		t.Fatal(err)
@@ -561,4 +561,96 @@ func TestUpgradeSwitchesBasepack(t *testing.T) {
 	if v, _ := switched.Load().(string); v != "26.2" {
 		t.Errorf("Pack-Umstellung auf %q, want 26.2", v)
 	}
+}
+
+func TestUpgradeRefusesWhenBasepackCheckFails(t *testing.T) {
+	f := &fakes{backupOK: true}
+	f.online.Store(true)
+	o := newOrch(f, events.New())
+	o.BasepackReady = func(context.Context, string) (string, bool, bool, error) {
+		return "Fabulously Optimized", false, true, errors.New("modrinth 503")
+	}
+	err := o.Start("26.2")
+	if err == nil || !strings.Contains(err.Error(), "Fabulously Optimized") || !strings.Contains(err.Error(), "nicht geprüft") ||
+		strings.Contains(err.Error(), "gibt es noch nicht") {
+		t.Fatalf("err = %v, want Modrinth-Prüffehler (nicht 'gibt es noch nicht')", err)
+	}
+	if steps := f.list(); len(steps) != 0 {
+		t.Errorf("Kette lief trotzdem an: %v", steps)
+	}
+}
+
+func TestStartBasepackLookupDoesNotHoldLock(t *testing.T) {
+	f := &fakes{backupOK: true}
+	f.online.Store(true)
+	o := newOrch(f, events.New())
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	o.BasepackReady = func(context.Context, string) (string, bool, bool, error) {
+		close(entered)
+		<-release
+		return "FO", true, true, nil
+	}
+	errc := make(chan error, 1)
+	go func() { errc <- o.Start("26.2") }()
+	<-entered
+	got := make(chan struct{})
+	go func() { o.Status(); o.Active(); close(got) }()
+	select {
+	case <-got:
+	case <-time.After(time.Second):
+		t.Fatal("Status()/Active() blockiert während der Basis-Pack-Abfrage")
+	}
+	close(release)
+	if err := <-errc; err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+}
+
+func TestStartSameVersionBeatsBasepackLookup(t *testing.T) {
+	f := &fakes{backupOK: true}
+	f.online.Store(true)
+	f.version.Store("26.2")
+	o := newOrch(f, events.New())
+	called := false
+	o.BasepackReady = func(context.Context, string) (string, bool, bool, error) {
+		called = true
+		return "FO", false, true, nil
+	}
+	err := o.Start("26.2")
+	if err == nil || !strings.Contains(err.Error(), "läuft bereits auf") {
+		t.Fatalf("err = %v, want 'läuft bereits auf'", err)
+	}
+	if called {
+		t.Error("Basis-Pack-Abfrage lief trotz billiger Vorab-Absage")
+	}
+}
+
+func TestBasepackSwitchErrorKeepsSuccessAndDetails(t *testing.T) {
+	f := &fakes{backupOK: true, clientCheckErr: errors.New("modrinth 503")}
+	f.online.Store(true)
+	bus := events.New()
+	ch, cancel := bus.Subscribe(32)
+	defer cancel()
+	o := newOrch(f, bus)
+	o.BasepackSwitch = func(context.Context, string) error { return errors.New("pack kaputt") }
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+	for _, ev := range drain(ch) {
+		if ev.Type != events.TypeUpgradeOK {
+			continue
+		}
+		var details string
+		for _, fl := range ev.Fields {
+			details += fl.Value
+		}
+		if !strings.Contains(details, "pack kaputt") || !strings.Contains(details, "modrinth 503") {
+			t.Errorf("Details = %q, want beide Fehler", details)
+		}
+		return
+	}
+	t.Fatal("keine Erfolgsmeldung")
 }
