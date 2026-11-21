@@ -52,7 +52,16 @@ type Status struct {
 	ProjectURL string   `json:"projectUrl,omitempty"`
 }
 
-const stateKey = "modpack.state"
+const (
+	stateKey  = "modpack.state"
+	statusKey = "modpack.status" // weggelassene Dateien + Projekt-Link des letzten Uploads
+)
+
+// savedStatus keeps the dashboard view of the last upload across restarts.
+type savedStatus struct {
+	Omitted    []string `json:"omitted,omitempty"`
+	ProjectURL string   `json:"projectUrl,omitempty"`
+}
 
 type Channel struct {
 	api       API
@@ -87,13 +96,39 @@ func (c *Channel) loadState() State {
 	return s
 }
 
+// Fingerprint implements packpub.Fingerprinter: der Modrinth-Kanal ist erst
+// aktuell, wenn auch MC- und Loader-Version zum letzten Upload passen. Ist
+// der Server offline (MC-Version unbekannt), gilt der zuletzt veröffentlichte
+// Stand — sonst liefe jeder Versand in den Fehler „Minecraft-Version
+// unbekannt".
+func (c *Channel) Fingerprint() string {
+	prev := c.loadState()
+	mc := c.mcVersion()
+	if mc == "" {
+		return prev.MC + "|" + prev.Loader
+	}
+	loader := DetectLoader(c.dataDir, mc)
+	if loader == "" && prev.MC == mc {
+		loader = prev.Loader
+	}
+	return mc + "|" + loader
+}
+
 // Status returns the last published state for the dashboard.
 func (c *Channel) Status() Status {
 	s := c.loadState()
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	omitted, url := append([]string(nil), c.omitted...), c.projectURL
+	lastErr := c.lastErr
+	c.mu.Unlock()
+	if url == "" { // nach einem Neustart: gespeicherten Stand zeigen
+		var saved savedStatus
+		if raw := c.get(statusKey); raw != "" && json.Unmarshal([]byte(raw), &saved) == nil {
+			omitted, url = saved.Omitted, saved.ProjectURL
+		}
+	}
 	return Status{Ready: c.Ready(), Version: s.Version, MC: s.MC, Loader: s.Loader,
-		Omitted: append([]string(nil), c.omitted...), LastError: c.lastErr, ProjectURL: c.projectURL}
+		Omitted: omitted, LastError: lastErr, ProjectURL: url}
 }
 
 func public(status string) bool {
@@ -114,7 +149,7 @@ func explain(err error, project string) error {
 	if errors.As(err, &apiErr) {
 		switch apiErr.Status {
 		case http.StatusUnauthorized, http.StatusForbidden:
-			return fmt.Errorf("Modrinth lehnt den Token ab (%d) — Token gültig und mit den Rechten „Create versions“ und „Read projects“? (%w)", apiErr.Status, err)
+			return fmt.Errorf("Modrinth lehnt den Token ab (%d) — Token gültig und mit den Rechten „Create versions“, „Read projects“, „Read versions“ und „Read user data“? (%w)", apiErr.Status, err)
 		case http.StatusNotFound:
 			return fmt.Errorf("Modrinth-Projekt „%s“ nicht gefunden — Slug/ID prüfen (%w)", project, err)
 		}
@@ -258,6 +293,8 @@ func (c *Channel) Publish(ctx context.Context) (packpub.Outcome, error) {
 	highest := func() string {
 		vs, err := c.api.AuthProjectVersions(ctx, cfg.Token, cfg.Project)
 		if err != nil {
+			// ohne Liste zählt nur der eigene Stand weiter — Recht „Read versions"?
+			c.log.Warn("modrinth-versionsliste nicht lesbar", "project", cfg.Project, "err", explain(err, cfg.Project))
 			return ""
 		}
 		nums := make([]string, 0, len(vs))
@@ -306,8 +343,11 @@ func (c *Channel) Publish(ctx context.Context) (packpub.Outcome, error) {
 	err = upload(cur.Version)
 	var apiErr *modrinth.APIError
 	if errors.As(err, &apiErr) && apiErr.Status == http.StatusBadRequest {
-		// Versionsnummer inzwischen vergeben (z. B. von Hand hochgeladen):
-		// höchste neu lesen und einmal weiterzählen
+		// Modrinth prüft Versionsnummern nicht auf Eindeutigkeit — ein 400
+		// hat also meist andere Gründe. Der eine Wiederholungsversuch mit
+		// neu gelesener höchster Nummer hilft nur, falls die Ablehnung doch
+		// an der Nummer lag; sonst scheitert er genauso und der Fehler wird
+		// gemeldet.
 		if h := Highest([]string{highest(), cur.Version}); h != "" {
 			base := prev
 			if prev.Version == "" {
@@ -324,6 +364,8 @@ func (c *Channel) Publish(ctx context.Context) (packpub.Outcome, error) {
 
 	raw, _ := json.Marshal(cur)
 	c.set(stateKey, string(raw))
+	rawStatus, _ := json.Marshal(savedStatus{Omitted: omitted, ProjectURL: projectURL(proj)})
+	c.set(statusKey, string(rawStatus))
 	c.mu.Lock()
 	c.omitted, c.lastErr, c.projectURL = omitted, "", projectURL(proj)
 	c.mu.Unlock()

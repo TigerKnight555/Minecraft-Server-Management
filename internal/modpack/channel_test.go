@@ -7,6 +7,7 @@ import (
 	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -19,12 +20,14 @@ import (
 )
 
 type fakeAPI struct {
-	known    map[string]modrinth.Version // sha512 → Version
-	project  modrinth.Project
-	versions []modrinth.Version
-	created  []modrinth.NewVersion
-	packs    [][]byte
-	failNext int // so viele CreateVersion-Aufrufe mit 400 beantworten
+	known       map[string]modrinth.Version // sha512 → Version
+	project     modrinth.Project
+	versions    []modrinth.Version
+	created     []modrinth.NewVersion
+	packs       [][]byte
+	failNext    int   // so viele CreateVersion-Aufrufe mit 400 beantworten
+	userErr     error // CurrentUser scheitert (z. B. Token ohne „Read user data")
+	versionsErr error // AuthProjectVersions scheitert
 }
 
 func (f *fakeAPI) VersionsByHash(_ context.Context, hs []string) (map[string]modrinth.Version, error) {
@@ -47,6 +50,9 @@ func (f *fakeAPI) AuthProject(context.Context, string, string) (modrinth.Project
 	return f.project, nil
 }
 func (f *fakeAPI) AuthProjectVersions(context.Context, string, string) ([]modrinth.Version, error) {
+	if f.versionsErr != nil {
+		return nil, f.versionsErr
+	}
 	return f.versions, nil
 }
 func (f *fakeAPI) CreateVersion(_ context.Context, _ string, v modrinth.NewVersion, _ string, data []byte) (modrinth.Version, error) {
@@ -61,6 +67,9 @@ func (f *fakeAPI) CreateVersion(_ context.Context, _ string, v modrinth.NewVersi
 	return modrinth.Version{ID: "V", VersionNumber: v.VersionNumber}, nil
 }
 func (f *fakeAPI) CurrentUser(context.Context, string) (modrinth.User, error) {
+	if f.userErr != nil {
+		return modrinth.User{}, f.userErr
+	}
 	return modrinth.User{Username: "knvt"}, nil
 }
 
@@ -248,5 +257,74 @@ func TestWrongProjectTypeAndCheck(t *testing.T) {
 	msg, err := e.ch.Check(context.Background())
 	if err != nil || !strings.Contains(msg, "knvt") || !strings.Contains(msg, "Mein Pack") {
 		t.Errorf("Check = %q, %v", msg, err)
+	}
+}
+
+// Ohne „Read user data" scheitert schon GET /user — der Hinweis muss die
+// nötigen Rechte vollständig nennen.
+func TestCheckNamesAllTokenScopes(t *testing.T) {
+	e := newEnv(t, "approved")
+	e.api.userErr = &modrinth.APIError{Path: "/user", Status: http.StatusUnauthorized}
+	_, err := e.ch.Check(context.Background())
+	if err == nil {
+		t.Fatal("Check ohne Fehler trotz 401")
+	}
+	for _, scope := range []string{"Create versions", "Read projects", "Read versions", "Read user data"} {
+		if !strings.Contains(err.Error(), scope) {
+			t.Errorf("err = %v, want Recht %q", err, scope)
+		}
+	}
+	if strings.Contains(err.Error(), "mrp_x") {
+		t.Error("Fehlertext enthält den Token")
+	}
+}
+
+// Der Kanal-Fingerabdruck folgt MC- und Loader-Version.
+func TestFingerprintFollowsMCAndLoader(t *testing.T) {
+	e := newEnv(t, "approved")
+	if got := e.ch.Fingerprint(); got != "26.3|0.20.1" {
+		t.Errorf("Fingerprint = %q, want 26.3|0.20.1", got)
+	}
+	mc := ""
+	e.ch.mcVersion = func() string { return mc }
+	e.state[stateKey] = `{"version":"1.0.0","mc":"26.2","loader":"0.19.0"}`
+	if got := e.ch.Fingerprint(); got != "26.2|0.19.0" {
+		t.Errorf("Server offline: Fingerprint = %q, want zuletzt veröffentlichter Stand 26.2|0.19.0", got)
+	}
+}
+
+// Weggelassene Dateien und Projekt-Link überstehen einen Neustart.
+func TestStatusSurvivesRestart(t *testing.T) {
+	e := newEnv(t, "approved")
+	e.addMod("sodium.jar", "P-sod", "1", true)
+	e.addMod("fremd.jar", "", "", false)
+	if _, err := e.ch.Publish(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	restarted := New(e.api, func() Config { return Config{Project: "mein-pack", Token: "mrp_x"} },
+		map[string]string{"mods": e.mods}, "", func() string { return "26.3" },
+		func(k string) string { return e.state[k] }, func(k, v string) { e.state[k] = v },
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	st := restarted.Status()
+	if len(st.Omitted) != 1 || st.Omitted[0] != "fremd.jar" || st.ProjectURL != "https://modrinth.com/modpack/mein-pack" {
+		t.Errorf("status nach Neustart = %+v", st)
+	}
+}
+
+// Ein Fehler beim Lesen der Versionsliste wird geloggt statt verschluckt.
+func TestHighestErrorIsLogged(t *testing.T) {
+	e := newEnv(t, "approved")
+	var buf bytes.Buffer
+	e.ch.log = slog.New(slog.NewTextHandler(&buf, nil))
+	e.api.versionsErr = errors.New("versions kaputt")
+	e.addMod("sodium.jar", "P-sod", "1", true)
+	if _, err := e.ch.Publish(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "level=WARN") || !strings.Contains(buf.String(), "versions kaputt") {
+		t.Errorf("log = %q, want Warnung mit Fehler", buf.String())
+	}
+	if strings.Contains(buf.String(), "mrp_x") {
+		t.Error("Log enthält den Token")
 	}
 }
