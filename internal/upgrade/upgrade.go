@@ -71,9 +71,11 @@ type Orchestrator struct {
 	OnlineTimeout time.Duration // Welt-Upgrade beim ersten Start kann dauern
 	PollStep      time.Duration
 
-	// Publish veröffentlicht das Client-Paket (Dropbox + Discord-Link) —
-	// optional; läuft automatisch nach erfolgreichem Client-Mod-Update.
-	// published=false: Veröffentlichung ist nicht eingerichtet (kein Fehler)
+	// Publish veröffentlicht das Client-Paket (Dropbox, Modrinth) —
+	// optional; läuft nach jedem erfolgreichen Sprung (außer bei
+	// gescheitertem Client-Weg). published=true nur, wenn eine
+	// „📦 Neues Mod-Paket"-Meldung an die Spieler ging; false ohne
+	// eingerichteten Versandweg oder wenn kein Kanal etwas verschickt hat.
 	Publish func(ctx context.Context) (published bool, err error)
 
 	// JavaProbe meldet die Java-Hauptversion des laufenden Container-Images
@@ -460,12 +462,13 @@ func (o *Orchestrator) finish(ctx context.Context, version string) error {
 		clientNote = " (Client-Mods konnten nicht automatisch aktualisiert werden — der Admin kümmert sich.)"
 		fields = append(fields, events.Field{Name: "Details", Value: clientErr.Error()})
 	}
-	// neues Paket automatisch verteilen, damit niemand mit alten Mods
-	// gegen den neuen Server anrennt
-	// Den Link nur ankündigen, wenn er wirklich gepostet wurde — ohne
-	// eingerichtete Veröffentlichung kam bisher „Download-Link folgt" und
-	// dann nichts (in der Testumgebung beobachtet).
-	if clientUpdated {
+	// Paket nach jedem erfolgreichen Sprung verteilen — auch ohne geänderte
+	// Client-Mods: das Modrinth-Modpack muss die neue MC-/Loader-Version
+	// deklarieren. Kanäle mit passendem Stand (Dropbox bei gleichem Inhalt)
+	// überspringt packpub. Bei gescheitertem Client-Weg nicht: das Paket
+	// hätte alte Mods unter neuer MC-Version, der Admin ist informiert.
+	// Den Link nur ankündigen, wenn die 📦-Meldung wirklich kam.
+	if clientErr == nil {
 		published := false
 		var pubErr error
 		if o.Publish != nil {
@@ -477,7 +480,7 @@ func (o *Orchestrator) finish(ctx context.Context, version string) error {
 			clientNote += " (Paket-Upload fehlgeschlagen — im Mods-Tab manuell veröffentlichen.)"
 		case published:
 			clientNote += " Den Download-Link findet ihr in der Meldung „📦 Neues Mod-Paket“."
-		default:
+		case clientUpdated:
 			clientNote += " Das neue Mod-Paket verteilt der Admin."
 		}
 	}

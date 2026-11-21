@@ -69,6 +69,44 @@ func (p *Publisher) Ready(name string) bool {
 
 func fpKey(name string) string { return "clientpack.published." + name }
 
+// Fingerprinter is optional for a Channel: hängt sein Stand nicht nur am
+// Inhalt des Client-Pakets (Modrinth: MC- und Loader-Version), fließt
+// Fingerprint() in den gemerkten Stand dieses Kanals ein.
+type Fingerprinter interface {
+	Fingerprint() string
+}
+
+// stamp is what a channel stores after a successful publish of content fp.
+func stamp(ch Channel, fp string) string {
+	if f, ok := ch.(Fingerprinter); ok {
+		return fp + "|" + f.Fingerprint()
+	}
+	return fp
+}
+
+// Current reports whether every configured channel already has the current
+// content. Ohne Fingerabdruck oder ohne eingerichteten Kanal: false.
+func (p *Publisher) Current() bool {
+	if p.fingerprint == nil {
+		return false
+	}
+	fp := p.fingerprint()
+	if fp == "" {
+		return false
+	}
+	ready := 0
+	for _, ch := range p.channels {
+		if !ch.Ready() {
+			continue
+		}
+		ready++
+		if p.get(fpKey(ch.Name())) != stamp(ch, fp) {
+			return false
+		}
+	}
+	return ready > 0
+}
+
 func selected(names []string, name string) bool {
 	if len(names) == 0 {
 		return true
@@ -85,8 +123,15 @@ func selected(names []string, name string) bool {
 // force=false überspringt Kanäle, deren letzter erfolgreicher Versand
 // denselben Inhalt hatte. Fehler: je gescheitertem Kanal, gebündelt.
 func (p *Publisher) Run(ctx context.Context, names []string, force bool) error {
+	_, err := p.RunReport(ctx, names, force)
+	return err
+}
+
+// RunReport is Run and additionally reports whether a „📦 Neues
+// Mod-Paket"-Meldung an die Spieler ging.
+func (p *Publisher) RunReport(ctx context.Context, names []string, force bool) (announced bool, err error) {
 	if !p.busy.CompareAndSwap(false, true) {
-		return ErrBusy
+		return false, ErrBusy
 	}
 	defer p.busy.Store(false)
 	fp := ""
@@ -102,7 +147,8 @@ func (p *Publisher) Run(ctx context.Context, names []string, force bool) error {
 			continue
 		}
 		ran++
-		if !force && fp != "" && p.get(fpKey(ch.Name())) == fp {
+		want := stamp(ch, fp)
+		if !force && fp != "" && p.get(fpKey(ch.Name())) == want {
 			continue // dieser Kanal hat den Inhalt schon
 		}
 		out, err := ch.Publish(ctx)
@@ -118,13 +164,13 @@ func (p *Publisher) Run(ctx context.Context, names []string, force bool) error {
 			continue
 		}
 		if fp != "" {
-			p.set(fpKey(ch.Name()), fp)
+			p.set(fpKey(ch.Name()), want)
 		}
 		lines = append(lines, out.Lines...)
 		fields = append(fields, out.Fields...)
 	}
 	if ran == 0 {
-		return ErrNotReady
+		return false, ErrNotReady
 	}
 	if len(lines) > 0 {
 		p.bus.Publish(events.Event{
@@ -134,5 +180,5 @@ func (p *Publisher) Run(ctx context.Context, names []string, force bool) error {
 			Fields:  fields,
 		})
 	}
-	return errors.Join(errs...)
+	return len(lines) > 0, errors.Join(errs...)
 }

@@ -489,34 +489,39 @@ func main() {
 	// Versandwege für das Client-Paket (packpub): Dropbox und Modrinth; jeder
 	// Kanal merkt sich seinen zuletzt verschickten Stand selbst
 	packs := packpub.New(func() string { return packFingerprint(clientDirs) }, kvGet, kvSet, bus, log, channels...)
-	// publishPack ist der einzige Weg zum Paket-Versand (Button, MC-Update,
-	// Mod-Neuigkeiten). „Paket veraltet" wird nur gelöscht, wenn ALLE
-	// Kanäle erfolgreich waren — ein gescheiterter wird beim nächsten
-	// Neustart nachgeholt, aktuelle überspringt packpub.
-	publishPack := func(ctx context.Context, channels []string, force bool) error {
+	// runPack ist der einzige Weg zum Paket-Versand (Button, MC-Update,
+	// Mod-Neuigkeiten); announced = eine 📦-Meldung ging an die Spieler.
+	// „Paket veraltet" wird erst gelöscht, wenn JEDER eingerichtete Kanal den
+	// aktuellen Stand hat (packs.Current) — egal ob dieser Lauf alle Kanäle
+	// oder nur einen (Knopf ?channel=…) betraf. Ein gescheiterter Kanal wird
+	// beim nächsten Neustart nachgeholt, aktuelle überspringt packpub.
+	runPack := func(ctx context.Context, channels []string, force bool) (bool, error) {
 		if clientDirs == nil {
-			return fmt.Errorf("kein Client-Profil konfiguriert")
+			return false, fmt.Errorf("kein Client-Profil konfiguriert")
 		}
 		gen := news.BeginPublish()
-		if err := packs.Run(ctx, channels, force); err != nil {
-			return err
+		announced, err := packs.RunReport(ctx, channels, force)
+		if err != nil {
+			return announced, err
 		}
-		// Nur ein Lauf über alle Kanäle löscht „Paket veraltet". Ein Lauf nur
-		// für einen Kanal (Knopf ?channel=…) darf das Flag nicht löschen,
-		// sonst bliebe der andere Kanal unbemerkt veraltet.
-		if len(channels) == 0 {
+		if packs.Current() {
 			news.Published(gen)
 		}
-		return nil
+		return announced, nil
+	}
+	publishPack := func(ctx context.Context, channels []string, force bool) error {
+		_, err := runPack(ctx, channels, force)
+		return err
 	}
 	if upgrader != nil && clientDirs != nil {
-		// nach dem Ein-Klick-MC-Update das frische Client-Paket
-		// automatisch verteilen — nur wenn ein Versandweg eingerichtet ist
+		// nach dem Ein-Klick-MC-Update das Client-Paket verteilen — nur wenn
+		// ein Versandweg eingerichtet ist. published=true nur, wenn wirklich
+		// eine 📦-Meldung kam (sonst kein „Download-Link findet ihr …").
 		upgrader.Publish = func(ctx context.Context) (bool, error) {
 			if !packs.Ready("") {
 				return false, nil // Feature aus — kein Fehler
 			}
-			return true, publishPack(ctx, nil, false)
+			return runPack(ctx, nil, false)
 		}
 	}
 	news.SetPublisher(func() bool { return packs.Ready("") }, func(ctx context.Context) error {

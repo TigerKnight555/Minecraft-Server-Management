@@ -490,3 +490,45 @@ func TestUpgradeSealsModSets(t *testing.T) {
 		t.Errorf("sealed = %v, want server@26.2 (und ggf. client)", sealed)
 	}
 }
+
+// Auch ohne geänderte Client-Mods wird das Paket verteilt: das Modpack muss
+// die neue MC-Version deklarieren. Der Spieler-Hinweis folgt dem, was
+// Publish meldet (📦-Meldung ja/nein).
+func TestPublishWithoutClientChange(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		announced bool
+		want, not string
+	}{
+		{"Modpack verschickt", true, "Meldung „📦 Neues Mod-Paket“", "verteilt der Admin"},
+		{"nichts verschickt", false, "", "Mod-Paket"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakes{backupOK: true, applyErr: mods.ErrNothingStaged}
+			f.online.Store(true)
+			bus := events.New()
+			ch, cancel := bus.Subscribe(16)
+			defer cancel()
+			o := newOrch(f, bus)
+			calls := 0
+			o.Publish = func(context.Context) (bool, error) { calls++; return tc.announced, nil }
+			if err := o.Start("26.2"); err != nil {
+				t.Fatal(err)
+			}
+			waitDone(t, o)
+			if calls != 1 {
+				t.Fatalf("Publish %d× aufgerufen, want 1 (auch ohne Client-Änderung)", calls)
+			}
+			for _, ev := range drain(ch) {
+				if ev.Type != events.TypeUpgradeOK {
+					continue
+				}
+				if !strings.Contains(ev.Message, tc.want) || strings.Contains(ev.Message, tc.not) {
+					t.Errorf("Meldung = %q (want %q, nicht %q)", ev.Message, tc.want, tc.not)
+				}
+				return
+			}
+			t.Fatal("keine Erfolgsmeldung")
+		})
+	}
+}

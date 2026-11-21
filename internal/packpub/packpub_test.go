@@ -150,3 +150,93 @@ func TestChannelWithoutLinesStaysQuiet(t *testing.T) {
 		t.Errorf("events = %+v, want keine Spieler-Meldung", evs)
 	}
 }
+
+// Ein Lauf nur für einen Kanal (Knopf) macht das Paket noch nicht „aktuell",
+// solange der andere Kanal den Stand nicht hat.
+func TestCurrentNeedsEveryReadyChannel(t *testing.T) {
+	fp := "A"
+	dbx := &fakeChannel{name: "dropbox", ready: true, lines: []string{"Download"}}
+	mr := &fakeChannel{name: "modrinth", ready: true, lines: []string{"Modrinth"}}
+	p, _, _ := setup(&fp, dbx, mr)
+	if p.Current() {
+		t.Fatal("Current vor jedem Versand")
+	}
+	if err := p.Run(context.Background(), []string{"dropbox"}, true); err != nil {
+		t.Fatal(err)
+	}
+	if p.Current() {
+		t.Error("Current nach Einzelkanal-Lauf, obwohl Modrinth fehlt")
+	}
+	if err := p.Run(context.Background(), []string{"modrinth"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if !p.Current() {
+		t.Error("Current = false, obwohl beide Kanäle den Stand haben")
+	}
+	fp = "B" // Inhalt geändert
+	if p.Current() {
+		t.Error("Current trotz geändertem Inhalt")
+	}
+	fp = ""
+	if p.Current() {
+		t.Error("Current ohne Fingerabdruck")
+	}
+}
+
+func TestCurrentFalseAfterFailedChannel(t *testing.T) {
+	fp := "A"
+	dbx := &fakeChannel{name: "dropbox", ready: true, lines: []string{"Download"}}
+	mr := &fakeChannel{name: "modrinth", ready: true, err: errors.New("offline")}
+	p, _, _ := setup(&fp, dbx, mr)
+	if err := p.Run(context.Background(), nil, false); err == nil {
+		t.Fatal("Fehler des Modrinth-Kanals fehlt")
+	}
+	if p.Current() {
+		t.Error("Current trotz gescheitertem Kanal")
+	}
+}
+
+// fpChannel hat einen eigenen Fingerabdruck (z. B. MC-/Loader-Version).
+type fpChannel struct {
+	fakeChannel
+	own string
+}
+
+func (f *fpChannel) Fingerprint() string { return f.own }
+
+func TestFingerprinterRerunsOnOwnChange(t *testing.T) {
+	fp := "A"
+	dbx := &fakeChannel{name: "dropbox", ready: true, lines: []string{"Download"}}
+	mr := &fpChannel{fakeChannel: fakeChannel{name: "modrinth", ready: true, lines: []string{"Modrinth"}}, own: "26.2|0.19"}
+	p, ch, _ := setup(&fp, dbx, mr)
+	if err := p.Run(context.Background(), nil, false); err != nil {
+		t.Fatal(err)
+	}
+	drain(ch)
+	// gleiche Dateien, aber neue MC-Version: nur Modrinth läuft erneut
+	mr.own = "26.3|0.20"
+	if !p.Ready("") || p.Current() {
+		t.Error("Current trotz geändertem Kanal-Fingerabdruck")
+	}
+	announced, err := p.RunReport(context.Background(), nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbx.calls != 1 || mr.calls != 2 {
+		t.Errorf("calls dropbox=%d modrinth=%d, want 1/2", dbx.calls, mr.calls)
+	}
+	if !announced {
+		t.Error("announced = false, obwohl Modrinth eine Meldung beigetragen hat")
+	}
+	if !p.Current() {
+		t.Error("Current = false nach erfolgreichem Lauf")
+	}
+	// nichts geändert: kein Kanal läuft, keine Meldung
+	announced, err = p.RunReport(context.Background(), nil, false)
+	if err != nil || announced {
+		t.Errorf("RunReport = %v, %v; want false, nil (alles aktuell)", announced, err)
+	}
+	if evs := drain(ch); len(evs) != 1 {
+		t.Errorf("events = %+v, want genau eine 📦-Meldung", evs)
+	}
+}
