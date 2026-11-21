@@ -2,6 +2,7 @@ package basepack
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -157,5 +158,46 @@ func TestLegacyStateGetsUniqueKeys(t *testing.T) {
 	}
 	if keyOf(t, st, "a.jar") != "P" {
 		t.Errorf("erste Datei (nach Pfad) soll den Projekt-Schlüssel behalten, got %q", keyOf(t, st, "a.jar"))
+	}
+}
+
+// Important 3: scheitert die Liste der eigenen Mods, darf nichts angewendet
+// werden — sonst lägen Pack- und eigene Kopie derselben Mod nebeneinander.
+func TestOwnErrorAborts(t *testing.T) {
+	s, api, files, root := setupReal(t)
+	ctx := context.Background()
+	api.addPackVersion(t, "26.3", "6.4.0", map[string]string{"sodium-1.jar": "s1"}, nil)
+	files.err = errors.New("modrinth down")
+	if _, err := s.Preview(ctx, "FO", "26.3"); err == nil {
+		t.Error("Preview ohne Fehler trotz gescheiterter Mod-Liste")
+	}
+	if _, err := s.Apply(ctx, "FO", "6.4.0", "26.3", nil); err == nil {
+		t.Error("Apply ohne Fehler trotz gescheiterter Mod-Liste")
+	}
+	if _, ok := s.State(); ok || exists(root, "mods", "sodium-1.jar") {
+		t.Error("Apply hat trotz Fehler angewendet")
+	}
+	files.err = nil
+	if _, err := s.Apply(ctx, "FO", "6.4.0", "26.3", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Toggle(ctx, "P-sodium", false); err != nil {
+		t.Fatal(err)
+	}
+	files.err = errors.New("modrinth down")
+	if err := s.Toggle(ctx, "P-sodium", true); err == nil {
+		t.Error("Anschalten ohne Fehler trotz gescheiterter Mod-Liste")
+	}
+	if st, _ := s.State(); !st.IsDisabled("P-sodium") || exists(root, "mods", "sodium-1.jar") {
+		t.Error("Anschalten hat trotz Fehler angewendet")
+	}
+	// Abschalten braucht die Liste nicht
+	files.err = nil
+	if err := s.Toggle(ctx, "P-sodium", true); err != nil {
+		t.Fatal(err)
+	}
+	files.err = errors.New("modrinth down")
+	if err := s.Toggle(ctx, "P-sodium", false); err != nil {
+		t.Errorf("Abschalten: %v", err)
 	}
 }

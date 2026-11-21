@@ -200,11 +200,13 @@ func (s *Service) load(ctx context.Context, projectID, versionID, mc string) (*l
 	return &loaded{project: proj, version: v, files: files, configs: configs, ignored: ignored, over: idx.Overrides}, nil
 }
 
-// own lists the admin's own files (ohne Pack-Dateien).
-func (s *Service) own(ctx context.Context, mc string, prev State) []OwnFile {
+// own lists the admin's own files (ohne Pack-Dateien). Ein Fehler muss das
+// Anwenden abbrechen: ohne Liste würde keine eigene Kopie übernommen, und
+// Pack- und eigene Datei derselben Mod lägen nebeneinander.
+func (s *Service) own(ctx context.Context, mc string, prev State) ([]OwnFile, error) {
 	entries, err := s.files.CheckUpdates(ctx, mods.ProfileClient, mc)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("eigene Mods prüfen: %w", err)
 	}
 	pack := map[string]bool{}
 	for _, f := range prev.Files {
@@ -217,7 +219,7 @@ func (s *Service) own(ctx context.Context, mc string, prev State) []OwnFile {
 		}
 		out = append(out, OwnFile{Category: e.Category, Filename: e.Filename, Key: e.ProjectID, Name: e.Name})
 	}
-	return out
+	return out, nil
 }
 
 // filterAbsorb drops own files whose pack mod the admin switched off: the own
@@ -294,7 +296,10 @@ func (s *Service) Preview(ctx context.Context, projectID, mc string) (*Preview, 
 	if err != nil {
 		return nil, err
 	}
-	own := s.own(ctx, mc, prev) // mit dem alten Stand: alte Pack-Dateien sind keine eigenen
+	own, err := s.own(ctx, mc, prev) // mit dem alten Stand: alte Pack-Dateien sind keine eigenen
+	if err != nil {
+		return nil, err
+	}
 	if prev.ProjectID != "" && prev.ProjectID != l.project.ID {
 		prev = State{} // anderes Pack: alles neu, die alten Pack-Dateien gehen raus (Apply)
 	}
@@ -341,7 +346,11 @@ func (s *Service) applyLocked(ctx context.Context, projectID, versionID, mc stri
 	if switching {
 		base = State{}
 	}
-	plan := Diff(base, l.files, l.configs, s.own(ctx, mc, prev))
+	own, err := s.own(ctx, mc, prev)
+	if err != nil {
+		return "", err
+	}
+	plan := Diff(base, l.files, l.configs, own)
 	plan.AbsorbOwn = filterAbsorb(plan.AbsorbOwn, base)
 
 	var adds []mods.FileAdd
@@ -548,8 +557,12 @@ func (s *Service) Toggle(ctx context.Context, key string, on bool) error {
 		}
 		add := addOf(f, data, "")
 		var removes []mods.FileRemove
+		own, err := s.own(ctx, st.MC, st)
+		if err != nil {
+			return err
+		}
 		absorbed := false
-		for _, o := range s.own(ctx, st.MC, st) {
+		for _, o := range own {
 			if f.ProjectID == "" || o.Key != f.ProjectID {
 				continue
 			}
