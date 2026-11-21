@@ -15,6 +15,7 @@ import (
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/auth"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/backup"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/basepack"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modpack"
@@ -36,6 +37,7 @@ type Server struct {
 	sched             *scheduler.Scheduler
 	authmgr           *auth.Manager
 	modmgr            *mods.Manager
+	basepack          *basepack.Service // nil = Basis-Modpack-Feature aus
 	watcher           *mods.Watcher
 	restore           *backup.Restore
 	mcDataDir         string      // read-only mount of the MC data dir ("" = feature off)
@@ -68,6 +70,7 @@ type Deps struct {
 	Scheduler         *scheduler.Scheduler
 	Auth              *auth.Manager
 	ModManager        *mods.Manager
+	Basepack          *basepack.Service
 	Watcher           *mods.Watcher
 	Restore           *backup.Restore
 	MCDataDir         string      // read-only MC data dir for the player list
@@ -109,6 +112,7 @@ func New(d Deps) *Server {
 		sched:             d.Scheduler,
 		authmgr:           d.Auth,
 		modmgr:            d.ModManager,
+		basepack:          d.Basepack,
 		watcher:           d.Watcher,
 		restore:           d.Restore,
 		mcDataDir:         d.MCDataDir,
@@ -165,6 +169,15 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("POST /api/mods/remove", s.handleModsRemove)
 		mux.HandleFunc("POST /api/mods/discard", s.handleModsDiscard)
 		mux.HandleFunc("GET /api/mods/apply-info", s.handleModsApplyInfo)
+		if s.basepack != nil {
+			mux.HandleFunc("GET /api/basepack", s.handleBasepackStatus)
+			mux.HandleFunc("GET /api/basepack/search", s.handleBasepackSearch)
+			mux.HandleFunc("GET /api/basepack/preview", s.handleBasepackPreview)
+			mux.HandleFunc("POST /api/basepack/apply", s.handleBasepackApply)
+			mux.HandleFunc("POST /api/basepack/toggle", s.handleBasepackToggle)
+			mux.HandleFunc("POST /api/basepack/configs", s.handleBasepackConfigs)
+			mux.HandleFunc("DELETE /api/basepack", s.handleBasepackRemove)
+		}
 		if s.packs != nil && s.publishPack != nil {
 			mux.HandleFunc("POST /api/mods/publish", s.handlePublishClientPack)
 		}

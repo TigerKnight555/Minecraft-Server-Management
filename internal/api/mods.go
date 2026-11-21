@@ -28,6 +28,9 @@ func (s *Server) handleModsList(w http.ResponseWriter, r *http.Request) {
 	if entries == nil {
 		entries = []mods.Entry{}
 	}
+	if profile == mods.ProfileClient && s.basepack != nil {
+		entries = s.decorateClient(entries)
+	}
 	writeJSON(w, http.StatusOK, entries)
 }
 
