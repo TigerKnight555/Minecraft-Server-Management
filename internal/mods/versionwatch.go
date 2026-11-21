@@ -15,6 +15,12 @@ import (
 // WatchStatus answers "lohnt sich der Umstieg schon?" (concept chapter on
 // Versions-Watch): newest MC release, Fabric loader support and per-mod
 // Modrinth readiness for both profiles.
+// BasepackReady meldet, ob das Basis-Modpack für die neueste MC-Version existiert.
+type BasepackReady struct {
+	Name  string `json:"name"`
+	Ready bool   `json:"ready"`
+}
+
 type WatchStatus struct {
 	Checked        time.Time         `json:"checked"`
 	CurrentVersion string            `json:"currentVersion"`
@@ -27,6 +33,8 @@ type WatchStatus struct {
 	// (0 = unbekannt). MC 26.2 braucht Java 25 — mit einem Java-21-Image
 	// startet der Server gar nicht erst (Learning 15).
 	RequiredJava int `json:"requiredJava"`
+	// Basepack ist nil, wenn kein Basis-Modpack eingerichtet ist.
+	Basepack *BasepackReady `json:"basepack,omitempty"`
 }
 
 type ProfileReady struct {
@@ -54,6 +62,8 @@ type Watcher struct {
 	// und wiederholt version.new/version.ready täglich (Learning 13)
 	annGet func(key string) string
 	annSet func(key, value string)
+
+	basepack func(ctx context.Context, mc string) (string, bool, bool)
 }
 
 func NewWatcher(api ModrinthAPI, mgr *Manager, loader string) *Watcher {
@@ -74,6 +84,12 @@ func (w *Watcher) SetEndpoints(manifest, fabric string) {
 func (w *Watcher) WithLogger(l *slog.Logger) *Watcher {
 	w.log = l
 	return w
+}
+
+// SetBasepack lets the watch report whether the base modpack exists for the
+// newest MC version (Kachel; Client-Paket ohne passendes Pack wäre kaputt).
+func (w *Watcher) SetBasepack(f func(ctx context.Context, mc string) (string, bool, bool)) {
+	w.basepack = f
 }
 
 // SetBus wires the event bus; version transitions are published there.
@@ -298,6 +314,11 @@ func (w *Watcher) Check(ctx context.Context, currentVersion string) (*WatchStatu
 			}
 		}
 		status.Profiles = append(status.Profiles, pr)
+	}
+	if w.basepack != nil && status.LatestVersion != "" {
+		if name, ready, set := w.basepack(ctx, status.LatestVersion); set {
+			status.Basepack = &BasepackReady{Name: name, Ready: ready}
+		}
 	}
 	return status, nil
 }

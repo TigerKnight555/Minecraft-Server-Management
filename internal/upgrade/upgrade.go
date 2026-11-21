@@ -121,6 +121,11 @@ type Orchestrator struct {
 	// ein Versionssprung mitten in einer Backup-/Neustart-Kette würde sich
 	// mit ihr um den Server streiten.
 	RoutineBusy func() string
+	// BasepackReady: gibt es das Basis-Modpack für die Zielversion?
+	// set=false = kein Basis-Pack eingerichtet.
+	BasepackReady func(ctx context.Context, mc string) (name string, ready, set bool)
+	// BasepackSwitch stellt das Basis-Modpack nach dem Sprung um.
+	BasepackSwitch func(ctx context.Context, mc string) error
 
 	// OnSuccess läuft nach einem erfolgreichen Sprung (z. B. Versions-Watch
 	// und Mod-Inventar sofort neu prüfen — sonst zeigt die Kachel bis zum
@@ -187,6 +192,15 @@ func (o *Orchestrator) Start(version string) error {
 		if busy := o.RoutineBusy(); busy != "" {
 			o.mu.Unlock()
 			return fmt.Errorf("gerade läuft „%s“ — das Update danach starten", busy)
+		}
+	}
+	if o.BasepackReady != nil {
+		bctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		name, ready, set := o.BasepackReady(bctx, version)
+		cancel()
+		if set && !ready {
+			o.mu.Unlock()
+			return fmt.Errorf("Basis-Modpack „%s“ gibt es noch nicht für Minecraft %s — abwarten oder Basis-Pack im Mods-Tab entfernen", name, version)
 		}
 	}
 	if o.PendingChanges != nil && o.PendingChanges() {
@@ -423,12 +437,21 @@ func (o *Orchestrator) explain(ctx context.Context) string {
 
 // finish updates the client profile and celebrates.
 func (o *Orchestrator) finish(ctx context.Context, version string) error {
+	var clientErrPre error
+	if o.BasepackSwitch != nil {
+		o.setStatus("stelle Basis-Modpack um")
+		if err := o.BasepackSwitch(ctx, version); err != nil {
+			o.log.Error("basis-modpack umstellen", "err", err)
+			clientErrPre = fmt.Errorf("basis-modpack umstellen: %w", err)
+		}
+	}
 	o.setStatus("aktualisiere Client-Mods")
 	clientNote := ""
 	clientUpdated := false
 	// Jeder Fehler auf dem Client-Weg wird sichtbar — bisher endete ein
 	// gescheiterter Check/Download stumm: kein Paket, kein Hinweis.
 	var clientErr error
+	clientErr = clientErrPre
 	// Mods, für die der Check gerade einen Build zur Zielversion gefunden
 	// hat, sind keine Nachzügler mehr — auch wenn der (bis zu 24 h alte)
 	// Versions-Watch das noch behauptet

@@ -532,3 +532,33 @@ func TestPublishWithoutClientChange(t *testing.T) {
 		})
 	}
 }
+
+func TestUpgradeRefusesWithoutBasepackVersion(t *testing.T) {
+	f := &fakes{backupOK: true}
+	f.online.Store(true)
+	o := newOrch(f, events.New())
+	o.BasepackReady = func(context.Context, string) (string, bool, bool) { return "Fabulously Optimized", false, true }
+	err := o.Start("26.2")
+	if err == nil || !strings.Contains(err.Error(), "Fabulously Optimized") || !strings.Contains(err.Error(), "26.2") {
+		t.Fatalf("err = %v", err)
+	}
+	if steps := f.list(); len(steps) != 0 {
+		t.Errorf("Kette lief trotzdem an: %v", steps)
+	}
+}
+
+func TestUpgradeSwitchesBasepack(t *testing.T) {
+	f := &fakes{backupOK: true}
+	f.online.Store(true)
+	o := newOrch(f, events.New())
+	var switched atomic.Value
+	o.BasepackReady = func(context.Context, string) (string, bool, bool) { return "FO", true, true }
+	o.BasepackSwitch = func(_ context.Context, mc string) error { switched.Store(mc); return nil }
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+	if v, _ := switched.Load().(string); v != "26.2" {
+		t.Errorf("Pack-Umstellung auf %q, want 26.2", v)
+	}
+}
