@@ -92,3 +92,17 @@ func TestSummary(t *testing.T) {
 		t.Errorf("erstes = %q", s)
 	}
 }
+
+func TestDiffAbsorbsOwnForExistingPackFile(t *testing.T) {
+	prev := State{ProjectID: "FO", Files: []PackFile{pf("P-sod", "sodium", "s1")}}
+	next := []PackFile{pf("P-sod", "sodium", "s1")}
+	own := []OwnFile{{Category: "mods", Filename: "sodium-own.jar", Key: "P-sod", Name: "Sodium"}}
+	p := Diff(prev, next, nil, own)
+
+	if len(p.AbsorbOwn) != 1 {
+		t.Fatalf("AbsorbOwn = %+v, want 1 entry", p.AbsorbOwn)
+	}
+	if len(p.Add) != 0 || len(p.Update) != 0 || len(p.Remove) != 0 {
+		t.Errorf("plan = %+v, want only AbsorbOwn", p)
+	}
+}

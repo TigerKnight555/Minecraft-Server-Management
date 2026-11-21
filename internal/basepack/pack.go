@@ -134,12 +134,14 @@ type FileUpdate struct {
 
 // Plan is the difference between the current and a new pack version.
 type Plan struct {
-	Add          []PackFile   `json:"add"`
-	Update       []FileUpdate `json:"update"`
-	Remove       []PackFile   `json:"remove"`
-	AbsorbOwn    []OwnFile    `json:"absorbOwn"`
-	DropAbsorbed []string     `json:"dropAbsorbed"`
-	NewConfigs   []string     `json:"newConfigs"`
+	Add    []PackFile   `json:"add"`
+	Update []FileUpdate `json:"update"`
+	Remove []PackFile   `json:"remove"`
+	// AbsorbOwn: eigene Dateien, deren Projekt jetzt Teil des Packs ist
+	// (neu hinzugefügt, aktualisiert oder unverändert).
+	AbsorbOwn    []OwnFile `json:"absorbOwn"`
+	DropAbsorbed []string  `json:"dropAbsorbed"`
+	NewConfigs   []string  `json:"newConfigs"`
 }
 
 // Diff compares the current state with the files and configs of a new
@@ -164,11 +166,11 @@ func Diff(prev State, next []PackFile, nextConfigs []string, own []OwnFile) Plan
 		switch {
 		case !ok:
 			p.Add = append(p.Add, n)
-			if own, isOwn := ownByKey[k]; isOwn {
-				p.AbsorbOwn = append(p.AbsorbOwn, own)
-			}
 		case o.SHA512 != n.SHA512:
 			p.Update = append(p.Update, FileUpdate{Old: o, New: n})
+		}
+		if of, isOwn := ownByKey[k]; isOwn {
+			p.AbsorbOwn = append(p.AbsorbOwn, of)
 		}
 	}
 	for _, o := range prev.Files {
