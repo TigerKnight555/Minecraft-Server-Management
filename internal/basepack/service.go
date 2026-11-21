@@ -86,6 +86,12 @@ func (s *Service) State() (State, bool) {
 	if raw == "" || json.Unmarshal([]byte(raw), &st) != nil || st.ProjectID == "" {
 		return State{}, false
 	}
+	for _, f := range st.Files {
+		if f.Key == "" { // alter Stand ohne Schlüssel
+			AssignKeys(st.Files)
+			break
+		}
+	}
 	return st, true
 }
 
@@ -190,6 +196,7 @@ func (s *Service) load(ctx context.Context, projectID, versionID, mc string) (*l
 			files[i].Name = files[i].Filename
 		}
 	}
+	AssignKeys(files)
 	return &loaded{project: proj, version: v, files: files, configs: configs, ignored: ignored, over: idx.Overrides}, nil
 }
 
@@ -543,7 +550,7 @@ func (s *Service) Toggle(ctx context.Context, key string, on bool) error {
 		var removes []mods.FileRemove
 		absorbed := false
 		for _, o := range s.own(ctx, st.MC, st) {
-			if o.Key != key {
+			if f.ProjectID == "" || o.Key != f.ProjectID {
 				continue
 			}
 			absorbed = true

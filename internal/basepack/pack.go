@@ -25,6 +25,8 @@ type PackFile struct {
 	SHA512    string `json:"sha512"`
 	URL       string `json:"url"`
 	Size      int64  `json:"size"`
+	// Key: eindeutiger Schlüssel im Pack (AssignKeys); leer = alter Stand
+	Key string `json:"key,omitempty"`
 }
 
 // State is the persisted base-pack setup.
@@ -44,12 +46,42 @@ type State struct {
 	WrittenConfigs []string `json:"writtenConfigs,omitempty"`
 }
 
-// Key identifies a pack file across versions: Modrinth-Projekt, sonst Pfad.
+// Key identifies a pack file across versions: der von AssignKeys vergebene
+// Schlüssel, sonst (alter Stand) Modrinth-Projekt bzw. Pfad.
 func Key(f PackFile) string {
+	if f.Key != "" {
+		return f.Key
+	}
 	if f.ProjectID != "" {
 		return f.ProjectID
 	}
 	return f.Path
+}
+
+// AssignKeys gives every file a key unique within files: das Modrinth-Projekt;
+// liefert ein Projekt mehrere Dateien, bekommt die erste (nach Pfad) die
+// Projekt-ID, jede weitere "<Projekt>#2", "#3" … — über Versionen stabil,
+// solange die Dateien des Projekts gleich bleiben. Ohne Projekt: der Pfad.
+func AssignKeys(files []PackFile) {
+	order := make([]int, len(files))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool { return files[order[a]].Path < files[order[b]].Path })
+	count := map[string]int{}
+	for _, i := range order {
+		f := &files[i]
+		if f.ProjectID == "" {
+			f.Key = f.Path
+			continue
+		}
+		count[f.ProjectID]++
+		if n := count[f.ProjectID]; n > 1 {
+			f.Key = fmt.Sprintf("%s#%d", f.ProjectID, n)
+		} else {
+			f.Key = f.ProjectID
+		}
+	}
 }
 
 func contains(list []string, s string) bool {
@@ -118,7 +150,9 @@ func DefaultOn(p string) bool {
 	return true
 }
 
-// OwnFile is a file the admin added himself (nicht aus dem Pack).
+// OwnFile is a file the admin added himself (nicht aus dem Pack). Key ist
+// beim Aufruf von Diff die Modrinth-Projekt-ID, in Plan.AbsorbOwn der
+// Schlüssel der übernehmenden Pack-Datei.
 type OwnFile struct {
 	Category string `json:"category"`
 	Filename string `json:"filename"`
@@ -152,10 +186,11 @@ func Diff(prev State, next []PackFile, nextConfigs []string, own []OwnFile) Plan
 	for _, f := range prev.Files {
 		old[Key(f)] = f
 	}
-	ownByKey := map[string]OwnFile{}
+	// eigene Dateien je Modrinth-Projekt (OwnFile.Key = Projekt-ID)
+	ownByProject := map[string][]OwnFile{}
 	for _, o := range own {
 		if o.Key != "" {
-			ownByKey[o.Key] = o
+			ownByProject[o.Key] = append(ownByProject[o.Key], o)
 		}
 	}
 	seen := map[string]bool{}
@@ -169,8 +204,14 @@ func Diff(prev State, next []PackFile, nextConfigs []string, own []OwnFile) Plan
 		case o.SHA512 != n.SHA512:
 			p.Update = append(p.Update, FileUpdate{Old: o, New: n})
 		}
-		if of, isOwn := ownByKey[k]; isOwn {
-			p.AbsorbOwn = append(p.AbsorbOwn, of)
+		// Übernahme durch die erste angeschaltete Pack-Datei des Projekts;
+		// in AbsorbOwn steht dann deren Pack-Schlüssel.
+		if n.ProjectID != "" && !prev.IsDisabled(k) {
+			for _, of := range ownByProject[n.ProjectID] {
+				of.Key = k
+				p.AbsorbOwn = append(p.AbsorbOwn, of)
+			}
+			delete(ownByProject, n.ProjectID)
 		}
 	}
 	for _, o := range prev.Files {
