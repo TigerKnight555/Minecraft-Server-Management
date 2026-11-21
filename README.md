@@ -63,7 +63,12 @@ Homeserver getestet.
   klicken dann in der Modrinth App nur noch auf „Update". Einrichtung
   (Projekt anlegen, Token eintragen) laut Anleitung im Einstellungen-Tab;
   die Versionsnummer folgt MAJOR = Minecraft-Version, MINOR = Loader oder
-  Inhalt, PATCH = Mod-Updates
+  Inhalt, PATCH = Mod-Updates. Das Client-Paket kann außerdem auf einem
+  Basis-Modpack von Modrinth (z. B. Fabulously Optimized) aufbauen: der
+  Admin ergänzt eigene Mods, schaltet Pack-Mods ab und wählt, welche
+  Pack-Configs mitgeliefert werden; das Pack wird per Klick als Ganzes
+  aktualisiert und beim Minecraft-Update automatisch auf die passende
+  Version umgestellt (ohne passende Version wird das Update verweigert)
 - **Discord-Benachrichtigungen:** verständlich formuliert; Erfolgsmeldungen
   nur, wenn Spieler betroffen waren, Fehler und Ausfälle immer
 - **Wartungsfenster:** geplante Auszeiten mit Ankündigung (1 h und 5 min
