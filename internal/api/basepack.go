@@ -55,6 +55,11 @@ func (s *Server) handleBasepackSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBasepackPreview(w http.ResponseWriter, r *http.Request) {
+	// die Vorschau prüft die eigenen Mods (Update-Cache) mit der MC-Version
+	// von jetzt — während eines Updates wäre das die alte
+	if s.basepackBlocked(w) {
+		return
+	}
 	project := strings.TrimSpace(r.URL.Query().Get("project"))
 	if project == "" || len(project) > 64 {
 		httpError(w, http.StatusBadRequest, "project fehlt")

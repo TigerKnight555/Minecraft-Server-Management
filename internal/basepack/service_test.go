@@ -21,10 +21,10 @@ func sum(b []byte) string { s := sha512.Sum512(b); return hex.EncodeToString(s[:
 
 // fakeAPI liefert Pack-Versionen als echte .mrpack-Bytes.
 type fakeAPI struct {
-	versions map[string][]modrinth.Version // mc → neueste zuerst
-	packs    map[string][]byte             // version id → .mrpack
-	blobs    map[string][]byte             // url → Datei
-	byHash   map[string]modrinth.Version
+	versions    map[string][]modrinth.Version // mc → neueste zuerst
+	packs       map[string][]byte             // version id → .mrpack
+	blobs       map[string][]byte             // url → Datei
+	byHash      map[string]modrinth.Version
 	versionsErr error // lässt ProjectVersions scheitern
 }
 

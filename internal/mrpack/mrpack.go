@@ -56,6 +56,18 @@ type indexFile struct {
 	FileSize  int64             `json:"fileSize"`
 }
 
+// AllowedURL: Download-Quellen, die Modrinth in Modpacks erlaubt (nur https).
+// Gilt beim Bauen des eigenen Packs wie beim Laden eines fremden — URLs aus
+// einem .mrpack sind Fremdeingaben.
+func AllowedURL(u string) bool {
+	for _, p := range []string{"https://cdn.modrinth.com/", "https://github.com/", "https://raw.githubusercontent.com/", "https://gitlab.com/"} {
+		if strings.HasPrefix(u, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // ValidPath enforces the spec: relativ, ohne „..", ohne Laufwerk/Backslash.
 func ValidPath(p string) bool {
 	if p == "" || strings.HasPrefix(p, "/") || strings.ContainsAny(p, `\:`) {

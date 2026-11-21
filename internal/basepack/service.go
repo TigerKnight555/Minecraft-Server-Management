@@ -70,6 +70,13 @@ type Service struct {
 	notify func([]mods.Change)
 	log    *slog.Logger
 	mu     sync.Mutex // serialisiert alle Änderungen
+
+	// geparster Stand für Lesezugriffe (cached)
+	cacheMu  sync.Mutex
+	cacheSet bool
+	cacheRaw string
+	cacheSt  State
+	cacheOK  bool
 }
 
 func New(api API, files Files, root string, get func(string) string, set func(string, string), notify func([]mods.Change), log *slog.Logger) *Service {
@@ -80,9 +87,27 @@ func New(api API, files Files, root string, get func(string) string, set func(st
 func (s *Service) Root() string { return s.root }
 
 // State returns the persisted state; ok=false = kein Basis-Pack gesetzt.
+// Jeder Aufruf liefert eine eigene Kopie (Aufrufer dürfen sie ändern).
 func (s *Service) State() (State, bool) {
-	var st State
+	return parseState(s.get(stateKey))
+}
+
+// cached returns the parsed state for read-only use (Pinned wird je
+// Mod-Eintrag gerufen): neu geparst nur, wenn sich der gespeicherte Text
+// geändert hat. Das Ergebnis darf nicht verändert werden.
+func (s *Service) cached() (State, bool) {
 	raw := s.get(stateKey)
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if !s.cacheSet || raw != s.cacheRaw {
+		s.cacheSt, s.cacheOK = parseState(raw)
+		s.cacheRaw, s.cacheSet = raw, true
+	}
+	return s.cacheSt, s.cacheOK
+}
+
+func parseState(raw string) (State, bool) {
+	var st State
 	if raw == "" || json.Unmarshal([]byte(raw), &st) != nil || st.ProjectID == "" {
 		return State{}, false
 	}
@@ -162,6 +187,11 @@ func (s *Service) load(ctx context.Context, projectID, versionID, mc string) (*l
 	}
 	if len(data) > maxPack {
 		return nil, fmt.Errorf("Modpack-Datei zu groß (höchstens 64 MB)")
+	}
+	if want := file.Hashes.SHA512; want != "" {
+		if got := sha512.Sum512(data); hex.EncodeToString(got[:]) != want {
+			return nil, fmt.Errorf("hash-verifikation der Modpack-Datei %s fehlgeschlagen — abgebrochen", file.Filename)
+		}
 	}
 	idx, err := mrpack.Parse(data)
 	if err != nil {
@@ -311,6 +341,9 @@ func (s *Service) Preview(ctx context.Context, projectID, mc string) (*Preview, 
 }
 
 func (s *Service) download(ctx context.Context, f PackFile) ([]byte, error) {
+	if !mrpack.AllowedURL(f.URL) {
+		return nil, fmt.Errorf("download %s: Quelle %q nicht erlaubt", f.Filename, f.URL)
+	}
 	b, err := s.api.Download(ctx, f.URL)
 	if err != nil {
 		return nil, fmt.Errorf("download %s: %w", f.Filename, err)
@@ -613,14 +646,17 @@ func (s *Service) SetConfigs(ctx context.Context, configs map[string]bool) error
 	if err != nil {
 		return err
 	}
+	changed := false
 	for p, on := range configs {
-		if _, known := st.Configs[p]; known {
+		if old, known := st.Configs[p]; known && old != on {
 			st.Configs[p] = on
+			changed = true
 		}
 	}
+	// auch ohne Änderung neu schreiben: stellt von Hand gelöschte Dateien her
 	st.WrittenConfigs = s.writeConfigs(st.WrittenConfigs, st.Configs, l.over)
 	s.save(&st)
-	if s.notify != nil {
+	if s.notify != nil && changed {
 		s.notify([]mods.Change{{Action: "pack", Profile: mods.ProfileClient, Name: "Einstellungen des Basis-Modpacks " + st.Title + " geändert"}})
 	}
 	return nil
@@ -700,7 +736,7 @@ func (s *Service) SwitchMC(ctx context.Context, mc string) error {
 
 // Pinned reports whether filename is an active pack file.
 func (s *Service) Pinned(filename string) bool {
-	st, ok := s.State()
+	st, ok := s.cached()
 	if !ok {
 		return false
 	}
@@ -715,7 +751,7 @@ func (s *Service) Pinned(filename string) bool {
 // IndexFiles maps sha512 → pack file (für das eigene Modrinth-Modpack).
 func (s *Service) IndexFiles() map[string]PackFile {
 	out := map[string]PackFile{}
-	if st, ok := s.State(); ok {
+	if st, ok := s.cached(); ok {
 		for _, f := range st.Files {
 			out[f.SHA512] = f
 		}
@@ -725,6 +761,6 @@ func (s *Service) IndexFiles() map[string]PackFile {
 
 // WrittenConfigs returns the config paths MSM wrote into the client pack.
 func (s *Service) WrittenConfigs() []string {
-	st, _ := s.State()
+	st, _ := s.cached()
 	return append([]string(nil), st.WrittenConfigs...)
 }

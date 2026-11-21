@@ -204,3 +204,16 @@ func TestParseRejectsTooManyEntries(t *testing.T) {
 		t.Error("Pack mit zu vielen Einträgen akzeptiert")
 	}
 }
+
+func TestAllowedURL(t *testing.T) {
+	for u, want := range map[string]bool{
+		"https://cdn.modrinth.com/x": true, "https://github.com/a/b": true,
+		"https://raw.githubusercontent.com/a": true, "https://gitlab.com/a": true,
+		"http://cdn.modrinth.com/x": false, "https://evil.com/x": false, "https://github.com.evil.com/x": false,
+		"http://169.254.169.254/latest": false, "": false,
+	} {
+		if AllowedURL(u) != want {
+			t.Errorf("AllowedURL(%q) != %v", u, want)
+		}
+	}
+}

@@ -541,7 +541,9 @@ func TestUpgradeRefusesWithoutBasepackVersion(t *testing.T) {
 	f := &fakes{backupOK: true}
 	f.online.Store(true)
 	o := newOrch(f, events.New())
-	o.BasepackReady = func(context.Context, string) (string, bool, bool, error) { return "Fabulously Optimized", false, true, nil }
+	o.BasepackReady = func(context.Context, string) (string, bool, bool, error) {
+		return "Fabulously Optimized", false, true, nil
+	}
 	err := o.Start("26.2")
 	if err == nil || !strings.Contains(err.Error(), "Fabulously Optimized") || !strings.Contains(err.Error(), "26.2") {
 		t.Fatalf("err = %v", err)

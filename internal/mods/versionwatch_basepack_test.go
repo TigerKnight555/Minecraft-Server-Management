@@ -27,7 +27,9 @@ func TestCheckReportsBasepack(t *testing.T) {
 		t.Errorf("ohne Setter: Basepack = %+v, want nil", status.Basepack)
 	}
 
-	w.SetBasepack(func(context.Context, string) (string, bool, bool, error) { return "Fabulously Optimized", false, true, nil })
+	w.SetBasepack(func(context.Context, string) (string, bool, bool, error) {
+		return "Fabulously Optimized", false, true, nil
+	})
 	status, err = w.Check(ctx, "1.21.11")
 	if err != nil {
 		t.Fatal(err)

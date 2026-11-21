@@ -95,16 +95,6 @@ func (c *Channel) SetBasepack(root string, configs func() []string, index func()
 	c.bpRoot, c.bpConfigs, c.bpIndex = root, configs, index
 }
 
-// allowedURL: Download-Quellen, die Modrinth in Modpacks erlaubt.
-func allowedURL(u string) bool {
-	for _, p := range []string{"https://cdn.modrinth.com/", "https://github.com/", "https://raw.githubusercontent.com/", "https://gitlab.com/"} {
-		if strings.HasPrefix(u, p) {
-			return true
-		}
-	}
-	return false
-}
-
 func (c *Channel) Name() string  { return "modrinth" }
 func (c *Channel) Label() string { return "Modrinth" }
 func (c *Channel) Ready() bool   { return c.api != nil && c.dirs != nil && c.cfg().Complete() }
@@ -278,14 +268,14 @@ func (c *Channel) Publish(ctx context.Context) (packpub.Outcome, error) {
 		if ok {
 			for i := range v.Files {
 				f := &v.Files[i]
-				if f.Hashes.SHA512 == l.sha512 && allowedURL(f.URL) && f.Hashes.SHA1 != "" {
+				if f.Hashes.SHA512 == l.sha512 && mrpack.AllowedURL(f.URL) && f.Hashes.SHA1 != "" {
 					file = f
 					break
 				}
 			}
 		}
 		if file == nil && c.bpIndex != nil {
-			if pf, ok := c.bpIndex()[l.sha512]; ok && allowedURL(pf.URL) && pf.SHA1 != "" {
+			if pf, ok := c.bpIndex()[l.sha512]; ok && mrpack.AllowedURL(pf.URL) && pf.SHA1 != "" {
 				files = append(files, mrpack.File{Path: l.category + "/" + l.name, SHA1: pf.SHA1, SHA512: l.sha512, URL: pf.URL, Size: pf.Size})
 				key := pf.ProjectID
 				if key == "" {

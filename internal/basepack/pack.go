@@ -100,7 +100,8 @@ var categories = map[string]bool{"mods": true, "resourcepacks": true, "shaderpac
 
 // FromIndex splits a parsed pack into client files, config paths and
 // ignored paths (unbekannte Ordner, Unterordner, Dateien in overrides/
-// unterhalb der Mod-Ordner). Nur-Server-Dateien fallen still weg.
+// unterhalb der Mod-Ordner, Dateien ohne erlaubte Download-Quelle).
+// Nur-Server-Dateien fallen still weg.
 func FromIndex(idx *mrpack.Index) (files []PackFile, configs []string, ignored []string) {
 	for _, f := range idx.Files {
 		if f.ClientEnv == "unsupported" {
@@ -113,8 +114,15 @@ func FromIndex(idx *mrpack.Index) (files []PackFile, configs []string, ignored [
 			continue
 		}
 		url := ""
-		if len(f.URLs) > 0 {
-			url = f.URLs[0]
+		for _, u := range f.URLs {
+			if mrpack.AllowedURL(u) {
+				url = u
+				break
+			}
+		}
+		if url == "" { // keine erlaubte Quelle (Schutz vor beliebigen Abrufen)
+			ignored = append(ignored, f.Path)
+			continue
 		}
 		files = append(files, PackFile{Path: f.Path, Category: dir, Filename: name,
 			SHA1: f.SHA1, SHA512: f.SHA512, URL: url, Size: f.Size})

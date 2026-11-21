@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modrinth"
@@ -199,5 +200,88 @@ func TestOwnErrorAborts(t *testing.T) {
 	files.err = errors.New("modrinth down")
 	if err := s.Toggle(ctx, "P-sodium", false); err != nil {
 		t.Errorf("Abschalten: %v", err)
+	}
+}
+
+// Minor 5: auch ein gespeicherter Stand mit fremder URL (Anschalten nutzt
+// die gespeicherte URL) wird nicht geladen.
+func TestDownloadRefusesForeignURL(t *testing.T) {
+	s, api, _, _ := setupReal(t)
+	ctx := context.Background()
+	api.addPackVersion(t, "26.3", "6.4.0", map[string]string{"sodium-1.jar": "s1"}, nil)
+	if _, err := s.Apply(ctx, "FO", "6.4.0", "26.3", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Toggle(ctx, "P-sodium", false); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := s.State()
+	st.Files[0].URL = "http://169.254.169.254/latest/meta-data"
+	api.blobs[st.Files[0].URL] = []byte("s1")
+	s.save(&st)
+	if err := s.Toggle(ctx, "P-sodium", true); err == nil || !strings.Contains(err.Error(), "Quelle") {
+		t.Errorf("err = %v, want Ablehnung der Quelle", err)
+	}
+}
+
+// Minor 6: die .mrpack-Datei wird gegen den SHA512 der Version geprüft.
+func TestPackHashVerified(t *testing.T) {
+	s, api, _, _ := setupReal(t)
+	api.addPackVersion(t, "26.3", "6.4.0", map[string]string{"sodium-1.jar": "s1"}, nil)
+	v := &api.versions["26.3"][0]
+	v.Files[0].Hashes.SHA512 = sum(api.packs[v.Files[0].URL])
+	if _, err := s.Preview(context.Background(), "FO", "26.3"); err != nil {
+		t.Fatalf("korrekte Prüfsumme abgelehnt: %v", err)
+	}
+	v.Files[0].Hashes.SHA512 = sum([]byte("anders"))
+	if _, err := s.Preview(context.Background(), "FO", "26.3"); err == nil || !strings.Contains(err.Error(), "hash") {
+		t.Errorf("err = %v, want Prüfsummenfehler", err)
+	}
+}
+
+// Minor 8: unveränderte Config-Auswahl meldet keine „geändert“-Zeile.
+func TestSetConfigsNoopNoNotify(t *testing.T) {
+	s, api, _, _, notes := setup(t)
+	ctx := context.Background()
+	api.addPackVersion(t, "26.3", "6.4.0", map[string]string{"sodium-1.jar": "s1"}, map[string]string{"config/a.json": "A"})
+	if _, err := s.Apply(ctx, "FO", "6.4.0", "26.3", nil); err != nil {
+		t.Fatal(err)
+	}
+	n := len(*notes)
+	st, _ := s.State()
+	if err := s.SetConfigs(ctx, map[string]bool{"config/a.json": st.Configs["config/a.json"]}); err != nil {
+		t.Fatal(err)
+	}
+	if len(*notes) != n {
+		t.Errorf("no-op meldet: %+v", (*notes)[n:])
+	}
+	if err := s.SetConfigs(ctx, map[string]bool{"config/a.json": !st.Configs["config/a.json"]}); err != nil {
+		t.Fatal(err)
+	}
+	if len(*notes) != n+1 {
+		t.Error("echte Änderung nicht gemeldet")
+	}
+}
+
+// Minor 9: Pinned wird je Mod-Eintrag gerufen — der Stand darf nicht jedes
+// Mal neu geparst werden, muss aber Änderungen sofort sehen.
+func TestPinnedUsesCachedState(t *testing.T) {
+	s, api, _, _ := setupReal(t)
+	ctx := context.Background()
+	api.addPackVersion(t, "26.3", "6.4.0", map[string]string{"sodium-1.jar": "s1", "lithium-1.jar": "l1"}, nil)
+	if _, err := s.Apply(ctx, "FO", "6.4.0", "26.3", nil); err != nil {
+		t.Fatal(err)
+	}
+	if !s.Pinned("sodium-1.jar") {
+		t.Fatal("sodium nicht angeheftet")
+	}
+	if allocs := testing.AllocsPerRun(100, func() { s.Pinned("sodium-1.jar") }); allocs > 0 {
+		t.Errorf("Pinned alloziert %.0f× je Aufruf — Stand wird neu geparst", allocs)
+	}
+	if err := s.Toggle(ctx, "P-sodium", false); err != nil {
+		t.Fatal(err)
+	}
+	if s.Pinned("sodium-1.jar") {
+		t.Error("Cache sieht die Abschaltung nicht")
 	}
 }

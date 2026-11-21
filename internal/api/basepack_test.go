@@ -51,6 +51,10 @@ func TestBasepackRoutes(t *testing.T) {
 	if rec := bpDo(srv, "DELETE", "/api/basepack", ""); rec.Code != 409 {
 		t.Errorf("remove während Update = %d", rec.Code)
 	}
+	// Vorschau würde den Client-Update-Cache mit der alten MC-Version füllen
+	if rec := bpDo(srv, "GET", "/api/basepack/preview?project=FO", ""); rec.Code != 409 {
+		t.Errorf("preview während Update = %d", rec.Code)
+	}
 }
 
 func TestBasepackDisabledWithoutService(t *testing.T) {
@@ -126,4 +130,3 @@ func (stubBPFiles) ApplyFiles(string, []mods.FileAdd, []mods.FileRemove, string)
 func (stubBPFiles) CheckUpdates(context.Context, string, string) ([]mods.Entry, error) {
 	return nil, nil
 }
-

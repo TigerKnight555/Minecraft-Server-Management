@@ -133,3 +133,20 @@ func TestPlanJSONShape(t *testing.T) {
 		t.Errorf("legacy decode = %+v, %v", o, err)
 	}
 }
+
+// Minor 5: nur erlaubte Download-Quellen (https, Modrinth-Liste); die erste
+// erlaubte gewinnt, ohne erlaubte Quelle landet die Datei in ignored.
+func TestFromIndexAllowListsURLs(t *testing.T) {
+	idx := &mrpack.Index{Files: []mrpack.IndexFile{
+		{Path: "mods/a.jar", SHA512: "A", URLs: []string{"http://169.254.169.254/a", "https://cdn.modrinth.com/a"}},
+		{Path: "mods/b.jar", SHA512: "B", URLs: []string{"https://evil.com/b"}},
+		{Path: "mods/c.jar", SHA512: "C"},
+	}}
+	files, _, ignored := FromIndex(idx)
+	if len(files) != 1 || files[0].URL != "https://cdn.modrinth.com/a" {
+		t.Errorf("files = %+v", files)
+	}
+	if strings.Join(ignored, ",") != "mods/b.jar,mods/c.jar" {
+		t.Errorf("ignored = %v", ignored)
+	}
+}

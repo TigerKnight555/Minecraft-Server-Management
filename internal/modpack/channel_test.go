@@ -369,18 +369,6 @@ func TestBasepackFilesAndConfigs(t *testing.T) {
 	}
 }
 
-func TestAllowedURL(t *testing.T) {
-	for u, want := range map[string]bool{
-		"https://cdn.modrinth.com/x": true, "https://github.com/a/b": true,
-		"https://raw.githubusercontent.com/a": true, "https://gitlab.com/a": true,
-		"http://cdn.modrinth.com/x": false, "https://evil.com/x": false, "https://github.com.evil.com/x": false,
-	} {
-		if allowedURL(u) != want {
-			t.Errorf("allowedURL(%q) != %v", u, want)
-		}
-	}
-}
-
 func TestBasepackFilesWithoutProjectID(t *testing.T) {
 	e := newEnv(t, "approved")
 	e.addMod("sodium.jar", "P-sod", "1", true)
