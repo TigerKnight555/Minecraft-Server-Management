@@ -51,6 +51,7 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/api"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/auth"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/backup"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/basepack"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/dockerclient"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/dropbox"
@@ -126,6 +127,8 @@ func main() {
 		admin       api.AdminStore
 		modAPI      mods.ModrinthAPI
 		modProfiles []mods.Profile
+		// Wurzel des Client-Pakets; leer im Mock-Modus
+		clientPackRoot string
 	)
 
 	if *mockMode {
@@ -168,13 +171,13 @@ func main() {
 
 		modAPI = modrinth.New()
 		serverMods := envOr("MSM_SERVER_MODS_DIR", "/mc/mods")
-		clientPack := envOr("MSM_CLIENT_PACK_DIR", "/mc/client-pack")
+		clientPackRoot = envOr("MSM_CLIENT_PACK_DIR", "/mc/client-pack")
 		modProfiles = []mods.Profile{
 			{Name: "server", Dirs: map[string]string{"mods": serverMods}},
 			{Name: "client", Dirs: map[string]string{
-				"mods":          filepath.Join(clientPack, "mods"),
-				"shaderpacks":   filepath.Join(clientPack, "shaderpacks"),
-				"resourcepacks": filepath.Join(clientPack, "resourcepacks"),
+				"mods":          filepath.Join(clientPackRoot, "mods"),
+				"shaderpacks":   filepath.Join(clientPackRoot, "shaderpacks"),
+				"resourcepacks": filepath.Join(clientPackRoot, "resourcepacks"),
 			}},
 		}
 	}
@@ -320,6 +323,15 @@ func main() {
 	// Änderungen und meldet sie nach dem nächsten Neustart in Discord
 	news := modnews.New(kvGet, kvSet, bus, func() bool { return mcState().Online }, log)
 	modmgr.SetChangeHook(news.OnApply)
+	// Basis-Modpack (nur mit echtem Modrinth-Client)
+	var bp *basepack.Service
+	if mrc, ok := modAPI.(*modrinth.Client); ok && clientPackRoot != "" {
+		bp = basepack.New(mrc, modmgr, clientPackRoot, kvGet, kvSet,
+			func(c []mods.Change) { news.OnApply(mods.ProfileClient, c) }, log)
+		modmgr.SetPinned(func(profile, filename string) bool {
+			return profile == mods.ProfileClient && bp.Pinned(filename)
+		})
+	}
 	news.SetPendingServer(func() map[string]bool {
 		out := map[string]bool{}
 		for _, e := range modmgr.Entries(mods.ProfileServer) {
@@ -335,6 +347,9 @@ func main() {
 		return out
 	})
 	watcher := mods.NewWatcher(modAPI, modmgr, loader)
+	if bp != nil {
+		watcher.SetBasepack(bp.Ready)
+	}
 	watcher.SetBus(bus)
 	if kvGet != nil {
 		watcher.SetAnnounceStore(kvGet, kvSet)
@@ -418,6 +433,10 @@ func main() {
 		// Welt nachweislich unangetastet ist (Learning 19)
 		upgrader.ModRollback = modmgr.RollbackLabel
 		upgrader.ModSeal = modmgr.SealLabel
+		if bp != nil {
+			upgrader.BasepackReady = bp.Ready
+			upgrader.BasepackSwitch = bp.SwitchMC
+		}
 		// Routinen und Versionssprung schließen sich gegenseitig aus
 		upgrader.RoutineBusy = sched.Busy
 		sched.SetUpgradeCheck(upgrader.Active)
@@ -482,13 +501,22 @@ func main() {
 		mpChannel = modpack.New(mrc, cfg.ModrinthConfig, clientDirs, mcDataDir,
 			func() string { return mcState().Version }, kvGet, kvSet, log)
 	}
-	channels := []packpub.Channel{dropbox.Channel{C: dbx, Dirs: clientDirs}}
+	var bpRoot string
+	bpConfigs := func() []string { return nil }
+	if bp != nil {
+		bpRoot = bp.Root()
+		bpConfigs = bp.WrittenConfigs
+		if mpChannel != nil {
+			mpChannel.SetBasepack(bpRoot, bp.WrittenConfigs, bp.IndexFiles)
+		}
+	}
+	channels := []packpub.Channel{dropbox.Channel{C: dbx, Dirs: clientDirs, Root: bpRoot, Extra: bpConfigs}}
 	if mpChannel != nil {
 		channels = append(channels, mpChannel)
 	}
 	// Versandwege für das Client-Paket (packpub): Dropbox und Modrinth; jeder
 	// Kanal merkt sich seinen zuletzt verschickten Stand selbst
-	packs := packpub.New(func() string { return packFingerprint(clientDirs, "", nil) }, kvGet, kvSet, bus, log, channels...)
+	packs := packpub.New(func() string { return packFingerprint(clientDirs, bpRoot, bpConfigs()) }, kvGet, kvSet, bus, log, channels...)
 	// runPack ist der einzige Weg zum Paket-Versand (Button, MC-Update,
 	// Mod-Neuigkeiten); announced = eine 📦-Meldung ging an die Spieler.
 	// „Paket veraltet" wird erst gelöscht, wenn JEDER eingerichtete Kanal den
@@ -528,7 +556,7 @@ func main() {
 		return publishPack(ctx, nil, false)
 	})
 	if clientDirs != nil {
-		news.SetFingerprint(func() string { return packFingerprint(clientDirs, "", nil) })
+		news.SetFingerprint(func() string { return packFingerprint(clientDirs, bpRoot, bpConfigs()) })
 	}
 	news.SetBusy(upgradeActive)
 	go news.Run(ctx)
@@ -566,6 +594,7 @@ func main() {
 			},
 			Packs:             packs,
 			Modpack:           mpChannel,
+			Basepack:          bp,
 			PublishPack:       publishPack,
 			Upgrader:          upgrader,
 			Settings:          cfg,
