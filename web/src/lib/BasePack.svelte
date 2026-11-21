@@ -159,8 +159,9 @@
       <h3>Configs von {status?.state?.title} {status?.state?.versionNumber}</h3>
       <p class="dim-sm">Gilt für die aktuelle Pack-Version. Mitgelieferte Configs überschreiben bei jedem Paket-Update die Spieler-Datei.</p>
       {#each currentConfigs() as path (path)}
-        <label class="cfg"><input type="checkbox" bind:checked={cfgEdit[path]} /> <code>{path}</code></label>
+        <label class="cfg"><input type="checkbox" bind:checked={cfgEdit[path]} disabled={busy} /> <code>{path}</code></label>
       {/each}
+      {#if busy}<p class="dim-sm" role="status">Speichere Auswahl und schreibe Configs …</p>{/if}
       <div class="row">
         <button class="btn accent" onclick={doSaveConfigs} disabled={busy || blocked}>Speichern</button>
         <button class="btn" onclick={() => (cfgEdit = null)} disabled={busy}>Abbrechen</button>
