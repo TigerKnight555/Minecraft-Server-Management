@@ -67,3 +67,102 @@ func TestPinnedFilesGetNoUpdates(t *testing.T) {
 		t.Error("pinned-Abfrage falsch")
 	}
 }
+
+func readF(t *testing.T, p string) string {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func TestApplyFilesPartialFailureMarksAndCleansUp(t *testing.T) {
+	root := t.TempDir()
+	mods := filepath.Join(root, "mods")
+	os.MkdirAll(mods, 0o755)
+	cfg := filepath.Join(root, "config")
+	os.WriteFile(cfg, []byte("ich bin eine Datei"), 0o644) // Ziel-Ordner unbrauchbar
+	p := Profile{Name: ProfileServer, Dirs: map[string]string{"mods": mods, "config": cfg}}
+	m := NewManager(nil, "fabric", []Profile{p})
+
+	label, err := m.ApplyFiles(ProfileServer, []FileAdd{
+		{Category: "mods", Filename: "a.jar", Data: []byte("a"), SHA512: hexsum([]byte("a"))},
+		{Category: "config", Filename: "b.cfg", Data: []byte("b"), SHA512: hexsum([]byte("b"))},
+	}, nil, "Pack 1")
+	if err == nil || !strings.Contains(err.Error(), "RollbackLabel") {
+		t.Fatalf("err = %v, want Teilfehler mit Hinweis", err)
+	}
+	if !exists(filepath.Join(mods, "a.jar")) {
+		t.Error("bereits angewendetes Item fehlt")
+	}
+	if !exists(filepath.Join(mods, ".backup", label, basepackFile)) {
+		t.Error(".basepack-Marker fehlt im Teilsatz")
+	}
+	if exists(filepath.Join(stagingDir(p), "manifest.json")) || exists(filepath.Join(stagingDir(p), "b.cfg")) {
+		t.Error("Staging nicht aufgeräumt")
+	}
+	if _, err := m.ApplyFiles(ProfileServer, []FileAdd{{Category: "mods", Filename: "c.jar", Data: []byte("c"), SHA512: hexsum([]byte("c"))}}, nil, ""); err != nil {
+		t.Fatalf("Wiederholung scheitert: %v", err)
+	}
+}
+
+func TestApplyFilesBacksUpSameNameFile(t *testing.T) {
+	m, _, dir := testProfile(t)
+	os.WriteFile(filepath.Join(dir, "x.jar"), []byte("old"), 0o644)
+	label, err := m.ApplyFiles(ProfileServer, []FileAdd{{Category: "mods", Filename: "x.jar", Data: []byte("new"), SHA512: hexsum([]byte("new"))}}, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readF(t, filepath.Join(dir, "x.jar")); got != "new" {
+		t.Errorf("live x.jar = %q", got)
+	}
+	if got := readF(t, filepath.Join(dir, ".backup", label, "x.jar")); got != "old" {
+		t.Errorf("backup x.jar = %q", got)
+	}
+}
+
+// Identische vorhandene Datei: nichts zu tun, Label "" (kein Satz).
+func TestApplyFilesSkipsIdenticalExisting(t *testing.T) {
+	m, p, dir := testProfile(t)
+	os.WriteFile(filepath.Join(dir, "y.jar"), []byte("c"), 0o644)
+	label, err := m.ApplyFiles(ProfileServer, []FileAdd{{Category: "mods", Filename: "y.jar", Data: []byte("c"), SHA512: hexsum([]byte("c"))}}, nil, "M")
+	if err != nil || label != "" {
+		t.Fatalf("label=%q err=%v, want leer, nil", label, err)
+	}
+	if exists(filepath.Join(dir, ".backup")) || exists(stagingDir(p)) {
+		t.Error("es darf nichts angelegt werden")
+	}
+}
+
+func TestApplyFilesRejectsDuplicateNamesAndUnknownRemoveCategory(t *testing.T) {
+	m, _, _ := testProfile(t)
+	add := func(n, c string) FileAdd {
+		return FileAdd{Category: "mods", Filename: n, Data: []byte(c), SHA512: hexsum([]byte(c))}
+	}
+	if _, err := m.ApplyFiles(ProfileServer, []FileAdd{add("d.jar", "1"), add("d.jar", "2")}, nil, ""); err == nil {
+		t.Error("doppelter Dateiname akzeptiert")
+	}
+	r := add("e.jar", "e")
+	r2 := add("f.jar", "f")
+	r2.Replaces = "e.jar"
+	if _, err := m.ApplyFiles(ProfileServer, []FileAdd{r, r2}, nil, ""); err == nil {
+		t.Error("Add-Name = Replaces eines anderen Adds akzeptiert")
+	}
+	if _, err := m.ApplyFiles(ProfileServer, nil, []FileRemove{{Category: "nix", Filename: "g.jar"}}, ""); err == nil {
+		t.Error("unbekannte Remove-Kategorie akzeptiert")
+	}
+}
+
+func TestApplyFilesCorruptManifestIsNotOverwritten(t *testing.T) {
+	m, p, _ := testProfile(t)
+	os.MkdirAll(stagingDir(p), 0o755)
+	mp := filepath.Join(stagingDir(p), "manifest.json")
+	os.WriteFile(mp, []byte("{kaputt"), 0o644)
+	if _, err := m.ApplyFiles(ProfileServer, []FileAdd{{Category: "mods", Filename: "z.jar", Data: []byte("z"), SHA512: hexsum([]byte("z"))}}, nil, ""); err == nil {
+		t.Error("kaputte Staging-Liste ignoriert")
+	}
+	if readF(t, mp) != "{kaputt" {
+		t.Error("kaputte Staging-Liste überschrieben")
+	}
+}
