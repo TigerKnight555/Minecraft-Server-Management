@@ -285,3 +285,85 @@ func TestPinnedUsesCachedState(t *testing.T) {
 		t.Error("Cache sieht die Abschaltung nicht")
 	}
 }
+
+// Re-Review 1: Schlüssel je Kategorie — kommt eine weitere Mod-Datei des
+// Projekts dazu, verschiebt das nicht den Schlüssel des Resourcepacks.
+func TestKeysPerCategoryStable(t *testing.T) {
+	s, api, _, root := setupReal(t)
+	ctx := context.Background()
+	api.addPackVersion(t, "26.3", "6.4.0", map[string]string{"p-a.jar": "a1", "resourcepacks/p-rp.zip": "r1"}, nil)
+	if _, err := s.Apply(ctx, "FO", "6.4.0", "26.3", nil); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := s.State()
+	kRP := keyOf(t, st, "p-rp.zip")
+	if keyOf(t, st, "p-a.jar") != "P-p" || kRP != "P-p@resourcepacks" {
+		t.Fatalf("keys = %q, %q", keyOf(t, st, "p-a.jar"), kRP)
+	}
+	if err := s.Toggle(ctx, kRP, false); err != nil {
+		t.Fatal(err)
+	}
+	api.addPackVersion(t, "26.3", "6.5.0", map[string]string{"p-a.jar": "a1", "p-b.jar": "b1", "resourcepacks/p-rp.zip": "r1"}, nil)
+	if _, err := s.Apply(ctx, "FO", "6.5.0", "26.3", nil); err != nil {
+		t.Fatal(err)
+	}
+	st, _ = s.State()
+	if !st.IsDisabled(kRP) || st.IsDisabled(keyOf(t, st, "p-b.jar")) || keyOf(t, st, "p-b.jar") != "P-p#2" {
+		t.Errorf("disabled = %v, keys b=%q", st.Disabled, keyOf(t, st, "p-b.jar"))
+	}
+	if !exists(root, "mods", "p-b.jar") || exists(root, "resourcepacks", "p-rp.zip") {
+		t.Error("neue Mod-Datei fehlt oder Resourcepack wieder an")
+	}
+}
+
+// Re-Review 1: alter Stand mit nacktem Projekt-Schlüssel, der jetzt keiner
+// Datei mehr gehört, zeigt auf die erste Datei des Projekts.
+func TestLegacyBareKeyMapped(t *testing.T) {
+	s, _, _, _ := setupReal(t)
+	s.save(&State{ProjectID: "FO", Title: "FO", Files: []PackFile{
+		{Path: "resourcepacks/x.zip", Category: "resourcepacks", Filename: "x.zip", ProjectID: "P"},
+	}, Disabled: []string{"P"}, Absorbed: []string{"P"}})
+	st, _ := s.State()
+	if k := Key(st.Files[0]); k != "P@resourcepacks" || !st.IsDisabled(k) || !contains(st.Absorbed, k) {
+		t.Errorf("key %q, state %+v", k, st)
+	}
+}
+
+// Re-Review 2: eigene Datei wird nur von einer Pack-Datei desselben
+// Projekts UND derselben Kategorie übernommen, nie bei abgeschalteter.
+func TestAbsorbOnlySameCategory(t *testing.T) {
+	s, api, files, root := setupReal(t)
+	ctx := context.Background()
+	api.addPackVersion(t, "26.3", "6.4.0", map[string]string{"p-a.jar": "a1", "resourcepacks/p-rp.zip": "r1"}, nil)
+	if _, err := s.Apply(ctx, "FO", "6.4.0", "26.3", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Toggle(ctx, "P-p", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Toggle(ctx, "P-p@resourcepacks", false); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(root, "mods", "p-own.jar"), []byte("own"), 0o644)
+	files.own = []mods.Entry{{Category: "mods", Filename: "p-own.jar", ProjectID: "P-p", Name: "P"}}
+	if err := s.Toggle(ctx, "P-p@resourcepacks", true); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(root, "mods", "p-own.jar") {
+		t.Fatal("Anschalten des Resourcepacks hat die eigene Mod entfernt")
+	}
+	api.addPackVersion(t, "26.3", "6.5.0", map[string]string{"p-a.jar": "a2", "resourcepacks/p-rp.zip": "r2"}, nil)
+	pv, err := s.Preview(ctx, "FO", "26.3")
+	if err != nil || len(pv.Plan.AbsorbOwn) != 0 {
+		t.Errorf("preview absorb = %+v, %v", pv.Plan.AbsorbOwn, err)
+	}
+	if _, err := s.Apply(ctx, "FO", "6.5.0", "26.3", nil); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(root, "mods", "p-own.jar") || exists(root, "mods", "p-a.jar") {
+		t.Error("Pack-Update hat die eigene Mod übernommen bzw. die abgeschaltete Pack-Mod angeschaltet")
+	}
+	if st, _ := s.State(); len(st.Absorbed) != 0 {
+		t.Errorf("absorbed = %v", st.Absorbed)
+	}
+}

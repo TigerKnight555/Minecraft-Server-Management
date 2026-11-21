@@ -58,10 +58,11 @@ func Key(f PackFile) string {
 	return f.Path
 }
 
-// AssignKeys gives every file a key unique within files: das Modrinth-Projekt;
-// liefert ein Projekt mehrere Dateien, bekommt die erste (nach Pfad) die
-// Projekt-ID, jede weitere "<Projekt>#2", "#3" … — über Versionen stabil,
-// solange die Dateien des Projekts gleich bleiben. Ohne Projekt: der Pfad.
+// AssignKeys gives every file a key unique within files: Datei in mods/ →
+// Projekt-ID, in einem anderen Ordner → "<Projekt>@<Ordner>". Liefert ein
+// Projekt im SELBEN Ordner mehrere Dateien, bekommen die weiteren (nach Pfad)
+// "#2", "#3" … angehängt. So verschiebt eine neue Datei in einem Ordner nie
+// die Schlüssel (und Abschaltungen) im anderen. Ohne Projekt: der Pfad.
 func AssignKeys(files []PackFile) {
 	order := make([]int, len(files))
 	for i := range order {
@@ -75,13 +76,61 @@ func AssignKeys(files []PackFile) {
 			f.Key = f.Path
 			continue
 		}
-		count[f.ProjectID]++
-		if n := count[f.ProjectID]; n > 1 {
-			f.Key = fmt.Sprintf("%s#%d", f.ProjectID, n)
+		base := f.ProjectID
+		if f.Category != "mods" {
+			base += "@" + f.Category
+		}
+		count[base]++
+		if n := count[base]; n > 1 {
+			f.Key = fmt.Sprintf("%s#%d", base, n)
 		} else {
-			f.Key = f.ProjectID
+			f.Key = base
 		}
 	}
+}
+
+// firstKeys maps each project to the key of its first file (nach Pfad).
+func firstKeys(files []PackFile) map[string]string {
+	out := map[string]string{}
+	first := map[string]string{}
+	for _, f := range files {
+		if f.ProjectID == "" {
+			continue
+		}
+		if p, ok := first[f.ProjectID]; !ok || f.Path < p {
+			first[f.ProjectID] = f.Path
+			out[f.ProjectID] = Key(f)
+		}
+	}
+	return out
+}
+
+// normalizeKeys vergibt die Schlüssel neu und biegt nackte Projekt-IDs
+// aus älteren Ständen (Disabled/Absorbed), die keiner Datei mehr gehören,
+// auf die erste Datei des Projekts um.
+func (s *State) normalizeKeys() {
+	AssignKeys(s.Files)
+	keys := map[string]bool{}
+	for _, f := range s.Files {
+		keys[Key(f)] = true
+	}
+	first := firstKeys(s.Files)
+	fix := func(list []string) []string {
+		var out []string
+		for _, k := range list {
+			if !keys[k] {
+				if fk, ok := first[k]; ok {
+					k = fk
+				}
+			}
+			if !contains(out, k) {
+				out = append(out, k)
+			}
+		}
+		return out
+	}
+	s.Disabled = fix(s.Disabled)
+	s.Absorbed = fix(s.Absorbed)
 }
 
 func contains(list []string, s string) bool {
@@ -194,11 +243,19 @@ func Diff(prev State, next []PackFile, nextConfigs []string, own []OwnFile) Plan
 	for _, f := range prev.Files {
 		old[Key(f)] = f
 	}
-	// eigene Dateien je Modrinth-Projekt (OwnFile.Key = Projekt-ID)
-	ownByProject := map[string][]OwnFile{}
+	// eigene Dateien je Modrinth-Projekt + Ordner (OwnFile.Key = Projekt-ID)
+	ownBy := map[string][]OwnFile{}
 	for _, o := range own {
 		if o.Key != "" {
-			ownByProject[o.Key] = append(ownByProject[o.Key], o)
+			ownBy[projCat(o.Key, o.Category)] = append(ownBy[projCat(o.Key, o.Category)], o)
+		}
+	}
+	// Ist eine Pack-Datei des Projekts im selben Ordner abgeschaltet, ist die
+	// eigene Kopie der bewusste Ersatz — keine Übernahme.
+	off := map[string]bool{}
+	for _, n := range next {
+		if n.ProjectID != "" && prev.IsDisabled(Key(n)) {
+			off[projCat(n.ProjectID, n.Category)] = true
 		}
 	}
 	seen := map[string]bool{}
@@ -212,14 +269,14 @@ func Diff(prev State, next []PackFile, nextConfigs []string, own []OwnFile) Plan
 		case o.SHA512 != n.SHA512:
 			p.Update = append(p.Update, FileUpdate{Old: o, New: n})
 		}
-		// Übernahme durch die erste angeschaltete Pack-Datei des Projekts;
-		// in AbsorbOwn steht dann deren Pack-Schlüssel.
-		if n.ProjectID != "" && !prev.IsDisabled(k) {
-			for _, of := range ownByProject[n.ProjectID] {
+		// Übernahme nur durch eine Pack-Datei desselben Projekts UND Ordners
+		// (die erste); in AbsorbOwn steht dann deren Pack-Schlüssel.
+		if pc := projCat(n.ProjectID, n.Category); n.ProjectID != "" && !off[pc] {
+			for _, of := range ownBy[pc] {
 				of.Key = k
 				p.AbsorbOwn = append(p.AbsorbOwn, of)
 			}
-			delete(ownByProject, n.ProjectID)
+			delete(ownBy, pc)
 		}
 	}
 	for _, o := range prev.Files {
@@ -242,6 +299,8 @@ func Diff(prev State, next []PackFile, nextConfigs []string, own []OwnFile) Plan
 	}
 	return p
 }
+
+func projCat(project, category string) string { return project + "/" + category }
 
 // Summary is the one-line Discord/changelog description of a pack change.
 func Summary(prev State, title, version string, p Plan, total int) string {

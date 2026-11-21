@@ -71,9 +71,14 @@ func (f *fakeAPI) addPackVersion(t *testing.T, mc, id string, mods map[string]st
 	t.Helper()
 	var files []mrpack.File
 	for name, body := range mods {
+		// "name" = Datei in mods/, "ordner/name" = Datei in anderem Ordner
+		fp := "mods/" + name
+		if i := strings.LastIndex(name, "/"); i >= 0 {
+			fp, name = name, name[i+1:]
+		}
 		url := "https://cdn.modrinth.com/" + name
 		f.blobs[url] = []byte(body)
-		files = append(files, mrpack.File{Path: "mods/" + name, SHA1: "x", SHA512: sum([]byte(body)), URL: url, Size: int64(len(body))})
+		files = append(files, mrpack.File{Path: fp, SHA1: "x", SHA512: sum([]byte(body)), URL: url, Size: int64(len(body))})
 		f.byHash[sum([]byte(body))] = modrinth.Version{ProjectID: "P-" + strings.Split(name, "-")[0], VersionNumber: body}
 	}
 	ov := map[string][]byte{}

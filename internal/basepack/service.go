@@ -111,12 +111,9 @@ func parseState(raw string) (State, bool) {
 	if raw == "" || json.Unmarshal([]byte(raw), &st) != nil || st.ProjectID == "" {
 		return State{}, false
 	}
-	for _, f := range st.Files {
-		if f.Key == "" { // alter Stand ohne Schlüssel
-			AssignKeys(st.Files)
-			break
-		}
-	}
+	// Schlüssel immer neu ableiten (deterministisch; ältere Stände und
+	// Schemata werden so übernommen)
+	st.normalizeKeys()
 	return st, true
 }
 
@@ -594,9 +591,17 @@ func (s *Service) Toggle(ctx context.Context, key string, on bool) error {
 		if err != nil {
 			return err
 		}
+		// Übernahme nur im selben Ordner und nur, wenn keine andere Pack-Datei
+		// des Projekts dort abgeschaltet bleibt (eigene Kopie = Ersatz)
+		otherOff := false
+		for _, g := range st.Files {
+			if Key(g) != key && g.ProjectID == f.ProjectID && g.Category == f.Category && st.IsDisabled(Key(g)) {
+				otherOff = true
+			}
+		}
 		absorbed := false
 		for _, o := range own {
-			if f.ProjectID == "" || o.Key != f.ProjectID {
+			if f.ProjectID == "" || otherOff || o.Key != f.ProjectID || o.Category != f.Category {
 				continue
 			}
 			absorbed = true
