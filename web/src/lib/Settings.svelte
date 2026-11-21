@@ -191,7 +191,7 @@ Das Dashboard ist während des Neubaus (~1-2 min) kurz nicht erreichbar. Der Min
       <summary>📖 Anleitung: Modrinth-Modpack einrichten (einmalig, ~5 Minuten)</summary>
       <ol>
         <li><a href="https://modrinth.com" target="_blank" rel="noreferrer">modrinth.com</a> → anmelden → <strong>„Create a project"</strong> → Typ <strong>Modpack</strong> → Name, kurze Beschreibung, Lizenz und Icon eintragen. Den <strong>Slug</strong> (Teil der Adresse, z. B. <code>mein-server-pack</code>) oben als Projekt eintragen.</li>
-        <li>Profilbild → <strong>Settings → Personal access tokens</strong> → „Create a PAT" → Name z. B. <code>MSM</code>, Rechte <strong>Create versions</strong> und <strong>Read projects</strong> → Token (beginnt mit <code>mrp_</code>) oben eintragen. <em>Der Token wird nur einmal angezeigt.</em></li>
+        <li>Profilbild → <strong>Settings → Personal access tokens</strong> → „Create a PAT" → Name z. B. <code>MSM</code>, Rechte <strong>Create versions</strong>, <strong>Read projects</strong>, <strong>Read versions</strong> und <strong>Read user data</strong> → Token (beginnt mit <code>mrp_</code>) oben eintragen. <em>Der Token wird nur einmal angezeigt.</em></li>
         <li><strong>Speichern</strong> → <strong>„Verbindung prüfen"</strong> muss „✔ Verbunden …" melden.</li>
         <li>Mods-Tab → Profil „Client-Paket" → <strong>„Modpack veröffentlichen (Modrinth)"</strong> → die erste Version wird hochgeladen.</li>
         <li>Auf Modrinth beim Projekt <strong>„Submit for review"</strong> — erst nach der Freigabe durch Modrinth ist das Modpack öffentlich. Ab dann lädt MSM jede Änderung automatisch hoch, und die Spieler bekommen in der Modrinth App einen „Update"-Knopf.</li>
