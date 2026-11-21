@@ -124,7 +124,11 @@
     }, () => (profile === 'server' ? 'Entfernen vorgemerkt' : 'Entfernt') + (also.length ? ' (auch im anderen Profil)' : ''))
   }
 
-  const doTogglePack = (e) => run(() => basepackToggle(e.packKey, !!e.disabled),
+  let basePack = $state(null)
+  const doTogglePack = (e) => run(async () => {
+    await basepackToggle(e.packKey, !!e.disabled)
+    basePack?.reload() // Zähler „abgeschaltet“ im Basis-Pack-Bereich aktualisieren
+  },
     () => (e.disabled ? `${e.name || e.filename} angeschaltet` : `${e.name || e.filename} abgeschaltet`)
       + ' — wird beim nächsten Neustart an die Spieler verteilt')
 
@@ -152,7 +156,7 @@
       {:else}
         <div class="watch-line ok-text">Aktuell — {watch.currentVersion} ist die neueste Release.</div>
       {/if}
-      {#if watch.basepack}
+      {#if watch.newerAvailable && watch.basepack}
         <div class="dim-sm">
           Basis-Modpack {watch.basepack.name}:
           {#if watch.basepack.error}konnte nicht geprüft werden
@@ -170,7 +174,7 @@
 
 <AddMod onchange={load} />
 
-{#if profile === 'client'}<BasePack onchange={load} />{/if}
+{#if profile === 'client'}<BasePack bind:this={basePack} onchange={load} />{/if}
 
 <div class="panel wide">
   <h2>
@@ -222,7 +226,7 @@
         <tr><th>Datei</th><th>Mod</th><th>Version</th><th>Update</th><th></th></tr>
       </thead>
       <tbody>
-        {#each entries as e (e.category + '/' + e.filename)}
+        {#each entries as e (e.packKey ? 'bp:' + e.packKey + (e.disabled ? ':off' : '') : e.category + '/' + e.filename)}
           <tr class={e.disabled || !e.managed ? 'unmanaged' : ''}>
             <td class="mono">{e.filename}<span class="dim-sm"> {e.category !== 'mods' ? '· ' + e.category : ''}</span></td>
             <td>{e.name || '—'}{#if e.source === 'basepack'} <span class="badge staged">Basis-Pack</span>{/if}</td>

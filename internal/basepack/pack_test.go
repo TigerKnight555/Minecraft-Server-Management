@@ -1,6 +1,7 @@
 package basepack
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -104,5 +105,31 @@ func TestDiffAbsorbsOwnForExistingPackFile(t *testing.T) {
 	}
 	if len(p.Add) != 0 || len(p.Update) != 0 || len(p.Remove) != 0 {
 		t.Errorf("plan = %+v, want only AbsorbOwn", p)
+	}
+}
+
+func TestPlanJSONShape(t *testing.T) {
+	p := Plan{
+		Update:    []FileUpdate{{Old: PackFile{Filename: "a.jar"}, New: PackFile{Filename: "b.jar"}}},
+		AbsorbOwn: []OwnFile{{Category: "mods", Filename: "x.jar", Key: "P-x", Name: "X"}},
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string][]map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["absorbOwn"][0]["name"] != "X" || m["absorbOwn"][0]["filename"] != "x.jar" || m["absorbOwn"][0]["key"] != "P-x" || m["absorbOwn"][0]["category"] != "mods" {
+		t.Errorf("absorbOwn = %v", m["absorbOwn"])
+	}
+	if m["update"][0]["old"] == nil || m["update"][0]["new"] == nil {
+		t.Errorf("update = %v", m["update"])
+	}
+	// Alte (Go-großgeschriebene) Schlüssel dekodieren weiterhin (case-insensitive).
+	var o OwnFile
+	if err := json.Unmarshal([]byte(`{"Category":"mods","Filename":"y.jar","Key":"P-y","Name":"Y"}`), &o); err != nil || o.Name != "Y" || o.Key != "P-y" {
+		t.Errorf("legacy decode = %+v, %v", o, err)
 	}
 }

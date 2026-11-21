@@ -11,26 +11,35 @@
   let preview = $state(null)
   let configs = $state({})
   let busy = $state(false)
-  let blocked = $state(false) // 409: MC-Upgrade läuft
+  let blocked = $state(false) // 409: MC-Upgrade läuft -> nur ändernde Aktionen gesperrt
+  const BLOCKED_HINT = 'MC-Update läuft — Basis-Pack-Aktionen sind gesperrt'
   let error = $state('')
   let info = $state('')
 
+  // Gibt true zurück, wenn der Status geladen werden konnte.
   async function load() {
     try {
       status = await basepackStatus()
-    } catch {
-      enabled = false // Feature aus (Mock / kein Modrinth)
+      blocked = false
+      error = ''
+      return true
+    } catch (err) {
+      // Nur "Feature nicht vorhanden" (Route nicht registriert) blendet den Bereich aus
+      if (err.status === 404 || err.status === 501 || err.status === 503) enabled = false
+      else error = err.message
+      return false
     }
   }
   onMount(load)
+  export const reload = load
 
   async function guard(fn) {
+    if (busy) return
     busy = true
     error = ''
     info = ''
     try {
       await fn()
-      blocked = false
     } catch (err) {
       error = err.message
       if (err.status === 409) blocked = true
@@ -62,6 +71,7 @@
     onchange?.()
   })
   const doRemove = () => {
+    if (busy) return
     if (!confirm(`Basis-Modpack „${status.state.title}" entfernen? Pack-Mods und Pack-Configs gehen raus, eigene Mods bleiben.`)) return
     guard(async () => {
       await basepackRemove()
@@ -70,13 +80,24 @@
       onchange?.()
     })
   }
-  const names = (list) => list.map((f) => f.name || f.Name || f.filename || f.Filename || f).join(', ')
+  const names = (list) => list.map((f) => f.name || f.filename).join(', ')
 </script>
 
 {#if enabled}
 <div class="panel wide">
   <h2>Basis-Modpack</h2>
-  {#if error}<div class="err-msg" role="alert">{error}</div>{/if}
+  {#if blocked}
+    <div class="warn-msg" role="status">
+      {BLOCKED_HINT}
+      <button class="btn sm" onclick={load} disabled={busy}>Erneut prüfen</button>
+    </div>
+  {/if}
+  {#if error}
+    <div class="err-msg" role="alert">
+      {error}
+      {#if !status && !blocked}<button class="btn sm" onclick={load} disabled={busy}>Erneut versuchen</button>{/if}
+    </div>
+  {/if}
   {#if info}<div class="info-msg" role="status">{info}</div>{/if}
 
   {#if status?.state}
@@ -88,26 +109,26 @@
       {#if status.checkError}
         <span class="warn-msg">Update-Prüfung fehlgeschlagen — Modrinth nicht erreichbar</span>
       {:else if status.available}
-        <button class="btn accent" onclick={() => openPreview(status.state.projectId)} disabled={busy || blocked}>
+        <button class="btn accent" onclick={() => openPreview(status.state.projectId)} disabled={busy}>
           {status.available.versionNumber} verfügbar — Vorschau
         </button>
       {:else}
         <span class="dim-sm">✔ aktuell</span>
       {/if}
-      <button class="btn" onclick={() => openPreview(status.state.projectId)} disabled={busy || blocked}>Configs / Neu laden</button>
+      <button class="btn" onclick={() => openPreview(status.state.projectId)} disabled={busy}>Configs / Neu laden</button>
       <button class="btn danger" onclick={doRemove} disabled={busy || blocked}>Entfernen</button>
     </div>
   {:else}
     <p class="dim-sm">Ein fertiges Modrinth-Modpack (z. B. Fabulously Optimized) als Grundlage des Client-Pakets: Mods kommen als getestete Kombination, eigene Mods bleiben, einzelne Pack-Mods lassen sich abschalten.</p>
     <form class="row" onsubmit={doSearch}>
       <input type="text" bind:value={query} aria-label="Modpack suchen" placeholder="Modpack auf Modrinth suchen, z. B. Fabulously Optimized" />
-      <button class="btn" type="submit" disabled={busy || blocked || query.trim().length < 2}>Suchen</button>
+      <button class="btn" type="submit" disabled={busy || query.trim().length < 2}>Suchen</button>
     </form>
     {#if searched && hits.length === 0}<p class="dim-sm">Keine Treffer für die aktuelle Minecraft-Version.</p>{/if}
     {#each hits as h (h.project_id)}
       <div class="row">
         <strong>{h.title}</strong> <span class="dim-sm">{(h.downloads ?? 0).toLocaleString('de-DE')} Downloads</span>
-        <button class="btn sm" onclick={() => openPreview(h.project_id)} disabled={busy || blocked}>Vorschau</button>
+        <button class="btn sm" onclick={() => openPreview(h.project_id)} disabled={busy}>Vorschau</button>
       </div>
     {/each}
   {/if}
@@ -120,8 +141,8 @@
       {#if preview.plan.add?.length}<p><strong>Neu:</strong> {names(preview.plan.add)}</p>{/if}
       {#if preview.plan.remove?.length}<p><strong>Entfernt:</strong> {names(preview.plan.remove)}</p>{/if}
       {#if preview.plan.update?.length}<p><strong>Aktualisiert:</strong> {preview.plan.update.length} Dateien</p>{/if}
-      {#if preview.plan.absorbOwn?.length}<p class="warn-msg">Übernimmt deine eigenen: {names(preview.plan.absorbOwn)} (eigene Kopie fällt weg)</p>{/if}
-      {#if preview.plan.dropAbsorbed?.length}<p class="warn-msg">Entfällt (war vorher auch deine eigene Mod, bei Bedarf neu hinzufügen): {preview.plan.dropAbsorbed.join(', ')}</p>{/if}
+      {#if preview.plan.absorbOwn?.length}<p class="warn-msg">Übernimmt deine eigenen Mods: {names(preview.plan.absorbOwn)} (eigene Kopie fällt weg)</p>{/if}
+      {#if preview.plan.dropAbsorbed?.length}<p class="warn-msg">Entfällt (war zuvor deine eigene Mod; bei Bedarf neu hinzufügen): {preview.plan.dropAbsorbed.join(', ')}</p>{/if}
       {#if preview.ignored?.length}<p class="dim-sm">Ignoriert (unbekannte Ordner): {preview.ignored.join(', ')}</p>{/if}
       {#if preview.configs?.length}
         <h4>Configs</h4>

@@ -120,16 +120,16 @@ func DefaultOn(p string) bool {
 
 // OwnFile is a file the admin added himself (nicht aus dem Pack).
 type OwnFile struct {
-	Category string
-	Filename string
-	Key      string
-	Name     string
+	Category string `json:"category"`
+	Filename string `json:"filename"`
+	Key      string `json:"key"`
+	Name     string `json:"name"`
 }
 
 // FileUpdate is a pack file whose content changed between versions.
 type FileUpdate struct {
-	Old PackFile
-	New PackFile
+	Old PackFile `json:"old"`
+	New PackFile `json:"new"`
 }
 
 // Plan is the difference between the current and a new pack version.

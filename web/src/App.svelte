@@ -212,7 +212,6 @@
       {:else if !watch.newerAvailable}
         <div class="value" style="font-size:1.1rem">aktuell</div>
         <div class="detail">{watch.currentVersion}</div>
-        {#if watch.basepack}<div class="detail">{basepackLine(watch)}</div>{/if}
       {:else}
         <div class="value" style="font-size:1.1rem">{watch.latestVersion} verfügbar</div>
         <div class="detail">
