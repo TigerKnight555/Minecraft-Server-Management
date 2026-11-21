@@ -29,6 +29,7 @@ type fakeAPI struct {
 	failNext    int   // so viele CreateVersion-Aufrufe mit 400 beantworten
 	userErr     error // CurrentUser scheitert (z. B. Token ohne „Read user data")
 	versionsErr error // AuthProjectVersions scheitert
+	onProjects  func([]string)
 }
 
 func (f *fakeAPI) VersionsByHash(_ context.Context, hs []string) (map[string]modrinth.Version, error) {
@@ -41,6 +42,9 @@ func (f *fakeAPI) VersionsByHash(_ context.Context, hs []string) (map[string]mod
 	return out, nil
 }
 func (f *fakeAPI) Projects(_ context.Context, ids []string) ([]modrinth.Project, error) {
+	if f.onProjects != nil {
+		f.onProjects(ids)
+	}
 	var out []modrinth.Project
 	for _, id := range ids {
 		out = append(out, modrinth.Project{ID: id, Title: "Titel-" + id})
@@ -373,6 +377,61 @@ func TestAllowedURL(t *testing.T) {
 	} {
 		if allowedURL(u) != want {
 			t.Errorf("allowedURL(%q) != %v", u, want)
+		}
+	}
+}
+
+func TestBasepackFilesWithoutProjectID(t *testing.T) {
+	e := newEnv(t, "approved")
+	e.addMod("sodium.jar", "P-sod", "1", true)
+	var asked []string
+	e.api.onProjects = func(ids []string) { asked = append(asked, ids...) }
+	idx := map[string]basepack.PackFile{}
+	for _, n := range []string{"a.jar", "b.jar"} {
+		os.WriteFile(filepath.Join(e.mods, n), []byte(n), 0o644)
+		idx[sha([]byte(n))] = basepack.PackFile{Path: "mods/" + n, Category: "mods", Filename: n,
+			SHA1: "s-" + n, SHA512: sha([]byte(n)), URL: "https://github.com/x/" + n, Size: 1, Version: "1"}
+	}
+	e.ch.SetBasepack(filepath.Dir(e.mods), func() []string { return nil }, func() map[string]basepack.PackFile { return idx })
+	if _, err := e.ch.Publish(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range asked {
+		if id == "" || strings.HasPrefix(id, "file:") {
+			t.Errorf("Projects mit id %q aufgerufen", id)
+		}
+	}
+	// zweiter Lauf: b.jar entfernt → genau b.jar im Changelog als entfernt
+	os.Remove(filepath.Join(e.mods, "b.jar"))
+	os.WriteFile(filepath.Join(e.mods, "z.txt"), nil, 0o644) // Rauschen
+	if _, err := e.ch.Publish(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cl := e.api.created[len(e.api.created)-1].Changelog
+	if !strings.Contains(cl, "b.jar") || strings.Contains(cl, "a.jar") {
+		t.Errorf("changelog = %q, want nur b.jar entfernt", cl)
+	}
+}
+
+func TestOverridesSkipSymlinks(t *testing.T) {
+	e := newEnv(t, "approved")
+	e.addMod("sodium.jar", "P-sod", "1", true)
+	root := filepath.Dir(e.mods)
+	os.MkdirAll(filepath.Join(root, "config"), 0o755)
+	os.WriteFile(filepath.Join(root, "config", "ok.json"), []byte("A"), 0o644)
+	os.WriteFile(filepath.Join(root, "secret"), []byte("S"), 0o644)
+	list := []string{"config/ok.json"}
+	if err := os.Symlink(filepath.Join(root, "secret"), filepath.Join(root, "config", "link.json")); err == nil {
+		list = append(list, "config/link.json")
+	}
+	e.ch.SetBasepack(root, func() []string { return list }, func() map[string]basepack.PackFile { return nil })
+	if _, err := e.ch.Publish(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	zr, _ := zip.NewReader(bytes.NewReader(e.api.packs[0]), int64(len(e.api.packs[0])))
+	for _, f := range zr.File {
+		if f.Name == "overrides/config/link.json" {
+			t.Error("Symlink wurde als Override gepackt")
 		}
 	}
 }

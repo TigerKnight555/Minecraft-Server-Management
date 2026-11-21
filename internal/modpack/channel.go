@@ -287,7 +287,11 @@ func (c *Channel) Publish(ctx context.Context) (packpub.Outcome, error) {
 		if file == nil && c.bpIndex != nil {
 			if pf, ok := c.bpIndex()[l.sha512]; ok && allowedURL(pf.URL) && pf.SHA1 != "" {
 				files = append(files, mrpack.File{Path: l.category + "/" + l.name, SHA1: pf.SHA1, SHA512: l.sha512, URL: pf.URL, Size: pf.Size})
-				entries = append(entries, Entry{Project: pf.ProjectID, File: l.name, Version: pf.Version})
+				key := pf.ProjectID
+				if key == "" {
+					key = "file:" + l.name // stabiler Schlüssel fürs Changelog
+				}
+				entries = append(entries, Entry{Project: key, File: l.name, Version: pf.Version})
 				continue
 			}
 		}
@@ -337,7 +341,9 @@ func (c *Channel) Publish(ctx context.Context) (packpub.Outcome, error) {
 
 	ids := map[string]bool{}
 	for _, e := range append(append([]Entry(nil), prev.Files...), entries...) {
-		ids[e.Project] = true
+		if e.Project != "" && !strings.HasPrefix(e.Project, "file:") {
+			ids[e.Project] = true
+		}
 	}
 	idList := make([]string, 0, len(ids))
 	for id := range ids {
@@ -357,7 +363,11 @@ func (c *Channel) Publish(ctx context.Context) (packpub.Outcome, error) {
 			if !mrpack.ValidPath(rel) {
 				continue
 			}
-			if b, err := os.ReadFile(filepath.Join(c.bpRoot, filepath.FromSlash(rel))); err == nil {
+			full := filepath.Join(c.bpRoot, filepath.FromSlash(rel))
+			if info, err := os.Lstat(full); err != nil || !info.Mode().IsRegular() {
+				continue
+			}
+			if b, err := os.ReadFile(full); err == nil {
 				overrides[rel] = b
 			}
 		}

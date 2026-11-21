@@ -649,9 +649,16 @@ func packFingerprint(dirs map[string]string, root string, extra []string) string
 		}
 	}
 	for _, rel := range extra {
-		if info, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err == nil {
-			lines = append(lines, fmt.Sprintf("extra/%s/%d", rel, info.Size()))
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		if info, err := os.Lstat(full); err != nil || !info.Mode().IsRegular() {
+			continue
 		}
+		b, err := os.ReadFile(full)
+		if err != nil {
+			continue
+		}
+		h := sha256.Sum256(b)
+		lines = append(lines, fmt.Sprintf("extra/%s/%d/%x", rel, len(b), h[:8]))
 	}
 	sort.Strings(lines)
 	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))

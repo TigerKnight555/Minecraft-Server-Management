@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mrpack"
 )
 
 // Config holds the app credentials (alle aus der .env, nie im Repo).
@@ -270,10 +272,14 @@ func zipAll(w io.Writer, dirs map[string]string, root string, extra []string) (i
 		return files, err
 	}
 	for _, rel := range extra {
-		if rel == "" || strings.Contains(rel, "..") || strings.HasPrefix(rel, "/") || strings.ContainsAny(rel, `\:`) {
+		if !mrpack.ValidPath(rel) {
 			continue
 		}
-		f, err := os.Open(filepath.Join(root, filepath.FromSlash(rel)))
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		if info, err := os.Lstat(full); err != nil || !info.Mode().IsRegular() {
+			continue // weg, Verzeichnis oder Symlink — nicht fatal, nicht packen
+		}
+		f, err := os.Open(full)
 		if err != nil {
 			continue // Datei inzwischen weg — nicht fatal
 		}
