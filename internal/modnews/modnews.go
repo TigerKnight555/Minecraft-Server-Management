@@ -89,7 +89,7 @@ func (a *Announcer) OnApply(profile string, changes []mods.Change) {
 	defer a.mu.Unlock()
 	var news []mods.Change
 	for _, c := range changes {
-		if c.Action == "add" || c.Action == "remove" {
+		if c.Action == "add" || c.Action == "remove" || c.Action == "pack" {
 			news = append(news, c)
 		}
 	}
@@ -256,6 +256,21 @@ type row struct {
 // compose builds the Discord text; ok=false wenn nichts hinzugefügt oder
 // entfernt wurde.
 func compose(server, client []mods.Change) (text, title string, ok bool) {
+	// Basis-Pack-Wechsel (Action "pack") werden als eigene Zeile gemeldet,
+	// nie mit Datei-Änderungen verrechnet (kein Filename).
+	var packLines []string
+	keep := func(list []mods.Change) []mods.Change {
+		var out []mods.Change
+		for _, c := range list {
+			if c.Action == "pack" {
+				packLines = append(packLines, c.Name)
+				continue
+			}
+			out = append(out, c)
+		}
+		return out
+	}
+	server, client = keep(server), keep(client)
 	added, removed := map[string]*row{}, map[string]*row{}
 	put := func(c mods.Change, isClient bool) {
 		set := added
@@ -286,10 +301,16 @@ func compose(server, client []mods.Change) (text, title string, ok bool) {
 	for _, c := range client {
 		put(c, true)
 	}
-	if len(added)+len(removed) == 0 {
+	if len(added)+len(removed)+len(packLines) == 0 {
 		return "", "", false
 	}
 	var b strings.Builder
+	if len(packLines) > 0 {
+		b.WriteString("**Basis-Modpack:**\n")
+		for _, l := range packLines {
+			b.WriteString("• " + l + "\n")
+		}
+	}
 	write := func(head string, set map[string]*row, isAdd bool, both, serverOnly, clientOnly string) {
 		if len(set) == 0 {
 			return
@@ -318,6 +339,8 @@ func compose(server, client []mods.Change) (text, title string, ok bool) {
 	write("**Entfernt:**", removed, false, "bitte auch bei dir entfernen", "nichts zu tun", "kann bei dir raus")
 	onServer := len(server) > 0
 	switch {
+	case len(added) == 0 && len(removed) == 0:
+		title = "🧩 Neu im Mod-Paket"
 	case len(added) > 0 && onServer:
 		title = "🧩 Neue Mods auf dem Server"
 	case len(added) > 0:

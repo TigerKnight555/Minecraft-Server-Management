@@ -304,3 +304,16 @@ func TestServerRemovalOfClientRequiredSaysNothingToDo(t *testing.T) {
 		t.Errorf("Meldung = %q", ev.Message)
 	}
 }
+
+func TestPackChangeIsOneLine(t *testing.T) {
+	a, _, ch, _, _ := setup(t, true)
+	a.OnApply(mods.ProfileClient, []mods.Change{{Action: "pack", Profile: mods.ProfileClient, Name: "Fabulously Optimized 6.4.0 → 6.5.0 (3 neu, 1 entfernt, 12 aktualisiert)"}})
+	a.AfterRestart(context.Background())
+	ev, ok := next(t, ch)
+	if !ok || !strings.Contains(ev.Message, "**Basis-Modpack:**") || !strings.Contains(ev.Message, "• Fabulously Optimized 6.4.0 → 6.5.0") {
+		t.Fatalf("event = %+v", ev)
+	}
+	if ev.Title != "🧩 Neu im Mod-Paket" {
+		t.Errorf("Titel = %q", ev.Title)
+	}
+}
