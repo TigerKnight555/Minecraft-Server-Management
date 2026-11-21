@@ -30,8 +30,11 @@ type fakeAPI struct {
 func (f *fakeAPI) SearchModpacks(context.Context, string, string, string, int) ([]modrinth.SearchHit, error) {
 	return []modrinth.SearchHit{{ProjectID: "FO", Title: "Fabulously Optimized"}}, nil
 }
-func (f *fakeAPI) Project(context.Context, string) (modrinth.Project, error) {
-	return modrinth.Project{ID: "FO", Slug: "fabulously-optimized", Title: "Fabulously Optimized", ProjectType: "modpack"}, nil
+func (f *fakeAPI) Project(_ context.Context, id string) (modrinth.Project, error) {
+	if id == "FO" {
+		return modrinth.Project{ID: "FO", Slug: "fabulously-optimized", Title: "Fabulously Optimized", ProjectType: "modpack"}, nil
+	}
+	return modrinth.Project{ID: id, Slug: strings.ToLower(id), Title: "Pack " + id, ProjectType: "modpack"}, nil
 }
 func (f *fakeAPI) ProjectVersions(_ context.Context, _, _, mc string) ([]modrinth.Version, error) {
 	return f.versions[mc], nil
@@ -91,6 +94,7 @@ type fakeFiles struct {
 	markers []string
 	own     []mods.Entry
 	fail    error
+	failLbl string
 	last    struct {
 		adds    []mods.FileAdd
 		removes []mods.FileRemove
@@ -102,7 +106,7 @@ func (f *fakeFiles) ApplyFiles(_ string, adds []mods.FileAdd, removes []mods.Fil
 	f.markers = append(f.markers, marker)
 	f.last.adds, f.last.removes = adds, removes
 	if f.fail != nil {
-		return "", f.fail
+		return f.failLbl, f.fail
 	}
 	if len(adds) == 0 && len(removes) == 0 {
 		return "", nil

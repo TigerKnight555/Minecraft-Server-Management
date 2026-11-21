@@ -213,6 +213,54 @@ func (s *Service) own(ctx context.Context, mc string, prev State) []OwnFile {
 	return out
 }
 
+// filterAbsorb drops own files whose pack mod the admin switched off: the own
+// copy is then the deliberate replacement and stays.
+func filterAbsorb(own []OwnFile, base State) []OwnFile {
+	var out []OwnFile
+	for _, o := range own {
+		if !base.IsDisabled(o.Key) {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+// droppedNames lists the names of absorbed keys that are not kept any more.
+func droppedNames(prev State, keep map[string]bool) []string {
+	var out []string
+	for _, k := range prev.Absorbed {
+		if keep[k] {
+			continue
+		}
+		name := k
+		for _, f := range prev.Files {
+			if Key(f) == k {
+				name = f.Name
+				if name == "" {
+					name = f.Filename
+				}
+				break
+			}
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+const dropHint = " entfällt — war vorher auch deine eigene Mod, bei Bedarf neu hinzufügen"
+
+func sameConfigs(a, b map[string]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if w, ok := b[k]; !ok || w != v {
+			return false
+		}
+	}
+	return true
+}
+
 func choices(prev State, configs []string, plan Plan) []ConfigChoice {
 	isNew := map[string]bool{}
 	for _, c := range plan.NewConfigs {
@@ -239,10 +287,12 @@ func (s *Service) Preview(ctx context.Context, projectID, mc string) (*Preview, 
 	if err != nil {
 		return nil, err
 	}
+	own := s.own(ctx, mc, prev) // mit dem alten Stand: alte Pack-Dateien sind keine eigenen
 	if prev.ProjectID != "" && prev.ProjectID != l.project.ID {
 		prev = State{} // anderes Pack: alles neu, die alten Pack-Dateien gehen raus (Apply)
 	}
-	plan := Diff(prev, l.files, l.configs, s.own(ctx, mc, prev))
+	plan := Diff(prev, l.files, l.configs, own)
+	plan.AbsorbOwn = filterAbsorb(plan.AbsorbOwn, prev)
 	return &Preview{ProjectID: l.project.ID, Slug: l.project.Slug, Title: l.project.Title,
 		VersionID: l.version.ID, VersionNumber: l.version.VersionNumber, MC: mc, Total: len(l.files),
 		Plan: plan, Configs: choices(prev, l.configs, plan), Ignored: l.ignored}, nil
@@ -285,6 +335,7 @@ func (s *Service) applyLocked(ctx context.Context, projectID, versionID, mc stri
 		base = State{}
 	}
 	plan := Diff(base, l.files, l.configs, s.own(ctx, mc, prev))
+	plan.AbsorbOwn = filterAbsorb(plan.AbsorbOwn, base)
 
 	var adds []mods.FileAdd
 	var removes []mods.FileRemove
@@ -338,7 +389,7 @@ func (s *Service) applyLocked(ctx context.Context, projectID, versionID, mc stri
 			adds[i].Replaces = o.Filename // ersetzt die eigene Kopie (auch bei gleichem Dateinamen)
 			continue
 		}
-		removeFile(o.Category, o.Filename) // Update/unverändert/abgeschaltet/andere Kategorie
+		removeFile(o.Category, o.Filename) // Update/unverändert/andere Kategorie
 	}
 	// Entfernen + Hinzufügen derselben Datei: stattdessen ersetzen.
 	var finalRemoves []mods.FileRemove
@@ -364,7 +415,10 @@ func (s *Service) applyLocked(ctx context.Context, projectID, versionID, mc stri
 	// Label "" = nichts zu tun (z. B. alles identisch) — kein Fehler. Bei Fehler
 	// bleibt der Stand auf der bisherigen Version.
 	if len(adds) > 0 || len(removes) > 0 {
-		if _, err := s.files.ApplyFiles(mods.ProfileClient, adds, removes, l.project.Title+" "+l.version.VersionNumber); err != nil {
+		if label, err := s.files.ApplyFiles(mods.ProfileClient, adds, removes, l.project.Title+" "+l.version.VersionNumber); err != nil {
+			if label != "" {
+				s.log.Warn("basis-modpack teilweise angewendet — RollbackLabel kann die Änderung rückgängig machen", "label", label, "err", err)
+			}
 			return "", err
 		}
 	}
@@ -402,11 +456,17 @@ func (s *Service) applyLocked(ctx context.Context, projectID, versionID, mc stri
 	s.save(&next)
 
 	lines := []mods.Change{{Action: "pack", Profile: mods.ProfileClient, Name: summary}}
-	for _, name := range plan.DropAbsorbed {
-		lines = append(lines, mods.Change{Action: "pack", Profile: mods.ProfileClient,
-			Name: name + " entfällt — war vorher auch deine eigene Mod, bei Bedarf neu hinzufügen"})
+	drops := plan.DropAbsorbed
+	if switching {
+		drops = droppedNames(prev, keys)
 	}
-	if s.notify != nil {
+	for _, name := range drops {
+		lines = append(lines, mods.Change{Action: "pack", Profile: mods.ProfileClient, Name: name + dropHint})
+	}
+	noop := !switching && prev.VersionID == l.version.ID && prev.MC == mc &&
+		len(plan.Add) == 0 && len(plan.Update) == 0 && len(plan.Remove) == 0 &&
+		len(plan.AbsorbOwn) == 0 && len(plan.DropAbsorbed) == 0 && sameConfigs(prev.Configs, next.Configs)
+	if s.notify != nil && !noop {
 		s.notify(lines)
 	}
 	s.log.Info("basis-modpack übernommen", "pack", l.project.Title, "version", l.version.VersionNumber, "mc", mc)
@@ -479,8 +539,25 @@ func (s *Service) Toggle(ctx context.Context, key string, on bool) error {
 		if err != nil {
 			return err
 		}
-		if _, err := s.files.ApplyFiles(mods.ProfileClient, []mods.FileAdd{addOf(f, data, "")}, nil, marker); err != nil {
+		add := addOf(f, data, "")
+		var removes []mods.FileRemove
+		absorbed := false
+		for _, o := range s.own(ctx, st.MC, st) {
+			if o.Key != key {
+				continue
+			}
+			absorbed = true
+			if o.Category == f.Category && o.Filename == f.Filename {
+				add.Replaces = o.Filename
+			} else {
+				removes = append(removes, mods.FileRemove{Category: o.Category, Filename: o.Filename})
+			}
+		}
+		if _, err := s.files.ApplyFiles(mods.ProfileClient, []mods.FileAdd{add}, removes, marker); err != nil {
 			return err
+		}
+		if absorbed && !contains(st.Absorbed, key) {
+			st.Absorbed = append(st.Absorbed, key)
 		}
 		var rest []string
 		for _, d := range st.Disabled {
@@ -549,7 +626,11 @@ func (s *Service) Remove(ctx context.Context) error {
 	s.writeConfigs(st.WrittenConfigs, nil, nil)
 	s.save(nil)
 	if s.notify != nil {
-		s.notify([]mods.Change{{Action: "pack", Profile: mods.ProfileClient, Name: "Basis-Modpack " + st.Title + " entfernt"}})
+		lines := []mods.Change{{Action: "pack", Profile: mods.ProfileClient, Name: "Basis-Modpack " + st.Title + " entfernt"}}
+		for _, name := range droppedNames(st, nil) {
+			lines = append(lines, mods.Change{Action: "pack", Profile: mods.ProfileClient, Name: name + dropHint})
+		}
+		s.notify(lines)
 	}
 	return nil
 }
@@ -600,7 +681,7 @@ func (s *Service) Pinned(filename string) bool {
 		return false
 	}
 	for _, f := range st.Files {
-		if f.Filename == filename {
+		if f.Filename == filename && !st.IsDisabled(Key(f)) {
 			return true
 		}
 	}
