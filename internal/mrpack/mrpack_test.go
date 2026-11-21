@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"testing"
 )
@@ -160,5 +161,46 @@ func TestParseRejectsMissingIndexAndBadPaths(t *testing.T) {
 	zw.Close()
 	if _, err := Parse(b2.Bytes()); err == nil {
 		t.Error("Pfad mit .. akzeptiert")
+	}
+}
+
+const minimalIndex = `{"formatVersion":1,"game":"minecraft","versionId":"1","name":"P","files":[],"dependencies":{"minecraft":"26.3"}}`
+
+func TestParseSkipsOversizedOverride(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, _ := zw.Create("modrinth.index.json")
+	w.Write([]byte(minimalIndex))
+	w, _ = zw.Create("overrides/config/big.bin")
+	w.Write(make([]byte, maxOverride+10))
+	w, _ = zw.Create("overrides/config/ok.json")
+	w.Write([]byte("{}"))
+	zw.Close()
+
+	idx, err := Parse(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := idx.Overrides["config/big.bin"]; ok {
+		t.Error("übergroßes Override wurde gespeichert")
+	}
+	if string(idx.Overrides["config/ok.json"]) != "{}" {
+		t.Errorf("ok.json fehlt: %v", idx.Overrides)
+	}
+}
+
+func TestParseRejectsTooManyEntries(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, _ := zw.Create("modrinth.index.json")
+	w.Write([]byte(minimalIndex))
+	for i := 0; i < maxEntries+1; i++ {
+		w, _ = zw.Create(fmt.Sprintf("overrides/config/f%05d.txt", i))
+		w.Write([]byte("x"))
+	}
+	zw.Close()
+
+	if _, err := Parse(buf.Bytes()); err == nil {
+		t.Error("Pack mit zu vielen Einträgen akzeptiert")
 	}
 }

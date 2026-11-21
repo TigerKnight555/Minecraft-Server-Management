@@ -156,7 +156,14 @@ type Index struct {
 // maxOverride limits a single override file (Configs sind klein).
 const maxOverride = 8 << 20
 
-// Parse reads a .mrpack (ZIP).
+// Aggregatgrenzen gegen Zip-Bomben.
+const (
+	maxOverrideTotal = 64 << 20 // Summe aller gespeicherten Override-Bytes
+	maxEntries       = 5000     // betrachtete ZIP-Einträge
+)
+
+// Parse liest ein .mrpack (ZIP). Ungültige Override-Pfade und zu große Overrides
+// werden übersprungen; ungültige Index-Pfade sind ein Fehler.
 func Parse(data []byte) (*Index, error) {
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
@@ -178,16 +185,22 @@ func Parse(data []byte) (*Index, error) {
 	found := false
 	base := map[string][]byte{}
 	client := map[string][]byte{}
+	entries := 0
+	var total int64
 	for _, f := range zr.File {
 		if f.FileInfo().IsDir() {
 			continue
+		}
+		entries++
+		if entries > maxEntries {
+			return nil, fmt.Errorf("mrpack: Pack zu groß oder zu viele Dateien")
 		}
 		if f.Name == "modrinth.index.json" {
 			rc, err := f.Open()
 			if err != nil {
 				return nil, err
 			}
-			err = json.NewDecoder(rc).Decode(&raw)
+			err = json.NewDecoder(io.LimitReader(rc, 16<<20)).Decode(&raw)
 			rc.Close()
 			if err != nil {
 				return nil, fmt.Errorf("mrpack: index unlesbar: %w", err)
@@ -216,6 +229,13 @@ func Parse(data []byte) (*Index, error) {
 		rc.Close()
 		if err != nil {
 			return nil, err
+		}
+		if len(b) > maxOverride {
+			continue
+		}
+		total += int64(len(b))
+		if total > maxOverrideTotal {
+			return nil, fmt.Errorf("mrpack: Pack zu groß oder zu viele Dateien")
 		}
 		target[rel] = b
 	}
