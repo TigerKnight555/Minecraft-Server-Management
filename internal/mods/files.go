@@ -50,7 +50,9 @@ func (m *Manager) pinned(profile, filename string) bool {
 // Name ein anderer Add ersetzt) werden abgelehnt. Existiert die Datei eines
 // Adds ohne Replaces schon im Live-Ordner (und wird nicht im selben Lauf
 // entfernt), wird sie bei gleichem SHA512 übersprungen, sonst als Replaces
-// in die Sicherung gelegt. Bleibt danach nichts zu tun, ist das Label "".
+// in die Sicherung gelegt. Liegt die Datei eines Adds MIT Replaces schon
+// identisch live (abgebrochener Lauf), wird nur die noch vorhandene alte
+// Datei entfernt. Bleibt danach nichts zu tun, ist das Label "".
 //
 // Bricht das Anwenden mittendrin ab, bleiben bereits angewendete Items
 // angewendet und gesichert; der Satz wird trotzdem markiert, das übrige
@@ -109,19 +111,27 @@ func (m *Manager) ApplyFiles(profile string, adds []FileAdd, removes []FileRemov
 		return "", fmt.Errorf("im Profil %s sind noch Änderungen vorgemerkt — erst anwenden oder verwerfen", profile)
 	}
 	// Gleichnamige Dateien im Live-Ordner: identisch = schon da, sonst sichern.
+	// Identisch trotz Replaces: Rest eines abgebrochenen Laufs — die neue
+	// Datei bleibt, eine noch vorhandene alte wird entfernt (Wiederholung).
+	removes = append([]FileRemove(nil), removes...)
 	var todo []FileAdd
 	for _, a := range adds {
 		key := a.Category + "/" + a.Filename
 		livePath := filepath.Join(p.Dirs[a.Category], a.Filename)
 		if a.Replaces != a.Filename && !removed[key] && fileExists(livePath) {
-			if a.Replaces != "" {
-				return "", fmt.Errorf("datei %q existiert bereits im Ordner %s und würde überschrieben", a.Filename, a.Category)
-			}
 			if cur, rerr := os.ReadFile(livePath); rerr == nil {
 				sum := sha512.Sum512(cur)
 				if hex.EncodeToString(sum[:]) == a.SHA512 {
+					oldKey := a.Category + "/" + a.Replaces
+					if a.Replaces != "" && !removed[oldKey] && fileExists(filepath.Join(p.Dirs[a.Category], a.Replaces)) {
+						removed[oldKey] = true
+						removes = append(removes, FileRemove{Category: a.Category, Filename: a.Replaces})
+					}
 					continue // schon vorhanden
 				}
+			}
+			if a.Replaces != "" {
+				return "", fmt.Errorf("datei %q existiert bereits im Ordner %s und würde überschrieben", a.Filename, a.Category)
 			}
 			a.Replaces = a.Filename
 		}

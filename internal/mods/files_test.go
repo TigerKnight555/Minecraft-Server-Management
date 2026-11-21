@@ -166,3 +166,69 @@ func TestApplyFilesCorruptManifestIsNotOverwritten(t *testing.T) {
 		t.Error("kaputte Staging-Liste überschrieben")
 	}
 }
+
+// Teilfehler, danach Wiederholung desselben Aufrufs: die bereits eingesetzte
+// neue Datei (alte schon in der Sicherung) darf die Wiederholung nicht
+// blockieren (Final-Review Important 1).
+func TestApplyFilesRetryAfterPartialFailure(t *testing.T) {
+	root := t.TempDir()
+	modsDir := filepath.Join(root, "mods")
+	os.MkdirAll(modsDir, 0o755)
+	cfg := filepath.Join(root, "config")
+	os.WriteFile(cfg, []byte("ich bin eine Datei"), 0o644) // Ziel-Ordner unbrauchbar
+	os.WriteFile(filepath.Join(modsDir, "y.jar"), []byte("y"), 0o644)
+	p := Profile{Name: ProfileServer, Dirs: map[string]string{"mods": modsDir, "config": cfg}}
+	m := NewManager(nil, "fabric", []Profile{p})
+	adds := []FileAdd{
+		{Category: "mods", Filename: "n.jar", Data: []byte("n"), SHA512: hexsum([]byte("n")), Replaces: "y.jar"},
+		{Category: "config", Filename: "b.cfg", Data: []byte("b"), SHA512: hexsum([]byte("b"))},
+	}
+	if _, err := m.ApplyFiles(ProfileServer, adds, nil, "Pack 2"); err == nil {
+		t.Fatal("Testvoraussetzung: erster Lauf muss teilweise scheitern")
+	}
+	if !exists(filepath.Join(modsDir, "n.jar")) || exists(filepath.Join(modsDir, "y.jar")) {
+		t.Fatal("Testvoraussetzung: n.jar live, y.jar gesichert")
+	}
+	os.Remove(cfg)
+	os.MkdirAll(cfg, 0o755)
+	if _, err := m.ApplyFiles(ProfileServer, adds, nil, "Pack 2"); err != nil {
+		t.Fatalf("Wiederholung scheitert: %v", err)
+	}
+	if got := readF(t, filepath.Join(modsDir, "n.jar")); got != "n" {
+		t.Errorf("n.jar = %q", got)
+	}
+	if !exists(filepath.Join(cfg, "b.cfg")) {
+		t.Error("b.cfg fehlt nach Wiederholung")
+	}
+}
+
+// Absturz zwischen Einsetzen und Sichern der alten Datei bzw. beide liegen
+// live: neue Datei identisch → nicht neu einsetzen, die alte aber entfernen.
+func TestApplyFilesIdenticalNewWithOldStillLive(t *testing.T) {
+	m, _, dir := testProfile(t)
+	os.WriteFile(filepath.Join(dir, "y.jar"), []byte("y"), 0o644)
+	os.WriteFile(filepath.Join(dir, "n.jar"), []byte("n"), 0o644)
+	label, err := m.ApplyFiles(ProfileServer, []FileAdd{
+		{Category: "mods", Filename: "n.jar", Data: []byte("n"), SHA512: hexsum([]byte("n")), Replaces: "y.jar"},
+	}, nil, "Pack 2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists(filepath.Join(dir, "y.jar")) {
+		t.Error("alte Datei y.jar liegt noch live")
+	}
+	if !exists(filepath.Join(dir, ".backup", label, "y.jar")) {
+		t.Error("alte Datei nicht gesichert")
+	}
+	if got := readF(t, filepath.Join(dir, "n.jar")); got != "n" {
+		t.Errorf("n.jar = %q", got)
+	}
+	// abweichender Inhalt unter dem neuen Namen bleibt ein Fehler
+	os.WriteFile(filepath.Join(dir, "z.jar"), []byte("fremd"), 0o644)
+	os.WriteFile(filepath.Join(dir, "w.jar"), []byte("w"), 0o644)
+	if _, err := m.ApplyFiles(ProfileServer, []FileAdd{
+		{Category: "mods", Filename: "z.jar", Data: []byte("z"), SHA512: hexsum([]byte("z")), Replaces: "w.jar"},
+	}, nil, ""); err == nil {
+		t.Error("fremde gleichnamige Datei würde überschrieben")
+	}
+}
