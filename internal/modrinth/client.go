@@ -216,12 +216,22 @@ func (c *Client) VersionsByHash(ctx context.Context, sha512s []string) (map[stri
 	return out, nil
 }
 
-// Search finds mods with a build for loader + MC version. Facetten sind
-// JSON im Query-String und müssen encodiert werden (Learning 14).
+// Search finds mods with a build for loader + MC version.
 func (c *Client) Search(ctx context.Context, query, loader, mcVersion string, limit int) ([]SearchHit, error) {
+	return c.search(ctx, "mod", query, loader, mcVersion, limit)
+}
+
+// SearchModpacks finds modpacks with a version for loader + MC version.
+func (c *Client) SearchModpacks(ctx context.Context, query, loader, mcVersion string, limit int) ([]SearchHit, error) {
+	return c.search(ctx, "modpack", query, loader, mcVersion, limit)
+}
+
+// search is the shared /search call. Facetten sind JSON im Query-String und
+// müssen encodiert werden (Learning 14).
+func (c *Client) search(ctx context.Context, ptype, query, loader, mcVersion string, limit int) ([]SearchHit, error) {
 	q := url.Values{}
 	q.Set("query", query)
-	q.Set("facets", fmt.Sprintf(`[["project_type:mod"],["categories:%s"],["versions:%s"]]`, loader, mcVersion))
+	q.Set("facets", fmt.Sprintf(`[["project_type:%s"],["categories:%s"],["versions:%s"]]`, ptype, loader, mcVersion))
 	q.Set("limit", strconv.Itoa(limit))
 	var out struct {
 		Hits []SearchHit `json:"hits"`

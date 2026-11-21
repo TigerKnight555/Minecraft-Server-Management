@@ -142,3 +142,19 @@ func TestVersionFileSHA1Decoded(t *testing.T) {
 		t.Errorf("hashes = %+v", v.Files[0].Hashes)
 	}
 }
+
+func TestSearchModpacksFacets(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f := r.URL.Query().Get("facets")
+		if r.URL.Path != "/search" || f != `[["project_type:modpack"],["categories:fabric"],["versions:26.3"]]` {
+			http.Error(w, "bad facets: "+f, http.StatusBadRequest)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"hits": []SearchHit{{ProjectID: "FO", Title: "Fabulously Optimized"}}})
+	}))
+	defer srv.Close()
+	hits, err := NewWithBase(srv.URL).SearchModpacks(context.Background(), "fabulously", "fabric", "26.3", 10)
+	if err != nil || len(hits) != 1 || hits[0].ProjectID != "FO" {
+		t.Fatalf("hits = %+v, err = %v", hits, err)
+	}
+}
