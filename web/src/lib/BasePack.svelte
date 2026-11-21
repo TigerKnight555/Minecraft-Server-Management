@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte'
-  import { basepackStatus, basepackSearch, basepackPreview, basepackApply, basepackRemove } from './stream.js'
+  import { basepackStatus, basepackSearch, basepackPreview, basepackApply, basepackConfigs, basepackRemove } from './stream.js'
 
   let { onchange } = $props()
   let enabled = $state(true)
@@ -10,6 +10,7 @@
   let searched = $state(false)
   let preview = $state(null)
   let configs = $state({})
+  let cfgEdit = $state(null) // Config-Auswahl der aktuellen Version ändern (Pfad -> an)
   let busy = $state(false)
   let blocked = $state(false) // 409: MC-Upgrade läuft -> nur ändernde Aktionen gesperrt
   const BLOCKED_HINT = 'MC-Update läuft — Basis-Pack-Aktionen sind gesperrt'
@@ -24,8 +25,9 @@
       error = ''
       return true
     } catch (err) {
-      // Nur "Feature nicht vorhanden" (Route nicht registriert) blendet den Bereich aus
-      if (err.status === 404 || err.status === 501 || err.status === 503) enabled = false
+      // Nur "Feature nicht vorhanden" (Route nicht registriert) blendet den Bereich aus;
+      // 503 & Co. sind vorübergehend -> Fehler + "Erneut versuchen"
+      if (err.status === 404) enabled = false
       else error = err.message
       return false
     }
@@ -56,6 +58,7 @@
     })
   }
   const openPreview = (projectId) => guard(async () => {
+    cfgEdit = null
     preview = await basepackPreview(projectId)
     // Neue Configs sind vorab aus: der Admin entscheidet bewusst
     configs = Object.fromEntries((preview.configs ?? []).map((c) => [c.path, c.new ? false : !!c.on]))
@@ -67,6 +70,19 @@
     preview = null
     hits = []
     searched = false
+    await load()
+    onchange?.()
+  })
+  const currentConfigs = () => Object.keys(status?.state?.configs ?? {}).sort()
+  const openConfigs = () => {
+    preview = null
+    cfgEdit = { ...(status?.state?.configs ?? {}) }
+  }
+  // Auswahl für die AKTUELLE Pack-Version (kein Versionswechsel)
+  const doSaveConfigs = () => guard(async () => {
+    await basepackConfigs(cfgEdit)
+    info = 'Config-Auswahl gespeichert — wird beim nächsten Neustart an die Spieler verteilt.'
+    cfgEdit = null
     await load()
     onchange?.()
   })
@@ -109,13 +125,18 @@
       {#if status.checkError}
         <span class="warn-msg">Update-Prüfung fehlgeschlagen — Modrinth nicht erreichbar</span>
       {:else if status.available}
-        <button class="btn accent" onclick={() => openPreview(status.state.projectId)} disabled={busy}>
+        <button class="btn accent" onclick={() => openPreview(status.state.projectId)} disabled={busy || blocked}>
           {status.available.versionNumber} verfügbar — Vorschau
         </button>
       {:else}
         <span class="dim-sm">✔ aktuell</span>
       {/if}
-      <button class="btn" onclick={() => openPreview(status.state.projectId)} disabled={busy}>Configs / Neu laden</button>
+      {#if currentConfigs().length}
+        <button class="btn" onclick={openConfigs} disabled={busy || blocked}>Configs ändern</button>
+      {/if}
+      {#if !status.available}
+        <button class="btn" onclick={() => openPreview(status.state.projectId)} disabled={busy || blocked}>Neu laden</button>
+      {/if}
       <button class="btn danger" onclick={doRemove} disabled={busy || blocked}>Entfernen</button>
     </div>
   {:else}
@@ -133,7 +154,21 @@
     {/each}
   {/if}
 
-  {#if busy && !preview}<p class="dim-sm" role="status">Lade Modpack und prüfe Dateien …</p>{/if}
+  {#if cfgEdit}
+    <div class="dialog">
+      <h3>Configs von {status?.state?.title} {status?.state?.versionNumber}</h3>
+      <p class="dim-sm">Gilt für die aktuelle Pack-Version. Mitgelieferte Configs überschreiben bei jedem Paket-Update die Spieler-Datei.</p>
+      {#each currentConfigs() as path (path)}
+        <label class="cfg"><input type="checkbox" bind:checked={cfgEdit[path]} /> <code>{path}</code></label>
+      {/each}
+      <div class="row">
+        <button class="btn accent" onclick={doSaveConfigs} disabled={busy || blocked}>Speichern</button>
+        <button class="btn" onclick={() => (cfgEdit = null)} disabled={busy}>Abbrechen</button>
+      </div>
+    </div>
+  {/if}
+
+  {#if busy && !preview && !cfgEdit}<p class="dim-sm" role="status">Lade Modpack und prüfe Dateien …</p>{/if}
 
   {#if preview}
     <div class="dialog">
