@@ -263,7 +263,7 @@ func compose(server, client []mods.Change) (text, title string, ok bool) {
 		var out []mods.Change
 		for _, c := range list {
 			if c.Action == "pack" {
-				packLines = append(packLines, c.Name)
+				packLines = append(packLines, strings.TrimPrefix(c.Name, "Basis-Modpack "))
 				continue
 			}
 			out = append(out, c)
@@ -339,6 +339,8 @@ func compose(server, client []mods.Change) (text, title string, ok bool) {
 	write("**Entfernt:**", removed, false, "bitte auch bei dir entfernen", "nichts zu tun", "kann bei dir raus")
 	onServer := len(server) > 0
 	switch {
+	case len(packLines) > 0 && !onServer:
+		title = "🧩 Mod-Paket aktualisiert"
 	case len(added) == 0 && len(removed) == 0:
 		title = "🧩 Neu im Mod-Paket"
 	case len(added) > 0 && onServer:
