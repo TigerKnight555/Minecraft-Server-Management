@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/basepack"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modrinth"
 )
 
@@ -326,5 +327,52 @@ func TestHighestErrorIsLogged(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "mrp_x") {
 		t.Error("Log enthält den Token")
+	}
+}
+
+func TestBasepackFilesAndConfigs(t *testing.T) {
+	e := newEnv(t, "approved")
+	e.addMod("sodium.jar", "P-sod", "1", true)
+	// Pack-Datei von GitHub, Modrinth kennt sie nicht
+	os.WriteFile(filepath.Join(e.mods, "gh.jar"), []byte("gh"), 0o644)
+	root := filepath.Dir(e.mods)
+	os.MkdirAll(filepath.Join(root, "config"), 0o755)
+	os.WriteFile(filepath.Join(root, "config", "a.json"), []byte("A"), 0o644)
+	e.ch.SetBasepack(root, func() []string { return []string{"config/a.json"} },
+		func() map[string]basepack.PackFile {
+			return map[string]basepack.PackFile{sha([]byte("gh")): {Path: "mods/gh.jar", Category: "mods", Filename: "gh.jar",
+				SHA1: "g1", SHA512: sha([]byte("gh")), URL: "https://github.com/x/gh.jar", Size: 2, ProjectID: "P-gh", Version: "1"}}
+		})
+	if _, err := e.ch.Publish(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	idx := indexOf(t, e.api.packs[0])
+	if n := len(idx["files"].([]any)); n != 2 {
+		t.Errorf("files = %d, want 2 (sodium + GitHub-Datei aus dem Pack)", n)
+	}
+	zr, _ := zip.NewReader(bytes.NewReader(e.api.packs[0]), int64(len(e.api.packs[0])))
+	found := false
+	for _, f := range zr.File {
+		if f.Name == "overrides/config/a.json" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("freigegebene Config fehlt als overrides/config/a.json")
+	}
+	if st := e.ch.Status(); len(st.Omitted) != 0 {
+		t.Errorf("omitted = %v", st.Omitted)
+	}
+}
+
+func TestAllowedURL(t *testing.T) {
+	for u, want := range map[string]bool{
+		"https://cdn.modrinth.com/x": true, "https://github.com/a/b": true,
+		"https://raw.githubusercontent.com/a": true, "https://gitlab.com/a": true,
+		"http://cdn.modrinth.com/x": false, "https://evil.com/x": false, "https://github.com.evil.com/x": false,
+	} {
+		if allowedURL(u) != want {
+			t.Errorf("allowedURL(%q) != %v", u, want)
+		}
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/basepack"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modrinth"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mrpack"
@@ -73,6 +74,10 @@ type Channel struct {
 	set       func(string, string)
 	log       *slog.Logger
 
+	bpRoot    string
+	bpConfigs func() []string
+	bpIndex   func() map[string]basepack.PackFile
+
 	mu         sync.Mutex
 	omitted    []string
 	lastErr    string
@@ -82,6 +87,22 @@ type Channel struct {
 func New(api API, cfg func() Config, dirs map[string]string, dataDir string, mcVersion func() string,
 	get func(string) string, set func(string, string), log *slog.Logger) *Channel {
 	return &Channel{api: api, cfg: cfg, dirs: dirs, dataDir: dataDir, mcVersion: mcVersion, get: get, set: set, log: log}
+}
+
+// SetBasepack lets the channel ship base-pack files Modrinth does not know
+// (z. B. GitHub-Links aus dem Pack) and the selected configs as overrides.
+func (c *Channel) SetBasepack(root string, configs func() []string, index func() map[string]basepack.PackFile) {
+	c.bpRoot, c.bpConfigs, c.bpIndex = root, configs, index
+}
+
+// allowedURL: Download-Quellen, die Modrinth in Modpacks erlaubt.
+func allowedURL(u string) bool {
+	for _, p := range []string{"https://cdn.modrinth.com/", "https://github.com/", "https://raw.githubusercontent.com/", "https://gitlab.com/"} {
+		if strings.HasPrefix(u, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Channel) Name() string  { return "modrinth" }
@@ -257,10 +278,17 @@ func (c *Channel) Publish(ctx context.Context) (packpub.Outcome, error) {
 		if ok {
 			for i := range v.Files {
 				f := &v.Files[i]
-				if f.Hashes.SHA512 == l.sha512 && strings.HasPrefix(f.URL, "https://cdn.modrinth.com/") && f.Hashes.SHA1 != "" {
+				if f.Hashes.SHA512 == l.sha512 && allowedURL(f.URL) && f.Hashes.SHA1 != "" {
 					file = f
 					break
 				}
+			}
+		}
+		if file == nil && c.bpIndex != nil {
+			if pf, ok := c.bpIndex()[l.sha512]; ok && allowedURL(pf.URL) && pf.SHA1 != "" {
+				files = append(files, mrpack.File{Path: l.category + "/" + l.name, SHA1: pf.SHA1, SHA512: l.sha512, URL: pf.URL, Size: pf.Size})
+				entries = append(entries, Entry{Project: pf.ProjectID, File: l.name, Version: pf.Version})
+				continue
 			}
 		}
 		if file == nil {
@@ -323,8 +351,20 @@ func (c *Channel) Publish(ctx context.Context) (packpub.Outcome, error) {
 	}
 	changelog := Changelog(prev, cur, titles, omitted)
 
+	overrides := map[string][]byte{}
+	if c.bpConfigs != nil {
+		for _, rel := range c.bpConfigs() {
+			if !mrpack.ValidPath(rel) {
+				continue
+			}
+			if b, err := os.ReadFile(filepath.Join(c.bpRoot, filepath.FromSlash(rel))); err == nil {
+				overrides[rel] = b
+			}
+		}
+	}
+
 	upload := func(version string) error {
-		data, err := mrpack.Build(files, mrpack.Meta{VersionID: version, Name: proj.Title, Minecraft: mc, FabricLoader: loader})
+		data, err := mrpack.Build(files, mrpack.Meta{VersionID: version, Name: proj.Title, Minecraft: mc, FabricLoader: loader, Overrides: overrides})
 		if err != nil {
 			return err
 		}

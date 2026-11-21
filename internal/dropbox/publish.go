@@ -12,14 +12,14 @@ import (
 
 // Pack zips the client profile dirs, uploads them and returns the shared
 // link — ohne Discord-Meldung (die baut packpub gemeinsam für alle Kanäle).
-func Pack(ctx context.Context, c *Client, dirs map[string]string) (string, int, error) {
+func Pack(ctx context.Context, c *Client, dirs map[string]string, root string, extra []string) (string, int, error) {
 	name := "/MSM/mc-clientpack-" + time.Now().Format("2006-01-02") + ".zip"
 	pr, pw := io.Pipe()
 	files := 0
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		n, err := ZipDirs(pw, dirs)
+		n, err := zipAll(pw, dirs, root, extra)
 		files = n
 		pw.CloseWithError(err)
 	}()
@@ -40,8 +40,10 @@ func Pack(ctx context.Context, c *Client, dirs map[string]string) (string, int, 
 
 // Channel is the Dropbox distribution channel for packpub.
 type Channel struct {
-	C    *Client
-	Dirs map[string]string
+	C     *Client
+	Dirs  map[string]string
+	Root  string          // Client-Paket-Wurzel (für Extra)
+	Extra func() []string // zusätzliche Dateien relativ zu Root (Configs)
 }
 
 func (ch Channel) Name() string  { return "dropbox" }
@@ -49,7 +51,11 @@ func (ch Channel) Label() string { return "Dropbox" }
 func (ch Channel) Ready() bool   { return ch.C != nil && ch.Dirs != nil && ch.C.Ready() }
 
 func (ch Channel) Publish(ctx context.Context) (packpub.Outcome, error) {
-	link, files, err := Pack(ctx, ch.C, ch.Dirs)
+	extra := []string(nil)
+	if ch.Extra != nil {
+		extra = ch.Extra()
+	}
+	link, files, err := Pack(ctx, ch.C, ch.Dirs, ch.Root, extra)
 	if err != nil {
 		return packpub.Outcome{}, err
 	}

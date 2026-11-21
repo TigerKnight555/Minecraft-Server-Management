@@ -488,7 +488,7 @@ func main() {
 	}
 	// Versandwege für das Client-Paket (packpub): Dropbox und Modrinth; jeder
 	// Kanal merkt sich seinen zuletzt verschickten Stand selbst
-	packs := packpub.New(func() string { return packFingerprint(clientDirs) }, kvGet, kvSet, bus, log, channels...)
+	packs := packpub.New(func() string { return packFingerprint(clientDirs, "", nil) }, kvGet, kvSet, bus, log, channels...)
 	// runPack ist der einzige Weg zum Paket-Versand (Button, MC-Update,
 	// Mod-Neuigkeiten); announced = eine 📦-Meldung ging an die Spieler.
 	// „Paket veraltet" wird erst gelöscht, wenn JEDER eingerichtete Kanal den
@@ -528,7 +528,7 @@ func main() {
 		return publishPack(ctx, nil, false)
 	})
 	if clientDirs != nil {
-		news.SetFingerprint(func() string { return packFingerprint(clientDirs) })
+		news.SetFingerprint(func() string { return packFingerprint(clientDirs, "", nil) })
 	}
 	news.SetBusy(upgradeActive)
 	go news.Run(ctx)
@@ -630,7 +630,7 @@ func pruneLoop(ctx context.Context, s *storage.SQLite, log *slog.Logger) {
 // packFingerprint hashes the client pack listing (Kategorie, Name, Größe).
 // Reicht, um „inhaltlich wie zuletzt verschickt" zu erkennen, ohne alle
 // Dateien zu lesen.
-func packFingerprint(dirs map[string]string) string {
+func packFingerprint(dirs map[string]string, root string, extra []string) string {
 	var lines []string
 	for cat, dir := range dirs {
 		entries, err := os.ReadDir(dir)
@@ -646,6 +646,11 @@ func packFingerprint(dirs map[string]string) string {
 				continue
 			}
 			lines = append(lines, fmt.Sprintf("%s/%s/%d", cat, e.Name(), info.Size()))
+		}
+	}
+	for _, rel := range extra {
+		if info, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err == nil {
+			lines = append(lines, fmt.Sprintf("extra/%s/%d", rel, info.Size()))
 		}
 	}
 	sort.Strings(lines)

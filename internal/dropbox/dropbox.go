@@ -252,8 +252,45 @@ func (c *Client) content(ctx context.Context, tok, endpoint, apiArg string, body
 // ZipDirs streams the given category dirs as one ZIP into w. Pfade im
 // Archiv: <category>/<datei> — genau die Struktur, die Spieler in ihren
 // .minecraft-Ordner entpacken.
-func ZipDirs(w io.Writer, dirs map[string]string) (files int, err error) {
+func ZipDirs(w io.Writer, dirs map[string]string) (int, error) {
 	zw := zip.NewWriter(w)
+	n, err := zipDirsInto(zw, dirs)
+	if err != nil {
+		return n, err
+	}
+	return n, zw.Close()
+}
+
+// zipAll zips the category dirs plus extra files (Pfade relativ zu root,
+// z. B. freigegebene Configs des Basis-Modpacks).
+func zipAll(w io.Writer, dirs map[string]string, root string, extra []string) (int, error) {
+	zw := zip.NewWriter(w)
+	files, err := zipDirsInto(zw, dirs)
+	if err != nil {
+		return files, err
+	}
+	for _, rel := range extra {
+		if rel == "" || strings.Contains(rel, "..") || strings.HasPrefix(rel, "/") || strings.ContainsAny(rel, `\:`) {
+			continue
+		}
+		f, err := os.Open(filepath.Join(root, filepath.FromSlash(rel)))
+		if err != nil {
+			continue // Datei inzwischen weg — nicht fatal
+		}
+		dst, err := zw.Create(rel)
+		if err == nil {
+			_, err = io.Copy(dst, f)
+		}
+		f.Close()
+		if err != nil {
+			return files, err
+		}
+		files++
+	}
+	return files, zw.Close()
+}
+
+func zipDirsInto(zw *zip.Writer, dirs map[string]string) (files int, err error) {
 	// deterministische Reihenfolge
 	var cats []string
 	for c := range dirs {
@@ -292,7 +329,7 @@ func ZipDirs(w io.Writer, dirs map[string]string) (files int, err error) {
 			files++
 		}
 	}
-	return files, zw.Close()
+	return files, nil
 }
 
 func sortStrings(s []string) {

@@ -168,3 +168,18 @@ func TestMissingScopeExplained(t *testing.T) {
 		t.Fatalf("err = %v, want Klartext-Hinweis zu fehlenden Rechten", err)
 	}
 }
+
+func TestZipExtraFiles(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "config", "sub"), 0o755)
+	os.WriteFile(filepath.Join(root, "config", "sub", "a.json"), []byte("A"), 0o644)
+	var buf bytes.Buffer
+	n, err := zipAll(&buf, map[string]string{}, root, []string{"config/sub/a.json", "../evil"})
+	if err != nil || n != 1 {
+		t.Fatalf("n = %d, err = %v", n, err)
+	}
+	zr, _ := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	if len(zr.File) != 1 || zr.File[0].Name != "config/sub/a.json" {
+		t.Errorf("zip = %v", zr.File)
+	}
+}
