@@ -300,6 +300,11 @@ func (w *Watcher) Check(ctx context.Context, currentVersion string) (*WatchStatu
 			if !e.Managed || e.Category != "mods" {
 				continue
 			}
+			// Basis-Pack-Dateien wechseln nur mit dem Pack (Bereitschaft in
+			// status.Basepack) — kein Zählen, kein Nachzügler-Hinweis
+			if w.mgr.pinned(p.Name, e.Filename) {
+				continue
+			}
 			pr.Total++
 			ok, err := w.api.ProjectSupports(ctx, e.ProjectID, w.loader, status.LatestVersion)
 			if err != nil {

@@ -126,6 +126,9 @@ type Orchestrator struct {
 	BasepackReady func(ctx context.Context, mc string) (name string, ready, set bool, err error)
 	// BasepackSwitch stellt das Basis-Modpack nach dem Sprung um.
 	BasepackSwitch func(ctx context.Context, mc string) error
+	// Pinned: Basis-Pack-Datei? Solche Mods sind nie Nachzügler (wechseln
+	// mit dem Pack); nil = keine.
+	Pinned func(profile, filename string) bool
 
 	// OnSuccess läuft nach einem erfolgreichen Sprung (z. B. Versions-Watch
 	// und Mod-Inventar sofort neu prüfen — sonst zeigt die Kachel bis zum
@@ -478,6 +481,10 @@ func (o *Orchestrator) finish(ctx context.Context, version string) error {
 	entries, err := o.modmgr.CheckUpdates(ctx, "client", version)
 	for _, e := range entries {
 		if e.UpdateVersion != "" && e.Name != "" {
+			nowAvailable[e.Name] = true
+		}
+		// Basis-Pack-Mods: Bereitschaft prüft der Pack-Check, nie entfernen lassen
+		if e.Name != "" && o.Pinned != nil && o.Pinned("client", e.Filename) {
 			nowAvailable[e.Name] = true
 		}
 	}

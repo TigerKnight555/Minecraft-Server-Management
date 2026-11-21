@@ -436,6 +436,9 @@ func main() {
 		if bp != nil {
 			upgrader.BasepackReady = bp.Ready
 			upgrader.BasepackSwitch = bp.SwitchMC
+			upgrader.Pinned = func(profile, filename string) bool {
+				return profile == mods.ProfileClient && bp.Pinned(filename)
+			}
 		}
 		// Routinen und Versionssprung schließen sich gegenseitig aus
 		upgrader.RoutineBusy = sched.Busy

@@ -29,6 +29,7 @@ type fakes struct {
 	// clientCheckErr lässt den Client-Mod-Check nach dem Sprung scheitern
 	clientCheckErr error
 	emptyClient    bool         // Client-Paket ohne Dateien
+	clientEntries  []mods.Entry // ersetzt den Standard-Client-Eintrag
 	version        atomic.Value // string: was der "Server" nach dem Upgrade meldet
 	online         atomic.Bool
 	staleStatus    atomic.Bool // mcStatus liefert einen veralteten Snapshot
@@ -86,6 +87,9 @@ func (f *fakes) CheckUpdates(_ context.Context, profile, v string) ([]mods.Entry
 		}
 		if f.emptyClient {
 			return nil, nil
+		}
+		if f.clientEntries != nil {
+			return f.clientEntries, nil
 		}
 		return []mods.Entry{{Profile: "client", Filename: "sodium.jar"}}, nil
 	}
@@ -649,6 +653,45 @@ func TestBasepackSwitchErrorKeepsSuccessAndDetails(t *testing.T) {
 		}
 		if !strings.Contains(details, "pack kaputt") || !strings.Contains(details, "modrinth 503") {
 			t.Errorf("Details = %q, want beide Fehler", details)
+		}
+		return
+	}
+	t.Fatal("keine Erfolgsmeldung")
+}
+
+// Basis-Pack-Mods wechseln mit dem Pack — die Spieler sollen sie nie
+// „vorerst aus dem mods-Ordner nehmen“, auch wenn ein älterer Watch-Lauf
+// sie noch als Nachzügler führt (Final-Review Important 4).
+func TestPinnedPackModIsNoStraggler(t *testing.T) {
+	f := &fakes{backupOK: true, clientEntries: []mods.Entry{
+		{Profile: "client", Filename: "sodium-fo.jar", Name: "Sodium"},
+		{Profile: "client", Filename: "xaero.jar", Name: "Xaero's Minimap"},
+	}}
+	f.online.Store(true)
+	bus := events.New()
+	ch, cancel := bus.Subscribe(16)
+	defer cancel()
+	st := readyFor("26.2", 0)
+	st.Stragglers = map[string]string{"Xaero's Minimap": "client", "Sodium": "client"}
+	o := New(f, f, f, f.mcStatus, f, f, fixedReadiness{st}, f, bus, "mc-fabric", testLogger())
+	o.WarnMinutes = 1
+	o.WarnStep = time.Millisecond
+	o.PollStep = time.Millisecond
+	o.Pinned = func(profile, filename string) bool { return profile == "client" && filename == "sodium-fo.jar" }
+
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+	for _, ev := range drain(ch) {
+		if ev.Type != events.TypeUpgradeOK {
+			continue
+		}
+		if !strings.Contains(ev.Message, "Xaero's Minimap") {
+			t.Errorf("eigener Nachzügler nicht genannt: %q", ev.Message)
+		}
+		if strings.Contains(ev.Message, "Sodium") {
+			t.Errorf("Basis-Pack-Mod als Nachzügler genannt: %q", ev.Message)
 		}
 		return
 	}
