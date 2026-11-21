@@ -85,3 +85,80 @@ func TestValidPath(t *testing.T) {
 		}
 	}
 }
+
+func TestParseRoundTripWithOverrides(t *testing.T) {
+	data, err := Build([]File{
+		{Path: "mods/sodium.jar", SHA1: "s1", SHA512: "s512", URL: "https://cdn.modrinth.com/a/sodium.jar", Size: 10},
+	}, Meta{VersionID: "6.4.0", Name: "FO", Minecraft: "26.3", FabricLoader: "0.20.1",
+		Overrides: map[string][]byte{"config/a.json": []byte("A"), "options.txt": []byte("O")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx, err := Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idx.Name != "FO" || idx.VersionID != "6.4.0" || idx.Dependencies["minecraft"] != "26.3" {
+		t.Errorf("kopf = %+v", idx)
+	}
+	if len(idx.Files) != 1 || idx.Files[0].Path != "mods/sodium.jar" || idx.Files[0].SHA1 != "s1" ||
+		idx.Files[0].SHA512 != "s512" || idx.Files[0].URLs[0] != "https://cdn.modrinth.com/a/sodium.jar" || idx.Files[0].Size != 10 {
+		t.Errorf("files = %+v", idx.Files)
+	}
+	if string(idx.Overrides["config/a.json"]) != "A" || string(idx.Overrides["options.txt"]) != "O" {
+		t.Errorf("overrides = %v", idx.Overrides)
+	}
+}
+
+func TestParseClientOverridesWinServerIgnored(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	write := func(name, body string) {
+		w, _ := zw.Create(name)
+		w.Write([]byte(body))
+	}
+	write("modrinth.index.json", `{"formatVersion":1,"game":"minecraft","versionId":"1","name":"P",
+		"files":[{"path":"mods/srv.jar","hashes":{"sha1":"a","sha512":"b"},"env":{"client":"unsupported","server":"required"},"downloads":["https://cdn.modrinth.com/x"],"fileSize":1}],
+		"dependencies":{"minecraft":"26.3","fabric-loader":"0.20.1"}}`)
+	write("overrides/config/x.json", "base")
+	write("client-overrides/config/x.json", "client")
+	write("server-overrides/config/y.json", "server")
+	write("overrides/../evil.txt", "evil")
+	zw.Close()
+
+	idx, err := Parse(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(idx.Overrides["config/x.json"]) != "client" {
+		t.Errorf("client-overrides müssen gewinnen: %q", idx.Overrides["config/x.json"])
+	}
+	if _, ok := idx.Overrides["config/y.json"]; ok {
+		t.Error("server-overrides dürfen nicht übernommen werden")
+	}
+	if len(idx.Overrides) != 1 {
+		t.Errorf("overrides = %v (ungültige Pfade müssen fehlen)", idx.Overrides)
+	}
+	if idx.Files[0].ClientEnv != "unsupported" {
+		t.Errorf("ClientEnv = %q", idx.Files[0].ClientEnv)
+	}
+}
+
+func TestParseRejectsMissingIndexAndBadPaths(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, _ := zw.Create("readme.txt")
+	w.Write([]byte("x"))
+	zw.Close()
+	if _, err := Parse(buf.Bytes()); err == nil {
+		t.Error("ZIP ohne modrinth.index.json akzeptiert")
+	}
+	var b2 bytes.Buffer
+	zw = zip.NewWriter(&b2)
+	w, _ = zw.Create("modrinth.index.json")
+	w.Write([]byte(`{"formatVersion":1,"game":"minecraft","versionId":"1","name":"P","files":[{"path":"../x.jar","hashes":{"sha1":"a","sha512":"b"},"downloads":["https://cdn.modrinth.com/x"],"fileSize":1}],"dependencies":{}}`))
+	zw.Close()
+	if _, err := Parse(b2.Bytes()); err == nil {
+		t.Error("Pfad mit .. akzeptiert")
+	}
+}

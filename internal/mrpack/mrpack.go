@@ -1,7 +1,8 @@
-// Package mrpack builds Modrinth modpack files (.mrpack): ein ZIP mit
+// Package mrpack builds and reads Modrinth modpack files (.mrpack): ein ZIP mit
 // modrinth.index.json an der Wurzel, das jede Datei per Download-Link und
-// Hashes beschreibt (Format-Version 1, Spiel „minecraft"). MSM braucht keine
-// overrides — das Client-Paket besteht nur aus Modrinth-Inhalten.
+// Hashes beschreibt (Format-Version 1, Spiel „minecraft"). Zusätzlich können
+// Overrides unter overrides/ liegen; Parse liest overrides/ und
+// client-overrides/ (client gewinnt), server-overrides/ wird ignoriert.
 package mrpack
 
 import (
@@ -9,6 +10,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 )
@@ -32,6 +34,9 @@ type Meta struct {
 	Summary      string
 	Minecraft    string
 	FabricLoader string
+	// Overrides: Dateien, die ins Instanzverzeichnis kopiert werden
+	// (Pfad relativ zur Instanz, z. B. "config/sodium.json")
+	Overrides map[string][]byte
 }
 
 type index struct {
@@ -103,8 +108,131 @@ func Build(files []File, meta Meta) ([]byte, error) {
 	if _, err := w.Write(raw); err != nil {
 		return nil, err
 	}
+	paths := make([]string, 0, len(meta.Overrides))
+	for p := range meta.Overrides {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	for _, p := range paths {
+		if !ValidPath(p) {
+			return nil, fmt.Errorf("mrpack: ungültiger Override-Pfad %q", p)
+		}
+		ow, err := zw.Create("overrides/" + p)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := ow.Write(meta.Overrides[p]); err != nil {
+			return nil, err
+		}
+	}
 	if err := zw.Close(); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// IndexFile is one file entry of a parsed pack.
+type IndexFile struct {
+	Path      string
+	SHA1      string
+	SHA512    string
+	URLs      []string
+	Size      int64
+	ClientEnv string // "required" | "optional" | "unsupported" | "" (fehlt = nötig)
+}
+
+// Index is a parsed .mrpack.
+type Index struct {
+	Name         string
+	VersionID    string
+	Summary      string
+	Dependencies map[string]string
+	Files        []IndexFile
+	// Overrides: overrides/ + client-overrides/ (gewinnt); server-overrides/
+	// wird ignoriert. Schlüssel = Pfad relativ zur Instanz.
+	Overrides map[string][]byte
+}
+
+// maxOverride limits a single override file (Configs sind klein).
+const maxOverride = 8 << 20
+
+// Parse reads a .mrpack (ZIP).
+func Parse(data []byte) (*Index, error) {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, fmt.Errorf("mrpack: kein gültiges ZIP: %w", err)
+	}
+	var raw struct {
+		VersionID string `json:"versionId"`
+		Name      string `json:"name"`
+		Summary   string `json:"summary"`
+		Files     []struct {
+			Path      string            `json:"path"`
+			Hashes    map[string]string `json:"hashes"`
+			Env       map[string]string `json:"env"`
+			Downloads []string          `json:"downloads"`
+			FileSize  int64             `json:"fileSize"`
+		} `json:"files"`
+		Dependencies map[string]string `json:"dependencies"`
+	}
+	found := false
+	base := map[string][]byte{}
+	client := map[string][]byte{}
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		if f.Name == "modrinth.index.json" {
+			rc, err := f.Open()
+			if err != nil {
+				return nil, err
+			}
+			err = json.NewDecoder(rc).Decode(&raw)
+			rc.Close()
+			if err != nil {
+				return nil, fmt.Errorf("mrpack: index unlesbar: %w", err)
+			}
+			found = true
+			continue
+		}
+		var target map[string][]byte
+		var rel string
+		switch {
+		case strings.HasPrefix(f.Name, "client-overrides/"):
+			target, rel = client, strings.TrimPrefix(f.Name, "client-overrides/")
+		case strings.HasPrefix(f.Name, "overrides/"):
+			target, rel = base, strings.TrimPrefix(f.Name, "overrides/")
+		default:
+			continue // server-overrides und Sonstiges
+		}
+		if !ValidPath(rel) || f.UncompressedSize64 > maxOverride {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return nil, err
+		}
+		b, err := io.ReadAll(io.LimitReader(rc, maxOverride+1))
+		rc.Close()
+		if err != nil {
+			return nil, err
+		}
+		target[rel] = b
+	}
+	if !found {
+		return nil, fmt.Errorf("mrpack: modrinth.index.json fehlt")
+	}
+	idx := &Index{Name: raw.Name, VersionID: raw.VersionID, Summary: raw.Summary,
+		Dependencies: raw.Dependencies, Overrides: base}
+	for p, b := range client {
+		idx.Overrides[p] = b
+	}
+	for _, f := range raw.Files {
+		if !ValidPath(f.Path) {
+			return nil, fmt.Errorf("mrpack: ungültiger Pfad %q im Index", f.Path)
+		}
+		idx.Files = append(idx.Files, IndexFile{Path: f.Path, SHA1: f.Hashes["sha1"], SHA512: f.Hashes["sha512"],
+			URLs: f.Downloads, Size: f.FileSize, ClientEnv: f.Env["client"]})
+	}
+	return idx, nil
 }
