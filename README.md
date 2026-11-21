@@ -68,7 +68,10 @@ Homeserver getestet.
   Admin ergänzt eigene Mods, schaltet Pack-Mods ab und wählt, welche
   Pack-Configs mitgeliefert werden; das Pack wird per Klick als Ganzes
   aktualisiert und beim Minecraft-Update automatisch auf die passende
-  Version umgestellt (ohne passende Version wird das Update verweigert)
+  Version umgestellt (ohne passende Version wird das Update verweigert).
+  Pack-Configs werden ohne Sicherung geschrieben; Quelle ist immer das
+  Pack (Neu laden/Übernehmen stellt sie wieder her). Rollback setzt
+  Configs nicht zurück
 - **Discord-Benachrichtigungen:** verständlich formuliert; Erfolgsmeldungen
   nur, wenn Spieler betroffen waren, Fehler und Ausfälle immer
 - **Wartungsfenster:** geplante Auszeiten mit Ankündigung (1 h und 5 min

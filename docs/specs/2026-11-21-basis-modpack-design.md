@@ -18,7 +18,7 @@ Das Client-Paket kann auf einem fertigen Modrinth-Modpack aufbauen (z. B. Fabulo
 
 1. Mods-Tab, Profil „Client-Paket", neuer Bereich „Basis-Modpack": Modrinth nach Modpacks durchsuchen (Projekttyp `modpack`). MSM wählt die neueste Pack-Version für die laufende MC-Version und Loader `fabric`.
 2. Vorschau vor dem Übernehmen: Mods, Configs (mit Vorauswahl), was neu dazukommt, welche eigenen Mods das Pack übernimmt, ignorierte Ordner.
-3. „Übernehmen": Pack-Mods und freigegebene Configs ins Client-Paket (Prüfsumme, Sicherung, Rollback wie bei allen Client-Änderungen).
+3. „Übernehmen": Pack-Mods und freigegebene Configs ins Client-Paket (Prüfsumme; Mods mit Sicherung und Rollback wie bei allen Client-Änderungen, Configs ohne — siehe Abschnitt Configs).
 4. Mod-Liste: Pack-Mods mit Herkunft „Basis-Pack" und Schalter an/aus.
 5. Neue Pack-Version → Hinweis „FO 6.5.0 verfügbar" mit Änderungsliste → „Übernehmen".
 6. Verteilung wie gewohnt (Neustart → 🧩/📦, Dropbox-ZIP, Modrinth-Modpack).
@@ -47,13 +47,14 @@ Pack-Mods werden nie einzeln aktualisiert (die Update-Prüfung überspringt sie)
 - Auswahl wird gespeichert (je Pfad an/aus); neue Dateien aus Updates starten AUS.
 - Freigegebene Configs liegen im neuen Client-Paket-Ordner `config/`; Dropbox-ZIP nimmt ihn mit, das Modrinth-Modpack als `overrides/config/…`.
 - Hinweis im UI: mitgelieferte Configs überschreiben bei jedem Paket-Update die Spieler-Datei (Format-Grenze von `.mrpack`/ZIP).
+- Pack-Configs werden ohne Sicherung geschrieben; Quelle ist immer das Pack (Neu laden/Übernehmen stellt sie wieder her). Rollback setzt Configs nicht zurück.
 
 ## Bausteine
 
 - **`internal/basepack` (neu):** Modpack-Suche, passende Version finden, `.mrpack` laden (Größenlimit 64 MB), Index lesen (Dateien mit Pfad, Hashes, Download-URLs, `env`; `overrides`), Vergleich alt ↔ neu (Änderungsliste), Config-Vorauswahl. Rein und testbar; Downloads über den Modrinth-Client.
 - **Gespeicherter Stand** (`app_state`, JSON unter `basepack.state`): Projekt-ID, Slug, Titel, Version (ID + Nummer), MC-Version, Liste der Pack-Dateien (Pfad, Projekt-ID, Version, sha512), abgeschaltete Projekte, Config-Auswahl, vom Pack übernommene frühere eigene Mods.
 - **Anwenden** über `mods.Manager` (Client-Profil): Staging + Sicherung + Rollback; Herkunft je Datei im Inventar (`Entry.Source`: `""` = eigene, `"basepack"`). Abschalten = Datei in die Sicherung, Eintrag bleibt mit `Disabled`; Anschalten = aus der Sicherung zurück, sonst neu laden.
-- **Client-Profil** bekommt die Kategorie `config` (Ordner `config/` im Client-Paket-Verzeichnis); die Mod-Liste zeigt sie nicht als Mods.
+- **Configs** liegen im Ordner `config/` (bzw. am jeweiligen Pfad) des Client-Paket-Verzeichnisses und werden vom Basis-Pack-Dienst direkt geschrieben — nicht als Kategorie des Client-Profils (Sicherung/Staging des Mod-Managers sind flach, Pack-Configs liegen in Unterordnern); die Mod-Liste zeigt sie nicht.
 - **API:** `GET /api/basepack` (Status, verfügbares Update), `GET /api/basepack/search?q=`, `GET /api/basepack/preview?project=&version=`, `POST /api/basepack/apply` (Projekt, Version, Config-Auswahl), `POST /api/basepack/toggle` (Projekt, an/aus), `POST /api/basepack/configs` (Auswahl ändern), `DELETE /api/basepack` (entfernen). Gesperrt während eines MC-Updates (409), wie alle Mod-Änderungen.
 - **Update-Erkennung:** täglicher Versions-Lauf und „Jetzt prüfen" fragen die neueste Pack-Version für MC + fabric ab; Kachel/Mods-Tab zeigen „verfügbar".
 - **MC-Update:** Versions-Watch nennt das Pack („bereit für 26.4" / „noch nicht"); `upgrade.Start` verweigert, wenn ein Basis-Pack gesetzt ist und keine Version für die Zielversion existiert; nach erfolgreichem Sprung stellt der Client-Mod-Schritt das Pack auf die passende Version um (gleiche Regeln, Configs-Auswahl bleibt).
@@ -66,7 +67,7 @@ Pack-Mods werden nie einzeln aktualisiert (die Update-Prüfung überspringt sie)
 - Download-/Prüfsummenfehler: Abbruch, nichts verändert.
 - Nur-Server-Dateien (`env.client = unsupported`): übersprungen.
 - Unbekannte Ordner: ignoriert, in der Vorschau genannt.
-- Basis-Pack entfernen: Pack-Dateien und Pack-Configs raus (Sicherung), eigene Mods bleiben.
+- Basis-Pack entfernen: Pack-Dateien (in die Sicherung) und Pack-Configs (ohne Sicherung) raus, eigene Mods bleiben.
 - Während MC-Update: alle Basis-Pack-Aktionen 409.
 - MC-Update ohne passende Pack-Version: Update verweigert mit Hinweis (abwarten oder Basis-Pack entfernen).
 
