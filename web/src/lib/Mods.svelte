@@ -1,10 +1,11 @@
 <script>
   import { onMount } from 'svelte'
   import AddMod from './AddMod.svelte'
+  import BasePack from './BasePack.svelte'
   import {
     listMods, checkMods, stageMods, applyMods, rollbackMods,
     versionWatch, versionWatchCheck, publishClientPack, modpackStatus,
-    removeInfo, removeMod, discardMod,
+    removeInfo, removeMod, discardMod, basepackToggle,
   } from './stream.js'
 
   let modpack = $state(null)
@@ -39,7 +40,7 @@
   let error = $state('')
   let info = $state('')
 
-  let updatable = $derived(entries.filter((e) => e.updateVersion && !e.pending))
+  let updatable = $derived(entries.filter((e) => e.updateVersion && !e.pending && e.source !== 'basepack'))
   let stagedCount = $derived(entries.filter((e) => e.pending).length)
 
   async function load() {
@@ -123,6 +124,10 @@
     }, () => (profile === 'server' ? 'Entfernen vorgemerkt' : 'Entfernt') + (also.length ? ' (auch im anderen Profil)' : ''))
   }
 
+  const doTogglePack = (e) => run(() => basepackToggle(e.packKey, !!e.disabled),
+    () => (e.disabled ? `${e.name || e.filename} angeschaltet` : `${e.name || e.filename} abgeschaltet`)
+      + ' — wird beim nächsten Neustart an die Spieler verteilt')
+
   const doDiscard = (e) => run(() => discardMod(profile, e.filename), () => `Vormerkung für ${e.name || e.filename} verworfen`)
 </script>
 
@@ -147,6 +152,14 @@
       {:else}
         <div class="watch-line ok-text">Aktuell — {watch.currentVersion} ist die neueste Release.</div>
       {/if}
+      {#if watch.basepack}
+        <div class="dim-sm">
+          Basis-Modpack {watch.basepack.name}:
+          {#if watch.basepack.error}konnte nicht geprüft werden
+          {:else if watch.basepack.ready}bereit für {watch.latestVersion}
+          {:else}noch nicht für {watch.latestVersion}{/if}
+        </div>
+      {/if}
       <div class="dim-sm">Geprüft: {new Date(watch.checked).toLocaleString('de-DE')}</div>
     </div>
   {:else}
@@ -156,6 +169,8 @@
 </div>
 
 <AddMod onchange={load} />
+
+{#if profile === 'client'}<BasePack onchange={load} />{/if}
 
 <div class="panel wide">
   <h2>
@@ -208,12 +223,14 @@
       </thead>
       <tbody>
         {#each entries as e (e.category + '/' + e.filename)}
-          <tr class={e.managed ? '' : 'unmanaged'}>
+          <tr class={e.disabled || !e.managed ? 'unmanaged' : ''}>
             <td class="mono">{e.filename}<span class="dim-sm"> {e.category !== 'mods' ? '· ' + e.category : ''}</span></td>
-            <td>{e.name || '—'}</td>
+            <td>{e.name || '—'}{#if e.source === 'basepack'} <span class="badge staged">Basis-Pack</span>{/if}</td>
             <td class="mono">{e.version || '?'}</td>
             <td>
-              {#if e.pending === 'add'}
+              {#if e.disabled}
+                <span class="badge unmanaged">aus</span>
+              {:else if e.pending === 'add'}
                 <span class="badge staged">neu · vorgemerkt</span>
               {:else if e.pending === 'remove'}
                 <span class="badge remove">wird entfernt</span>
@@ -228,7 +245,10 @@
               {/if}
             </td>
             <td class="row-actions">
-              {#if e.pending}
+              {#if e.source === 'basepack'}
+                <button class="btn sm" role="switch" aria-checked={!e.disabled} aria-label="{e.name || e.filename} im Client-Paket"
+                  onclick={() => doTogglePack(e)} disabled={busy || !e.packKey}>{e.disabled ? 'Anschalten' : 'Abschalten'}</button>
+              {:else if e.pending}
                 <button class="btn sm" onclick={() => doDiscard(e)} disabled={busy}>Verwerfen</button>
               {:else}
                 {#if e.updateVersion}

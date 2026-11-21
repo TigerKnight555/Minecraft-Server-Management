@@ -17,6 +17,11 @@
 
   let authChecked = $state(false)
   let tab = $state('dashboard')
+  const basepackLine = (w) => {
+    const b = w.basepack
+    if (b.error) return `${b.name}: konnte nicht geprüft werden`
+    return b.ready ? `${b.name}: bereit für ${w.latestVersion}` : `${b.name}: noch nicht für ${w.latestVersion}`
+  }
   let watch = $state(null) // letzter Versions-Watch (läuft serverseitig täglich)
 
   let upgradeStatus = $state('')
@@ -207,6 +212,7 @@
       {:else if !watch.newerAvailable}
         <div class="value" style="font-size:1.1rem">aktuell</div>
         <div class="detail">{watch.currentVersion}</div>
+        {#if watch.basepack}<div class="detail">{basepackLine(watch)}</div>{/if}
       {:else}
         <div class="value" style="font-size:1.1rem">{watch.latestVersion} verfügbar</div>
         <div class="detail">
@@ -218,6 +224,7 @@
           {:else}
             Server-Mods {srvReady ? `${srvReady.ready}/${srvReady.total}` : '–'} bereit{watch.loaderReady ? '' : ' · Loader fehlt'} — warten
           {/if}
+          {#if watch.basepack}<div>{basepackLine(watch)}</div>{/if}
           {#if upgradeError}<div style="color:var(--err)">{upgradeError}</div>{/if}
         </div>
       {/if}

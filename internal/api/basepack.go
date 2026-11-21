@@ -165,15 +165,25 @@ func (s *Server) decorateClient(entries []mods.Entry) []mods.Entry {
 	if !ok {
 		return entries
 	}
+	active := map[string]string{} // category/filename -> Toggle-Schlüssel
+	for _, f := range st.Files {
+		if !st.IsDisabled(basepack.Key(f)) {
+			active[f.Category+"/"+f.Filename] = basepack.Key(f)
+		}
+	}
 	for i := range entries {
-		if s.basepack.Pinned(entries[i].Filename) {
+		if key, ok := active[entries[i].Category+"/"+entries[i].Filename]; ok {
+			entries[i].Source = "basepack"
+			entries[i].PackKey = key
+		} else if s.basepack.Pinned(entries[i].Filename) {
 			entries[i].Source = "basepack"
 		}
 	}
 	for _, f := range st.Files {
 		if st.IsDisabled(basepack.Key(f)) {
 			entries = append(entries, mods.Entry{Profile: mods.ProfileClient, Category: f.Category, Filename: f.Filename,
-				Name: f.Name, ProjectID: f.ProjectID, Version: f.Version, Managed: f.ProjectID != "", Source: "basepack", Disabled: true})
+				Name: f.Name, ProjectID: f.ProjectID, Version: f.Version, Managed: f.ProjectID != "", Source: "basepack", Disabled: true,
+				PackKey: basepack.Key(f)})
 		}
 	}
 	return entries

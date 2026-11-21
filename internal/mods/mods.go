@@ -83,6 +83,8 @@ type Entry struct {
 	Source string `json:"source,omitempty"`
 	// Disabled: abgeschaltete Basis-Pack-Mod (liegt nicht im Paket)
 	Disabled bool `json:"disabled,omitempty"`
+	// PackKey: Schlüssel der Pack-Datei für /api/basepack/toggle (setzt die API)
+	PackKey string `json:"packKey,omitempty"`
 }
 
 // Manager coordinates scans, update checks, staging and rollback.

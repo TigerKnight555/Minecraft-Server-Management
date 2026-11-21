@@ -92,9 +92,12 @@ func TestDecorateClient(t *testing.T) {
 	}}
 	b, _ := json.Marshal(st)
 	srv := bpServer(t, stubBPAPI{}, map[string]string{"basepack.state": string(b)})
-	out := srv.decorateClient([]mods.Entry{{Filename: "a.jar"}, {Filename: "own.jar"}})
+	out := srv.decorateClient([]mods.Entry{{Category: "mods", Filename: "a.jar"}, {Category: "mods", Filename: "own.jar"}})
 	if len(out) != 3 || out[0].Source != "basepack" || out[1].Source != "" || !out[2].Disabled || out[2].Source != "basepack" {
 		t.Errorf("decorate = %+v", out)
+	}
+	if out[0].PackKey != "A" || out[1].PackKey != "" || out[2].PackKey != "B" {
+		t.Errorf("packKey = %q / %q / %q", out[0].PackKey, out[1].PackKey, out[2].PackKey)
 	}
 }
 
