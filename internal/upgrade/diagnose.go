@@ -38,7 +38,7 @@ func Diagnose(logText string) string {
 		need, _ := strconv.Atoi(m[1])
 		have, _ := strconv.Atoi(m[2])
 		return fmt.Sprintf(
-			"Das Container-Image bringt zu altes Java mit: die Zielversion braucht Java %d, das Image liefert Java %d. Lösung: »docker compose pull mc-fabric«, dann Container neu erstellen.",
+			"Das Container-Image bringt zu altes Java mit: die Zielversion braucht Java %d, das Image liefert Java %d. Der automatische Pull beim Update hat kein neueres Image geliefert — Image-Tag von mc-fabric in docker-compose.yml (ohne Tag = latest) und /var/log/msm-upgrade.log prüfen, dann Update erneut starten.",
 			javaFromClassFile(need), javaFromClassFile(have))
 	}
 	if reIncompatible.MatchString(logText) {
