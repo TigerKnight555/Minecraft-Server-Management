@@ -121,3 +121,33 @@ func TestStartNotBlockedWhenJavaUnknown(t *testing.T) {
 		waitDone(t, o)
 	})
 }
+
+// Passt Java schon, steht im Start-Event kein Java-Hinweis.
+func TestStartEventWithoutJavaFieldWhenJavaMatches(t *testing.T) {
+	f := &fakes{backupOK: true}
+	bus := events.New()
+	ch, cancel := bus.Subscribe(64)
+	defer cancel()
+	o := New(f, f, f, f.mcStatus, f, f, fixedReadiness{readyFor("26.2", 25)}, f, bus, "mc-fabric", testLogger())
+	o.WarnMinutes = 1
+	o.WarnStep = time.Millisecond
+	o.OnlineTimeout = 2 * time.Second
+	o.PollStep = 5 * time.Millisecond
+	o.JavaProbe = func(context.Context) int { return 25 }
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+	for len(ch) > 0 {
+		ev := <-ch
+		if ev.Type == events.TypeUpgradeStart {
+			for _, fl := range ev.Fields {
+				if fl.Name == "Java" {
+					t.Errorf("Java-Hinweis trotz passender Version: %+v", fl)
+				}
+			}
+			return
+		}
+	}
+	t.Fatal("kein Start-Event")
+}

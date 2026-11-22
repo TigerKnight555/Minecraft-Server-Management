@@ -7,7 +7,8 @@
 // Kette: Guards (bereit? nichts anderes läuft?) → Spieler-Warnungen →
 // save-all → Stop → Pflicht-Backup (Rollback-Punkt — das Welt-Upgrade ist
 // UNUMKEHRBAR) → Server-Mods für die Zielversion stagen+einspielen →
-// upgrade.request → Host erstellt mc-fabric neu (itzg lädt Server-JAR +
+// upgrade.request → Host holt das neueste Server-Image (docker compose pull,
+// bringt ggf. neueres Java) und erstellt mc-fabric neu (itzg lädt Server-JAR +
 // frischen Fabric-Loader) → Watchdog bis „online mit Zielversion" →
 // Client-Mods nachziehen → Erfolgsmeldung.
 package upgrade
@@ -290,12 +291,14 @@ func nameOr(name, fallback string) string {
 // `docker compose pull mc-fabric` ausführt, kommt das neue Java mit dem
 // Update; klappt das nicht, erkennt der Watchdog den Java-Fehler und der
 // Rücksprung greift.
-func (o *Orchestrator) javaFields() []events.Field {
+func (o *Orchestrator) javaFields(ctx context.Context) []events.Field {
 	last := o.watch.Last()
 	if last == nil || last.RequiredJava <= 0 || o.JavaProbe == nil {
 		return nil
 	}
-	have := o.JavaProbe(context.Background())
+	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	have := o.JavaProbe(pctx)
 	if have <= 0 || have >= last.RequiredJava {
 		return nil
 	}
@@ -311,7 +314,7 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 		// (Learning 20). Backup, Mod-Update und das erste Hochfahren mit
 		// Welt-Konvertierung brauchen ein Vielfaches davon.
 		Message: fmt.Sprintf("In %d Minuten geht der Server offline. Das Update selbst dauert erfahrungsgemäß 15–30 Minuten (Backup, Mods, Welt-Umstellung) — Meldung folgt, sobald er wieder da ist.", o.WarnMinutes),
-		Fields:  o.javaFields(),
+		Fields:  o.javaFields(ctx),
 	})
 
 	// Ausgangsversion merken — Rückfallziel, falls der Sprung scheitert

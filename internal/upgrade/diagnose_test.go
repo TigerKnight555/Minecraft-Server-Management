@@ -26,7 +26,7 @@ func TestDiagnoseRecognisesJavaMismatch(t *testing.T) {
 		t.Fatal("Java-Fehler nicht erkannt")
 	}
 	// 69.0 -> Java 25, 65.0 -> Java 21
-	for _, want := range []string{"Java 25", "Java 21", "pull"} {
+	for _, want := range []string{"Java 25", "Java 21", "Pull"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Diagnose nennt %q nicht: %s", want, got)
 		}
