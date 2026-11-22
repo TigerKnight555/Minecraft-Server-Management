@@ -153,3 +153,13 @@ func TestFromIndexAllowListsURLs(t *testing.T) {
 		t.Errorf("ignored = %v", ignored)
 	}
 }
+
+// WSL-Live-Test 2026-11-22: gleiche Version erneut übernommen (z. B. neu
+// mitgelieferte Datei) ergab „15.0.0-beta.4 → 15.0.0-beta.4".
+func TestSummarySameVersion(t *testing.T) {
+	prev := State{VersionNumber: "6.4.0"}
+	got := Summary(prev, "Fabulously Optimized", "6.4.0", Plan{Add: []PackFile{{Filename: "x.zip"}}}, 40)
+	if got != "Fabulously Optimized 6.4.0 neu übernommen (1 neu, 0 entfernt, 0 aktualisiert)" {
+		t.Errorf("Summary = %q", got)
+	}
+}

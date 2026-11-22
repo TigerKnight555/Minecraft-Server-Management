@@ -338,6 +338,10 @@ func Summary(prev State, title, version string, p Plan, total int) string {
 	if prev.VersionNumber == "" {
 		return fmt.Sprintf("Basis-Modpack %s %s übernommen (%d Mods)", title, version, total)
 	}
+	if prev.VersionNumber == version {
+		return fmt.Sprintf("%s %s neu übernommen (%d neu, %d entfernt, %d aktualisiert)",
+			title, version, len(p.Add), len(p.Remove), len(p.Update))
+	}
 	return fmt.Sprintf("%s %s → %s (%d neu, %d entfernt, %d aktualisiert)",
 		title, prev.VersionNumber, version, len(p.Add), len(p.Remove), len(p.Update))
 }
