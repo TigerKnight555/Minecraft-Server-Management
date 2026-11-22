@@ -40,9 +40,11 @@ Vergleich alte ↔ neue Pack-Version (Schlüssel: Modrinth-Projekt-ID der Datei,
 
 Pack-Mods werden nie einzeln aktualisiert (die Update-Prüfung überspringt sie); nur das Pack als Ganzes.
 
+**Mitgelieferte Dateien:** Liegt in `overrides/` bzw. `client-overrides/` (gewinnt bei gleichem Pfad; `server-overrides/` ignoriert) eine Datei DIREKT in `mods/`, `resourcepacks/` oder `shaderpacks/` (z. B. FOs `resourcepacks/Mod Menu Helper.zip`), ist sie eine Pack-Datei wie die Index-Dateien: Vorschau, Mod-Liste mit „Basis-Pack", An/Aus, Pack-Updates (Inhalt geändert → aktualisiert, fehlt → entfernt), dieselben Tabellenregeln; Schlüssel wie oben (ohne Modrinth-Projekt der Pfad). Die Bytes stammen aus der geladenen `.mrpack` (kein Download, Prüfsumme sha512, Override-Limit 8 MB je Datei); Anschalten lädt die Pack-Version neu. Name ohne Modrinth-Treffer: Dateiname ohne Endung. Unterordner darin bleiben ignoriert. Im eigenen Modrinth-Modpack landen sie (wenn Modrinth sie nicht per Hash kennt) als `overrides/<Ordner>/<Datei>`, nie mit leerer URL im Index; der Paket-Fingerprint erkennt sie am Inhalt.
+
 ## Configs
 
-- Quelle: `overrides/` (und `client-overrides/`) der `.mrpack`; `server-overrides/` wird ignoriert.
+- Quelle: `overrides/` (und `client-overrides/`) der `.mrpack`; `server-overrides/` wird ignoriert. Dateien direkt in `mods/`, `resourcepacks/`, `shaderpacks/` sind keine Configs, sondern Pack-Dateien (siehe „Mitgelieferte Dateien").
 - Standardmäßig AUS (Spieler-Einstellungen): `options.txt`, `optionsof.txt`, `optionsshaders.txt`, `servers.dat`, `config/sodium-options.json`, `config/iris.properties`, `config/xaero*` , `config/controlling*`, Keybind-Dateien (Dateiname enthält `keybind`), sowie alles außerhalb von `config/`. Alles übrige unter `config/` ist standardmäßig AN.
 - Auswahl wird gespeichert (je Pfad an/aus); neue Dateien aus Updates starten AUS.
 - Freigegebene Configs liegen im neuen Client-Paket-Ordner `config/`; Dropbox-ZIP nimmt ihn mit, das Modrinth-Modpack als `overrides/config/…`.

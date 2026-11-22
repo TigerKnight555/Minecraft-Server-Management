@@ -219,7 +219,11 @@ func (s *Service) load(ctx context.Context, projectID, versionID, mc string) (*l
 		}
 	}
 	for i := range files {
-		if files[i].Name == "" {
+		switch {
+		case files[i].Name != "":
+		case files[i].Override: // mitgelieferte Datei: Dateiname ohne Endung
+			files[i].Name = strings.TrimSuffix(files[i].Filename, filepath.Ext(files[i].Filename))
+		default:
 			files[i].Name = files[i].Filename
 		}
 	}
@@ -352,6 +356,23 @@ func (s *Service) download(ctx context.Context, f PackFile) ([]byte, error) {
 	return b, nil
 }
 
+// fileData returns the verified bytes of a pack file: Override-Dateien aus
+// der geladenen .mrpack (over), alle anderen per Download.
+func (s *Service) fileData(ctx context.Context, f PackFile, over map[string][]byte) ([]byte, error) {
+	if !f.Override {
+		return s.download(ctx, f)
+	}
+	b, ok := over[f.Path]
+	if !ok {
+		return nil, fmt.Errorf("%s fehlt in der Modpack-Datei — abgebrochen", f.Filename)
+	}
+	sum := sha512.Sum512(b)
+	if hex.EncodeToString(sum[:]) != f.SHA512 {
+		return nil, fmt.Errorf("hash-verifikation fehlgeschlagen für %s — abgebrochen", f.Filename)
+	}
+	return b, nil
+}
+
 func addOf(f PackFile, data []byte, replaces string) mods.FileAdd {
 	return mods.FileAdd{Category: f.Category, Filename: f.Filename, SHA512: f.SHA512, ProjectID: f.ProjectID,
 		Name: f.Name, Version: f.Version, Replaces: replaces, Data: data}
@@ -398,7 +419,7 @@ func (s *Service) applyLocked(ctx context.Context, projectID, versionID, mc stri
 		if base.IsDisabled(Key(f)) {
 			continue
 		}
-		data, err := s.download(ctx, f)
+		data, err := s.fileData(ctx, f, l.over)
 		if err != nil {
 			return "", err
 		}
@@ -409,7 +430,7 @@ func (s *Service) applyLocked(ctx context.Context, projectID, versionID, mc stri
 		if base.IsDisabled(Key(u.New)) {
 			continue // abgeschaltet: nichts live, Abschaltung bleibt
 		}
-		data, err := s.download(ctx, u.New)
+		data, err := s.fileData(ctx, u.New, l.over)
 		if err != nil {
 			return "", err
 		}
@@ -581,7 +602,15 @@ func (s *Service) Toggle(ctx context.Context, key string, on bool) error {
 	marker := st.Title + " " + st.VersionNumber
 	change := mods.Change{Profile: mods.ProfileClient, Filename: f.Filename, ProjectID: f.ProjectID, Name: f.Name}
 	if on {
-		data, err := s.download(ctx, f)
+		var over map[string][]byte
+		if f.Override { // Bytes aus der (neu geladenen) Pack-Version
+			l, err := s.load(ctx, st.ProjectID, st.VersionID, st.MC)
+			if err != nil {
+				return err
+			}
+			over = l.over
+		}
+		data, err := s.fileData(ctx, f, over)
 		if err != nil {
 			return err
 		}
@@ -768,4 +797,19 @@ func (s *Service) IndexFiles() map[string]PackFile {
 func (s *Service) WrittenConfigs() []string {
 	st, _ := s.cached()
 	return append([]string(nil), st.WrittenConfigs...)
+}
+
+// OverrideFiles returns the active pack files shipped inside the pack
+// ("<Kategorie>/<Datei>"): ihr Name bleibt bei Inhaltsänderungen gleich, der
+// Paket-Fingerprint muss sie daher am Inhalt erkennen.
+func (s *Service) OverrideFiles() map[string]bool {
+	out := map[string]bool{}
+	if st, ok := s.cached(); ok {
+		for _, f := range st.Files {
+			if f.Override && !st.IsDisabled(Key(f)) {
+				out[f.Category+"/"+f.Filename] = true
+			}
+		}
+	}
+	return out
 }

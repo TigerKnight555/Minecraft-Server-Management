@@ -5,6 +5,9 @@
 package basepack
 
 import (
+	"crypto/sha1"
+	"crypto/sha512"
+	"encoding/hex"
 	"fmt"
 	"path"
 	"sort"
@@ -25,6 +28,9 @@ type PackFile struct {
 	SHA512    string `json:"sha512"`
 	URL       string `json:"url"`
 	Size      int64  `json:"size"`
+	// Override: Datei aus overrides/ bzw. client-overrides/ des Packs (keine
+	// URL) — die Bytes kommen aus der geladenen .mrpack.
+	Override bool `json:"override,omitempty"`
 	// Key: eindeutiger Schlüssel im Pack (AssignKeys); leer = alter Stand
 	Key string `json:"key,omitempty"`
 }
@@ -176,13 +182,35 @@ func FromIndex(idx *mrpack.Index) (files []PackFile, configs []string, ignored [
 		files = append(files, PackFile{Path: f.Path, Category: dir, Filename: name,
 			SHA1: f.SHA1, SHA512: f.SHA512, URL: url, Size: f.Size})
 	}
-	for p := range idx.Overrides {
+	// Overrides direkt in mods/, resourcepacks/, shaderpacks/ (z. B. FOs
+	// „Mod Menu Helper.zip") werden Pack-Dateien wie Index-Dateien; die Bytes
+	// liegen in der .mrpack. Gleicher Pfad wie eine Index-Datei: der Override
+	// gewinnt (Launcher kopieren Overrides nach den Downloads).
+	for p, data := range idx.Overrides {
 		first := strings.SplitN(p, "/", 2)[0]
-		if categories[first] {
-			ignored = append(ignored, p)
+		if !categories[first] {
+			configs = append(configs, p)
 			continue
 		}
-		configs = append(configs, p)
+		dir, name := path.Split(p)
+		dir = strings.TrimSuffix(dir, "/")
+		if !categories[dir] || name == "" {
+			ignored = append(ignored, p) // Unterordner
+			continue
+		}
+		s1 := sha1.Sum(data)
+		s512 := sha512.Sum512(data)
+		f := PackFile{Path: p, Category: dir, Filename: name, SHA1: hex.EncodeToString(s1[:]),
+			SHA512: hex.EncodeToString(s512[:]), Size: int64(len(data)), Override: true}
+		replaced := false
+		for i := range files {
+			if files[i].Path == p {
+				files[i], replaced = f, true
+			}
+		}
+		if !replaced {
+			files = append(files, f)
+		}
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	sort.Strings(configs)

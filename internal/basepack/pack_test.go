@@ -20,13 +20,16 @@ func TestFromIndex(t *testing.T) {
 		Overrides: map[string][]byte{"config/a.json": nil, "options.txt": nil, "mods/bundled.jar": nil},
 	}
 	files, configs, ignored := FromIndex(idx)
-	if len(files) != 2 || files[0].Category != "mods" || files[0].Filename != "sodium.jar" || files[1].Category != "resourcepacks" || files[1].URL != "https://github.com/x/rp.zip" {
+	// mods/bundled.jar aus overrides/ ist jetzt eine Pack-Datei (Override)
+	if len(files) != 3 || !files[0].Override || files[0].Filename != "bundled.jar" ||
+		files[1].Category != "mods" || files[1].Filename != "sodium.jar" || files[1].Override ||
+		files[2].Category != "resourcepacks" || files[2].URL != "https://github.com/x/rp.zip" {
 		t.Errorf("files = %+v", files)
 	}
 	if strings.Join(configs, ",") != "config/a.json,options.txt" {
 		t.Errorf("configs = %v", configs)
 	}
-	if strings.Join(ignored, ",") != "kubejs/x.js,mods/bundled.jar,mods/sub/x.jar" {
+	if strings.Join(ignored, ",") != "kubejs/x.js,mods/sub/x.jar" {
 		t.Errorf("ignored = %v", ignored)
 	}
 }

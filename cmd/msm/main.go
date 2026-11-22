@@ -506,9 +506,11 @@ func main() {
 	}
 	var bpRoot string
 	bpConfigs := func() []string { return nil }
+	bpContent := func() map[string]bool { return nil }
 	if bp != nil {
 		bpRoot = bp.Root()
 		bpConfigs = bp.WrittenConfigs
+		bpContent = bp.OverrideFiles
 		if mpChannel != nil {
 			mpChannel.SetBasepack(bpRoot, bp.WrittenConfigs, bp.IndexFiles)
 		}
@@ -519,7 +521,7 @@ func main() {
 	}
 	// Versandwege für das Client-Paket (packpub): Dropbox und Modrinth; jeder
 	// Kanal merkt sich seinen zuletzt verschickten Stand selbst
-	packs := packpub.New(func() string { return packFingerprint(clientDirs, bpRoot, bpConfigs()) }, kvGet, kvSet, bus, log, channels...)
+	packs := packpub.New(func() string { return packFingerprint(clientDirs, bpRoot, bpConfigs(), bpContent()) }, kvGet, kvSet, bus, log, channels...)
 	// runPack ist der einzige Weg zum Paket-Versand (Button, MC-Update,
 	// Mod-Neuigkeiten); announced = eine 📦-Meldung ging an die Spieler.
 	// „Paket veraltet" wird erst gelöscht, wenn JEDER eingerichtete Kanal den
@@ -559,7 +561,7 @@ func main() {
 		return publishPack(ctx, nil, false)
 	})
 	if clientDirs != nil {
-		news.SetFingerprint(func() string { return packFingerprint(clientDirs, bpRoot, bpConfigs()) })
+		news.SetFingerprint(func() string { return packFingerprint(clientDirs, bpRoot, bpConfigs(), bpContent()) })
 	}
 	news.SetBusy(upgradeActive)
 	go news.Run(ctx)
@@ -661,8 +663,9 @@ func pruneLoop(ctx context.Context, s *storage.SQLite, log *slog.Logger) {
 
 // packFingerprint hashes the client pack listing (Kategorie, Name, Größe).
 // Reicht, um „inhaltlich wie zuletzt verschickt" zu erkennen, ohne alle
-// Dateien zu lesen.
-func packFingerprint(dirs map[string]string, root string, extra []string) string {
+// Dateien zu lesen. Dateien in content ("<Kategorie>/<Datei>", mitgelieferte
+// Basis-Pack-Dateien mit gleichbleibendem Namen) gehen mit Inhalts-Hash ein.
+func packFingerprint(dirs map[string]string, root string, extra []string, content map[string]bool) string {
 	var lines []string
 	for cat, dir := range dirs {
 		entries, err := os.ReadDir(dir)
@@ -677,7 +680,14 @@ func packFingerprint(dirs map[string]string, root string, extra []string) string
 			if err != nil {
 				continue
 			}
-			lines = append(lines, fmt.Sprintf("%s/%s/%d", cat, e.Name(), info.Size()))
+			line := fmt.Sprintf("%s/%s/%d", cat, e.Name(), info.Size())
+			if content[cat+"/"+e.Name()] && info.Mode().IsRegular() {
+				if b, err := os.ReadFile(filepath.Join(dir, e.Name())); err == nil {
+					h := sha256.Sum256(b)
+					line += fmt.Sprintf("/%x", h[:8])
+				}
+			}
+			lines = append(lines, line)
 		}
 	}
 	for _, rel := range extra {

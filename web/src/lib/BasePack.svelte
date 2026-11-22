@@ -96,7 +96,8 @@
       onchange?.()
     })
   }
-  const names = (list) => list.map((f) => f.name || f.filename).join(', ')
+  // override: Datei liegt in der .mrpack selbst (z. B. Resourcepack), kein Download
+  const names = (list) => list.map((f) => (f.name || f.filename) + (f.override ? ' (aus dem Pack mitgeliefert)' : '')).join(', ')
 </script>
 
 {#if enabled}

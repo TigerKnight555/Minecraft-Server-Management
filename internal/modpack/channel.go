@@ -231,6 +231,36 @@ func scan(dirs map[string]string) ([]localFile, error) {
 	return out, nil
 }
 
+// maxLiveOverride limits a pack file shipped as override (wie das
+// Pack-Größenlimit des Basis-Packs).
+const maxLiveOverride = 64 << 20
+
+// readLive reads a regular file of the client pack and checks its sha512
+// (die Datei könnte sich seit dem Scan geändert haben).
+func readLive(full, want string) ([]byte, error) {
+	info, err := os.Lstat(full)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() > maxLiveOverride {
+		return nil, fmt.Errorf("keine reguläre Datei oder zu groß")
+	}
+	f, err := os.Open(full)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, maxLiveOverride+1))
+	if err != nil {
+		return nil, err
+	}
+	sum := sha512.Sum512(b)
+	if len(b) > maxLiveOverride || hex.EncodeToString(sum[:]) != want {
+		return nil, fmt.Errorf("datei hat sich während des Versands geändert")
+	}
+	return b, nil
+}
+
 func (c *Channel) fail(err error) (packpub.Outcome, error) {
 	c.mu.Lock()
 	c.lastErr = err.Error()
@@ -262,6 +292,13 @@ func (c *Channel) Publish(ctx context.Context) (packpub.Outcome, error) {
 	var files []mrpack.File
 	var entries []Entry
 	var omitted []string
+	var bpIndex map[string]basepack.PackFile
+	if c.bpIndex != nil {
+		bpIndex = c.bpIndex()
+	}
+	// overrides: mitgelieferte Basis-Pack-Dateien ohne Download-Quelle und
+	// freigegebene Configs (Pfad relativ zur Instanz → Bytes)
+	overrides := map[string][]byte{}
 	for _, l := range locals {
 		v, ok := known[l.sha512]
 		var file *modrinth.File
@@ -274,8 +311,26 @@ func (c *Channel) Publish(ctx context.Context) (packpub.Outcome, error) {
 				}
 			}
 		}
-		if file == nil && c.bpIndex != nil {
-			if pf, ok := c.bpIndex()[l.sha512]; ok && mrpack.AllowedURL(pf.URL) && pf.SHA1 != "" {
+		if file == nil {
+			if pf, ok := bpIndex[l.sha512]; ok && pf.Override {
+				// aus overrides/ des Basis-Packs: keine URL, als overrides/<Ordner>/<Datei>
+				b, err := readLive(filepath.Join(c.dirs[l.category], l.name), l.sha512)
+				if err != nil {
+					return c.fail(fmt.Errorf("client-paket lesen (%s/%s): %w", l.category, l.name, err))
+				}
+				overrides[l.category+"/"+l.name] = b
+				key := pf.ProjectID
+				if key == "" {
+					key = "file:" + l.name
+				}
+				version := pf.Version
+				if version == "" {
+					version = l.sha512[:8] // Inhaltsänderung erscheint im Changelog als Aktualisierung
+				}
+				entries = append(entries, Entry{Project: key, File: l.name, Version: version})
+				continue
+			}
+			if pf, ok := bpIndex[l.sha512]; ok && mrpack.AllowedURL(pf.URL) && pf.SHA1 != "" {
 				files = append(files, mrpack.File{Path: l.category + "/" + l.name, SHA1: pf.SHA1, SHA512: l.sha512, URL: pf.URL, Size: pf.Size})
 				key := pf.ProjectID
 				if key == "" {
@@ -292,7 +347,7 @@ func (c *Channel) Publish(ctx context.Context) (packpub.Outcome, error) {
 		files = append(files, mrpack.File{Path: l.category + "/" + l.name, SHA1: file.Hashes.SHA1, SHA512: l.sha512, URL: file.URL, Size: file.Size})
 		entries = append(entries, Entry{Project: v.ProjectID, File: l.name, Version: v.VersionNumber})
 	}
-	if len(files) == 0 {
+	if len(entries) == 0 {
 		return c.fail(fmt.Errorf("keine Datei des Client-Pakets ist auf Modrinth bekannt — kein Modpack-Upload"))
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Project < entries[j].Project })
@@ -347,7 +402,6 @@ func (c *Channel) Publish(ctx context.Context) (packpub.Outcome, error) {
 	}
 	changelog := Changelog(prev, cur, titles, omitted)
 
-	overrides := map[string][]byte{}
 	if c.bpConfigs != nil {
 		for _, rel := range c.bpConfigs() {
 			if !mrpack.ValidPath(rel) {
