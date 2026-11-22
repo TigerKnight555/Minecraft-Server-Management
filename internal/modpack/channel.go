@@ -232,8 +232,12 @@ func scan(dirs map[string]string) ([]localFile, error) {
 }
 
 // maxLiveOverride limits a pack file shipped as override (wie das
-// Pack-Größenlimit des Basis-Packs).
-const maxLiveOverride = 64 << 20
+// Pack-Größenlimit des Basis-Packs); maxOverrideBytes limits all of them
+// together (die .mrpack wird im Speicher gebaut). Variablen für Tests.
+var (
+	maxLiveOverride  int64 = 64 << 20
+	maxOverrideBytes int64 = 128 << 20
+)
 
 // readLive reads a regular file of the client pack and checks its sha512
 // (die Datei könnte sich seit dem Scan geändert haben).
@@ -255,7 +259,7 @@ func readLive(full, want string) ([]byte, error) {
 		return nil, err
 	}
 	sum := sha512.Sum512(b)
-	if len(b) > maxLiveOverride || hex.EncodeToString(sum[:]) != want {
+	if int64(len(b)) > maxLiveOverride || hex.EncodeToString(sum[:]) != want {
 		return nil, fmt.Errorf("datei hat sich während des Versands geändert")
 	}
 	return b, nil
@@ -299,6 +303,7 @@ func (c *Channel) Publish(ctx context.Context) (packpub.Outcome, error) {
 	// overrides: mitgelieferte Basis-Pack-Dateien ohne Download-Quelle und
 	// freigegebene Configs (Pfad relativ zur Instanz → Bytes)
 	overrides := map[string][]byte{}
+	var overrideBytes int64
 	for _, l := range locals {
 		v, ok := known[l.sha512]
 		var file *modrinth.File
@@ -313,12 +318,27 @@ func (c *Channel) Publish(ctx context.Context) (packpub.Outcome, error) {
 		}
 		if file == nil {
 			if pf, ok := bpIndex[l.sha512]; ok && pf.Override {
-				// aus overrides/ des Basis-Packs: keine URL, als overrides/<Ordner>/<Datei>
+				// aus overrides/ des Basis-Packs: keine URL, als overrides/<Ordner>/<Datei>.
+				// Probleme mit einer Datei lassen nur diese weg, nicht den Versand.
+				rel := l.category + "/" + l.name
+				if !mrpack.ValidPath(rel) {
+					c.log.Warn("mitgelieferte Pack-Datei weggelassen: ungültiger Pfad", "datei", rel)
+					omitted = append(omitted, l.name)
+					continue
+				}
 				b, err := readLive(filepath.Join(c.dirs[l.category], l.name), l.sha512)
 				if err != nil {
-					return c.fail(fmt.Errorf("client-paket lesen (%s/%s): %w", l.category, l.name, err))
+					c.log.Warn("mitgelieferte Pack-Datei weggelassen", "datei", rel, "err", err)
+					omitted = append(omitted, l.name)
+					continue
 				}
-				overrides[l.category+"/"+l.name] = b
+				if overrideBytes+int64(len(b)) > maxOverrideBytes {
+					c.log.Warn("mitgelieferte Pack-Datei weggelassen: Modpack zu groß", "datei", rel, "grenze_mb", maxOverrideBytes>>20)
+					omitted = append(omitted, l.name)
+					continue
+				}
+				overrideBytes += int64(len(b))
+				overrides[rel] = b
 				key := pf.ProjectID
 				if key == "" {
 					key = "file:" + l.name

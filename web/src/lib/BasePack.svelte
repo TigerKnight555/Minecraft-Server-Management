@@ -180,7 +180,7 @@
       {#if preview.plan.update?.length}<p><strong>Aktualisiert:</strong> {preview.plan.update.length} Dateien</p>{/if}
       {#if preview.plan.absorbOwn?.length}<p class="warn-msg">Übernimmt deine eigenen Mods: {names(preview.plan.absorbOwn)} (eigene Kopie fällt weg)</p>{/if}
       {#if preview.plan.dropAbsorbed?.length}<p class="warn-msg">Entfällt (war zuvor deine eigene Mod; bei Bedarf neu hinzufügen): {preview.plan.dropAbsorbed.join(', ')}</p>{/if}
-      {#if preview.ignored?.length}<p class="dim-sm">Ignoriert (unbekannte Ordner): {preview.ignored.join(', ')}</p>{/if}
+      {#if preview.ignored?.length}<p class="dim-sm">Ignoriert (unbekannte Ordner, Unterordner oder zu groß): {preview.ignored.join(', ')}</p>{/if}
       {#if preview.configs?.length}
         <h4>Configs</h4>
         <p class="dim-sm">Mitgelieferte Configs überschreiben bei jedem Paket-Update die Spieler-Datei. Neue Configs sind vorab aus.</p>

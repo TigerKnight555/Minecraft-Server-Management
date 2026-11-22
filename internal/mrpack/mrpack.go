@@ -163,10 +163,28 @@ type Index struct {
 	// Overrides: overrides/ + client-overrides/ (gewinnt); server-overrides/
 	// wird ignoriert. Schlüssel = Pfad relativ zur Instanz.
 	Overrides map[string][]byte
+	// Skipped: Override-Pfade, die wegen Einzel- oder Gesamtlimit nicht
+	// übernommen wurden (sortiert, für den Hinweis in der Vorschau)
+	Skipped []string
 }
 
 // maxOverride limits a single override file (Configs sind klein).
 const maxOverride = 8 << 20
+
+// maxCategoryOverride limits an override directly in mods/, resourcepacks/
+// or shaderpacks/ (mitgelieferte Pack-Dateien, z. B. Shaderpacks).
+const maxCategoryOverride = 32 << 20
+
+// overrideLimit returns the size limit for an override path.
+func overrideLimit(rel string) int64 {
+	if seg := strings.Split(rel, "/"); len(seg) == 2 {
+		switch seg[0] {
+		case "mods", "resourcepacks", "shaderpacks":
+			return maxCategoryOverride
+		}
+	}
+	return maxOverride
+}
 
 // Aggregatgrenzen gegen Zip-Bomben.
 const (
@@ -197,6 +215,8 @@ func Parse(data []byte) (*Index, error) {
 	found := false
 	base := map[string][]byte{}
 	client := map[string][]byte{}
+	skipped := map[string]bool{}       // Pfad → zu groß
+	clientSkipped := map[string]bool{} // client-overrides zu groß: überdeckt auch overrides/
 	entries := 0
 	var total int64
 	for _, f := range zr.File {
@@ -230,25 +250,34 @@ func Parse(data []byte) (*Index, error) {
 		default:
 			continue // server-overrides und Sonstiges
 		}
-		if !ValidPath(rel) || f.UncompressedSize64 > maxOverride {
+		if !ValidPath(rel) {
+			continue
+		}
+		skip := func() {
+			skipped[rel] = true
+			if strings.HasPrefix(f.Name, "client-overrides/") {
+				clientSkipped[rel] = true
+			}
+		}
+		limit := overrideLimit(rel)
+		if f.UncompressedSize64 > uint64(limit) || total+int64(f.UncompressedSize64) > maxOverrideTotal {
+			skip()
 			continue
 		}
 		rc, err := f.Open()
 		if err != nil {
 			return nil, err
 		}
-		b, err := io.ReadAll(io.LimitReader(rc, maxOverride+1))
+		b, err := io.ReadAll(io.LimitReader(rc, limit+1))
 		rc.Close()
 		if err != nil {
 			return nil, err
 		}
-		if len(b) > maxOverride {
+		if int64(len(b)) > limit || total+int64(len(b)) > maxOverrideTotal {
+			skip() // Größenangabe im ZIP gelogen
 			continue
 		}
 		total += int64(len(b))
-		if total > maxOverrideTotal {
-			return nil, fmt.Errorf("mrpack: Pack zu groß oder zu viele Dateien")
-		}
 		target[rel] = b
 	}
 	if !found {
@@ -259,6 +288,15 @@ func Parse(data []byte) (*Index, error) {
 	for p, b := range client {
 		idx.Overrides[p] = b
 	}
+	for p := range clientSkipped {
+		delete(idx.Overrides, p) // client-Datei gewinnt, auch wenn sie fehlt
+	}
+	for p := range skipped {
+		if _, ok := idx.Overrides[p]; !ok {
+			idx.Skipped = append(idx.Skipped, p)
+		}
+	}
+	sort.Strings(idx.Skipped)
 	for _, f := range raw.Files {
 		if !ValidPath(f.Path) {
 			return nil, fmt.Errorf("mrpack: ungültiger Pfad %q im Index", f.Path)

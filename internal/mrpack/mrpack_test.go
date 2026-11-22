@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -215,5 +216,75 @@ func TestAllowedURL(t *testing.T) {
 		if AllowedURL(u) != want {
 			t.Errorf("AllowedURL(%q) != %v", u, want)
 		}
+	}
+}
+
+func TestParseCategoryOverrideLimits(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, _ := zw.Create("modrinth.index.json")
+	w.Write([]byte(minimalIndex))
+	w, _ = zw.Create("overrides/shaderpacks/big.zip") // 9 MB: über Config-, unter Kategorie-Limit
+	w.Write(make([]byte, 9<<20))
+	w, _ = zw.Create("overrides/shaderpacks/huge.zip") // 40 MB: über Kategorie-Limit
+	w.Write(make([]byte, 40<<20))
+	w, _ = zw.Create("overrides/resourcepacks/sub/deep.zip") // Unterordner: Config-Limit
+	w.Write(make([]byte, 9<<20))
+	w, _ = zw.Create("overrides/config/big.bin")
+	w.Write(make([]byte, maxOverride+10))
+	zw.Close()
+
+	idx, err := Parse(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(idx.Overrides["shaderpacks/big.zip"]) != 9<<20 {
+		t.Error("9-MB-Shaderpack nicht übernommen")
+	}
+	for _, p := range []string{"shaderpacks/huge.zip", "resourcepacks/sub/deep.zip", "config/big.bin"} {
+		if _, ok := idx.Overrides[p]; ok {
+			t.Errorf("%s übernommen", p)
+		}
+	}
+	if got := strings.Join(idx.Skipped, ","); got != "config/big.bin,resourcepacks/sub/deep.zip,shaderpacks/huge.zip" {
+		t.Errorf("Skipped = %q", got)
+	}
+}
+
+func TestParseOverrideTotalSkips(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, _ := zw.Create("modrinth.index.json")
+	w.Write([]byte(minimalIndex))
+	for i := 0; i < 3; i++ { // 3 × 30 MB > 64 MB gesamt
+		w, _ = zw.Create(fmt.Sprintf("overrides/mods/m%d.jar", i))
+		w.Write(make([]byte, 30<<20))
+	}
+	zw.Close()
+	idx, err := Parse(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(idx.Overrides) != 2 || strings.Join(idx.Skipped, ",") != "mods/m2.jar" {
+		t.Errorf("overrides = %d skipped = %v", len(idx.Overrides), idx.Skipped)
+	}
+}
+
+func TestParseSkippedClientOverrideHidesBase(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, _ := zw.Create("modrinth.index.json")
+	w.Write([]byte(minimalIndex))
+	w, _ = zw.Create("overrides/shaderpacks/s.zip")
+	w.Write([]byte("klein"))
+	w, _ = zw.Create("client-overrides/shaderpacks/s.zip")
+	w.Write(make([]byte, 40<<20))
+	zw.Close()
+	idx, err := Parse(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := idx.Overrides["shaderpacks/s.zip"]; ok || strings.Join(idx.Skipped, ",") != "shaderpacks/s.zip" {
+		t.Errorf("overrides = %v skipped = %v (client-Datei gewinnt, auch wenn zu groß)", len(idx.Overrides), idx.Skipped)
 	}
 }

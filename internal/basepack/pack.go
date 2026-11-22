@@ -212,6 +212,9 @@ func FromIndex(idx *mrpack.Index) (files []PackFile, configs []string, ignored [
 			files = append(files, f)
 		}
 	}
+	for _, p := range idx.Skipped { // über dem Größenlimit: Admin soll den Verlust sehen
+		ignored = append(ignored, p+" (zu groß)")
+	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	sort.Strings(configs)
 	sort.Strings(ignored)

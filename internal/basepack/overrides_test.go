@@ -167,3 +167,31 @@ func TestToggleOnOverrideVerifiesPackBytes(t *testing.T) {
 		t.Error("Datei trotz Hash-Fehler geschrieben")
 	}
 }
+
+func TestFromIndexListsSkippedOverrides(t *testing.T) {
+	idx := &mrpack.Index{Overrides: map[string][]byte{}, Skipped: []string{"shaderpacks/huge.zip"}}
+	_, _, ignored := FromIndex(idx)
+	if strings.Join(ignored, ",") != "shaderpacks/huge.zip (zu groß)" {
+		t.Errorf("ignored = %v", ignored)
+	}
+}
+
+func TestToggleOnOverrideUsesStoredVersion(t *testing.T) {
+	s, api, files, _, _ := setup(t)
+	ctx := context.Background()
+	api.addPackVersion(t, "26.3", "6.4.0", nil, map[string]string{"resourcepacks/r.zip": "R1"})
+	if _, err := s.Apply(ctx, "FO", "6.4.0", "26.3", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Toggle(ctx, "resourcepacks/r.zip", false); err != nil {
+		t.Fatal(err)
+	}
+	// neuere Pack-Version mit anderen Bytes, noch nicht übernommen
+	api.addPackVersion(t, "26.3", "6.5.0", nil, map[string]string{"resourcepacks/r.zip": "R2"})
+	if err := s.Toggle(ctx, "resourcepacks/r.zip", true); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(files.root, "resourcepacks", "r.zip")); string(b) != "R1" {
+		t.Errorf("r.zip = %q, want R1 aus der gespeicherten Version 6.4.0", b)
+	}
+}

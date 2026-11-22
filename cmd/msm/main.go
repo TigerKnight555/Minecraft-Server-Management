@@ -33,6 +33,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -661,6 +662,43 @@ func pruneLoop(ctx context.Context, s *storage.SQLite, log *slog.Logger) {
 	}
 }
 
+// hashCache keeps content hashes of pack files per path; ein Eintrag gilt,
+// solange Größe und Änderungszeit gleich sind (Fingerprint läuft oft).
+var hashCache = struct {
+	sync.Mutex
+	m map[string]cachedHash
+}{m: map[string]cachedHash{}}
+
+type cachedHash struct {
+	size  int64
+	mtime time.Time
+	hash  string
+}
+
+// contentHash returns a short sha256 of the file (gestreamt, gecacht).
+func contentHash(full string, info os.FileInfo) (string, bool) {
+	hashCache.Lock()
+	c, ok := hashCache.m[full]
+	hashCache.Unlock()
+	if ok && c.size == info.Size() && c.mtime.Equal(info.ModTime()) {
+		return c.hash, true
+	}
+	f, err := os.Open(full)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", false
+	}
+	sum := fmt.Sprintf("%x", h.Sum(nil)[:8])
+	hashCache.Lock()
+	hashCache.m[full] = cachedHash{size: info.Size(), mtime: info.ModTime(), hash: sum}
+	hashCache.Unlock()
+	return sum, true
+}
+
 // packFingerprint hashes the client pack listing (Kategorie, Name, Größe).
 // Reicht, um „inhaltlich wie zuletzt verschickt" zu erkennen, ohne alle
 // Dateien zu lesen. Dateien in content ("<Kategorie>/<Datei>", mitgelieferte
@@ -682,9 +720,8 @@ func packFingerprint(dirs map[string]string, root string, extra []string, conten
 			}
 			line := fmt.Sprintf("%s/%s/%d", cat, e.Name(), info.Size())
 			if content[cat+"/"+e.Name()] && info.Mode().IsRegular() {
-				if b, err := os.ReadFile(filepath.Join(dir, e.Name())); err == nil {
-					h := sha256.Sum256(b)
-					line += fmt.Sprintf("/%x", h[:8])
+				if h, ok := contentHash(filepath.Join(dir, e.Name()), info); ok {
+					line += "/" + h
 				}
 			}
 			lines = append(lines, line)
