@@ -79,9 +79,9 @@ type Orchestrator struct {
 	Publish func(ctx context.Context) (published bool, err error)
 
 	// JavaProbe meldet die Java-Hauptversion des laufenden Container-Images
-	// (0 = unbekannt). Neuere Minecraft-Versionen verlangen neueres Java;
-	// mit einem zu alten Image startet der Server gar nicht erst, sondern
-	// läuft in eine Neustart-Schleife (Learning 15, 26.2 braucht Java 25).
+	// (0 = unbekannt). Neuere Minecraft-Versionen verlangen neueres Java
+	// (Learning 15, 26.2 braucht Java 25). Das neue Image holt der
+	// Host-Watcher beim Sprung; hier nur für den Hinweis im Start-Event.
 	JavaProbe func(ctx context.Context) int
 
 	// Inspect/Tail sind optional und dienen dem Watchdog: Absturzschleifen
@@ -220,19 +220,6 @@ func (o *Orchestrator) checkLocked(version string) error {
 			return fmt.Errorf("noch nicht alle Server-Mods für %s bereit (%d/%d)", version, p.Ready, p.Total)
 		}
 	}
-	// Java-Guard: das Image muss die Java-Version der Zielversion mitbringen.
-	// Ohne diese Prüfung lief die Kette komplett durch (Backup, Mod-Update,
-	// Container-Neubau) und der Server landete in einer Neustart-Schleife.
-	// Nur blocken, wenn beide Werte bekannt sind — sonst lieber durchlassen.
-	if last.RequiredJava > 0 && o.JavaProbe != nil {
-		// Die Probe liest den CONTAINER, nicht das Image: ein bloßes pull
-		// ändert daran nichts, der Container muss neu erstellt werden. Mit
-		// unveränderter MC_VERSION ist das gefahrlos (gleiche Version).
-		if have := o.JavaProbe(context.Background()); have > 0 && have < last.RequiredJava {
-			return fmt.Errorf("minecraft %s benötigt Java %d, der Server-Container läuft mit Java %d — auf dem Host im Repo-Verzeichnis: docker compose pull mc-fabric && docker compose up -d mc-fabric (bleibt auf der aktuellen Version), danach Update erneut starten",
-				version, last.RequiredJava, have)
-		}
-	}
 	return nil
 }
 
@@ -297,6 +284,24 @@ func nameOr(name, fallback string) string {
 	return name
 }
 
+// javaFields nennt im Start-Event einen anstehenden Java-Wechsel. Früher
+// blockierte MSM hier (Learning 15: MC 26.2 braucht Java 25, das Image
+// lieferte Java 21). Seit der Host-Watcher beim Sprung selbst
+// `docker compose pull mc-fabric` ausführt, kommt das neue Java mit dem
+// Update; klappt das nicht, erkennt der Watchdog den Java-Fehler und der
+// Rücksprung greift.
+func (o *Orchestrator) javaFields() []events.Field {
+	last := o.watch.Last()
+	if last == nil || last.RequiredJava <= 0 || o.JavaProbe == nil {
+		return nil
+	}
+	have := o.JavaProbe(context.Background())
+	if have <= 0 || have >= last.RequiredJava {
+		return nil
+	}
+	return []events.Field{{Name: "Java", Value: fmt.Sprintf("%d → %d (neues Server-Image wird geholt)", have, last.RequiredJava)}}
+}
+
 func (o *Orchestrator) run(ctx context.Context, version string) error {
 	o.bus.Publish(events.Event{
 		Type: events.TypeUpgradeStart, Severity: events.SevWarn,
@@ -306,6 +311,7 @@ func (o *Orchestrator) run(ctx context.Context, version string) error {
 		// (Learning 20). Backup, Mod-Update und das erste Hochfahren mit
 		// Welt-Konvertierung brauchen ein Vielfaches davon.
 		Message: fmt.Sprintf("In %d Minuten geht der Server offline. Das Update selbst dauert erfahrungsgemäß 15–30 Minuten (Backup, Mods, Welt-Umstellung) — Meldung folgt, sobald er wieder da ist.", o.WarnMinutes),
+		Fields:  o.javaFields(),
 	})
 
 	// Ausgangsversion merken — Rückfallziel, falls der Sprung scheitert

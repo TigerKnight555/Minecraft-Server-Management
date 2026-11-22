@@ -38,24 +38,44 @@ func orchWithJava(t *testing.T, st *mods.WatchStatus, probe func(context.Context
 }
 
 // Der Fall vom 29.07.: MC 26.2 verlangt Java 25, das Image lieferte Java 21.
-// Die Kette darf gar nicht erst loslaufen.
-func TestStartBlocksWhenImageJavaTooOld(t *testing.T) {
-	o, f := orchWithJava(t, readyFor("26.2", 25), func(context.Context) int { return 21 })
+// Früher blockierte MSM hier. Seit der Host-Watcher beim Sprung selbst
+// `docker compose pull mc-fabric` ausführt, kommt das neue Java mit dem
+// Update — die Kette läuft, und das Start-Event nennt den Java-Wechsel.
+func TestStartUpdatesJavaInsteadOfBlocking(t *testing.T) {
+	f := &fakes{backupOK: true}
+	bus := events.New()
+	ch, cancel := bus.Subscribe(64)
+	defer cancel()
+	o := New(f, f, f, f.mcStatus, f, f, fixedReadiness{readyFor("26.2", 25)}, f, bus, "mc-fabric", testLogger())
+	o.WarnMinutes = 1
+	o.WarnStep = time.Millisecond
+	o.OnlineTimeout = 2 * time.Second
+	o.PollStep = 5 * time.Millisecond
+	o.JavaProbe = func(context.Context) int { return 21 }
 
-	err := o.Start("26.2")
-	if err == nil {
-		t.Fatal("Upgrade gestartet, obwohl das Image nur Java 21 hat")
+	if err := o.Start("26.2"); err != nil {
+		t.Fatalf("Upgrade blockiert, obwohl das neue Image Java mitbringt: %v", err)
 	}
-	for _, want := range []string{"Java 25", "Java 21", "pull"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("Meldung nennt %q nicht: %v", want, err)
+	waitDone(t, o)
+	var start *events.Event
+	for len(ch) > 0 {
+		ev := <-ch
+		if ev.Type == events.TypeUpgradeStart {
+			start = &ev
+			break
 		}
 	}
-	if steps := f.list(); len(steps) != 0 {
-		t.Errorf("Kette hat trotz Guard gearbeitet: %v", steps)
+	if start == nil {
+		t.Fatal("kein Start-Event")
 	}
-	if o.Active() {
-		t.Error("Orchestrator meldet sich als aktiv, obwohl der Guard griff")
+	found := false
+	for _, fl := range start.Fields {
+		if fl.Name == "Java" && strings.Contains(fl.Value, "21") && strings.Contains(fl.Value, "25") && strings.Contains(fl.Value, "Server-Image") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Start-Event nennt den Java-Wechsel nicht: %+v", start.Fields)
 	}
 }
 
