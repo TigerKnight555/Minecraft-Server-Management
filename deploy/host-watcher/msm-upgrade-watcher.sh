@@ -49,7 +49,9 @@ logger -t msm-host-watcher "MC_VERSION=$VERSION gesetzt, erstelle mc-fabric neu"
 # nicht — "UnsupportedClassVersionError" in einer Neustart-Schleife.
 # Fehlschlag ist nicht fatal (z. B. kein Netz): dann läuft der Versuch mit
 # dem vorhandenen Image weiter, MSM erkennt das Problem im Watchdog.
-docker compose pull mc-fabric >>/var/log/msm-upgrade.log 2>&1 \
+# timeout: ein hängender Pull blockierte sonst auch den Rücksprung (der
+# Watcher arbeitet Anforderungen nacheinander ab)
+timeout 600 docker compose pull mc-fabric >>/var/log/msm-upgrade.log 2>&1 \
   && logger -t msm-host-watcher "Image für mc-fabric aktualisiert" \
   || logger -t msm-host-watcher "WARNUNG: docker compose pull fehlgeschlagen — fahre mit vorhandenem Image fort"
 

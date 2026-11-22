@@ -404,9 +404,9 @@ func main() {
 			watcher, upgradeSignal, bus, mcName, log)
 		// Rückmeldung des Host-Helfers: gescheiterter Container-Neubau
 		upgrader.HostFailure = upgradeSignal.UpgradeFailure
-		// Java-Guard: Zielversion verlangt Java N, Image liefert Java M —
-		// passt es nicht, bricht die Kette ab, statt in eine Neustart-
-		// Schleife zu laufen (Learning 15).
+		// Java-Hinweis: Zielversion verlangt Java N, Image liefert Java M —
+		// das Start-Event nennt den Wechsel; das neue Image holt der
+		// Host-Watcher beim Sprung (docker compose pull mc-fabric).
 		if insp, ok := docker.(upgrade.Inspector); ok {
 			upgrader.JavaProbe = upgrade.NewImageJavaProbe(insp, coll, mcName)
 			// Watchdog: Absturzschleife früh erkennen statt 25 min zu warten
