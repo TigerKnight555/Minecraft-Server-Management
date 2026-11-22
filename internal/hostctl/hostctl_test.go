@@ -182,3 +182,29 @@ func TestReconcilerStoppedDesiredSkipsWatchdog(t *testing.T) {
 		t.Fatalf("events = %+v, want Info 'bleibt gestoppt' ohne Alarm", evs)
 	}
 }
+
+// Die Fehler-Rückmeldung des Host-Helfers wird gelesen, und ein neuer
+// Auftrag verwirft eine alte Rückmeldung.
+func TestUpgradeFailureFeedback(t *testing.T) {
+	dir := t.TempDir()
+	s := NewSignaler(dir)
+	if _, failed := s.UpgradeFailure(); failed {
+		t.Fatal("Fehler gemeldet, obwohl keine Rückmeldung existiert")
+	}
+	failedFile := filepath.Join(dir, "upgrade.failed")
+	if err := os.WriteFile(failedFile, []byte("compose up gescheitert\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if msg, failed := s.UpgradeFailure(); !failed || msg != "compose up gescheitert" {
+		t.Errorf("UpgradeFailure = %q, %v", msg, failed)
+	}
+	if err := s.RequestUpgrade("1.21.11"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(failedFile); !os.IsNotExist(err) {
+		t.Error("alte Rückmeldung nach neuem Auftrag nicht entfernt")
+	}
+	if _, failed := s.UpgradeFailure(); failed {
+		t.Error("alte Rückmeldung gilt noch für den neuen Auftrag")
+	}
+}

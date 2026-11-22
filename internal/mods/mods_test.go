@@ -227,3 +227,166 @@ func TestWatcherReadiness(t *testing.T) {
 		}
 	}
 }
+
+// RollbackLabel holt genau den angegebenen Satz zurück — auch wenn es einen
+// neueren gibt — und meldet einen unbekannten Satz als Fehler.
+func TestRollbackLabelRestoresOnlyThatSet(t *testing.T) {
+	mgr, profiles, _ := setup(t)
+	ctx := context.Background()
+	serverDir := profiles[0].Dirs["mods"]
+
+	if _, err := mgr.CheckUpdates(ctx, "server", "1.21.11"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Stage(ctx, "server", nil); err != nil {
+		t.Fatal(err)
+	}
+	label, applied, err := mgr.ApplyStaged("server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ein jüngerer, fremder Satz daneben darf nicht angefasst werden
+	newer := filepath.Join(serverDir, ".backup", "9999-12-31_23-59-59")
+	if err := os.MkdirAll(newer, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(newer, "manifest.json"),
+		[]byte(`{"items":[{"category":"mods","oldFilename":"fremd.jar","newFilename":"fremd-neu.jar"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(newer, "fremd.jar"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := mgr.RollbackLabel("server", "2000-01-01_00-00-00"); err == nil {
+		t.Error("unbekannter Satz ohne Fehler zurückgerollt")
+	}
+	if _, err := mgr.RollbackLabel("server", "../x"); err == nil {
+		t.Error("Pfad-Label akzeptiert")
+	}
+	restored, err := mgr.RollbackLabel("server", label)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored != applied {
+		t.Errorf("restored = %d, want %d", restored, applied)
+	}
+	if _, err := os.Stat(filepath.Join(serverDir, "fremd.jar")); !os.IsNotExist(err) {
+		t.Error("fremder, neuerer Backup-Satz wurde mit zurückgerollt")
+	}
+}
+
+// supportsRecorder merkt sich, welche Projekte der Watcher abfragt.
+type supportsRecorder struct {
+	*mock.Modrinth
+	asked map[string]bool
+}
+
+func (r *supportsRecorder) ProjectSupports(ctx context.Context, projectID, loader, mcVersion string) (bool, error) {
+	r.asked[projectID] = true
+	return r.Modrinth.ProjectSupports(ctx, projectID, loader, mcVersion)
+}
+
+// Shader/Resourcepacks laufen auf Modrinth nicht unter dem Mod-Loader — sie
+// dürfen weder abgefragt noch als Nachzügler gemeldet werden.
+func TestWatcherIgnoresNonModCategories(t *testing.T) {
+	// nur das Client-Profil: der Mock vergibt Projekt-IDs je Aufruf nach
+	// Position, sonst teilte sich der Shader die ID mit einem Server-Mod
+	_, profiles, _ := setup(t)
+	mgr := mods.NewManager(mock.NewModrinth(), "fabric", profiles[1:2])
+	ctx := context.Background()
+	mgr.CheckUpdates(ctx, "client", "1.21.11")
+
+	var shader mods.Entry
+	for _, e := range mgr.Entries("client") {
+		if e.Category == "shaderpacks" {
+			shader = e
+		}
+	}
+	if !shader.Managed {
+		t.Fatal("Testvoraussetzung: Mock-Shader muss Modrinth bekannt sein")
+	}
+
+	api := &supportsRecorder{Modrinth: mock.NewModrinth(), asked: map[string]bool{}}
+	w := mods.NewWatcher(api, mgr, "fabric")
+	srv := newJSONServer(t, map[string]string{
+		"/manifest": `{"latest":{"release":"1.22"}}`,
+		"/fabric":   `[{"version":"1.22","stable":true}]`,
+	})
+	w.SetEndpoints(srv+"/manifest", srv+"/fabric")
+	status, err := w.Check(ctx, "1.21.11")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if api.asked[shader.ProjectID] {
+		t.Errorf("Shader %s mit Mod-Loader abgefragt", shader.Filename)
+	}
+	name := shader.Name
+	if name == "" {
+		name = shader.Filename
+	}
+	if _, ok := status.Stragglers[name]; ok {
+		t.Errorf("Shader %s als Nachzügler gemeldet", name)
+	}
+}
+
+// "Alle stagen" darf eine vorgemerkte Entfernung nicht in ein Update
+// verwandeln.
+func TestStageKeepsPendingRemoval(t *testing.T) {
+	mgr, _, _ := setup(t)
+	ctx := context.Background()
+	if _, err := mgr.CheckUpdates(ctx, "server", "1.21.11"); err != nil {
+		t.Fatal(err)
+	}
+	var target string
+	updatable := 0
+	for _, e := range mgr.Entries("server") {
+		if e.UpdateVersion != "" {
+			updatable++
+			if target == "" {
+				target = e.Filename
+			}
+		}
+	}
+	if target == "" {
+		t.Fatal("nichts updatebar")
+	}
+	if err := mgr.StageRemove(mods.ProfileServer, target); err != nil {
+		t.Fatal(err)
+	}
+	n, err := mgr.Stage(ctx, "server", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != updatable-1 {
+		t.Errorf("staged = %d, want %d (vorgemerkte Datei übersprungen)", n, updatable-1)
+	}
+	for _, e := range mgr.Entries("server") {
+		if e.Filename == target && e.Pending != "remove" {
+			t.Errorf("%s pending = %q, want remove", target, e.Pending)
+		}
+	}
+}
+
+// Stage überschreibt eine beschädigte Staging-Liste nicht.
+func TestStageRefusesCorruptManifest(t *testing.T) {
+	mgr, profiles, _ := setup(t)
+	ctx := context.Background()
+	if _, err := mgr.CheckUpdates(ctx, "server", "1.21.11"); err != nil {
+		t.Fatal(err)
+	}
+	sdir := filepath.Join(profiles[0].Dirs["mods"], ".msm-staging")
+	if err := os.MkdirAll(sdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	man := filepath.Join(sdir, "manifest.json")
+	if err := os.WriteFile(man, []byte("{kaputt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Stage(ctx, "server", nil); err == nil {
+		t.Error("kein Fehler bei kaputter Liste")
+	}
+	if got, _ := os.ReadFile(man); string(got) != "{kaputt" {
+		t.Errorf("manifest überschrieben: %q", got)
+	}
+}

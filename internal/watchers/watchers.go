@@ -26,6 +26,24 @@ type Crash struct {
 	bus      *events.Bus
 	log      *slog.Logger
 	Interval time.Duration
+
+	// Neustart-Zähler des MC-Containers: Docker erhöht ihn nur beim
+	// automatischen Neustart nach einem Prozess-Tod (nicht bei Stop/Start
+	// oder Restart durch MSM). Ein harter Absturz ohne Crash-Report (z. B.
+	// Speicher-Killer) blieb vorher völlig stumm — Spieler flogen raus,
+	// niemand erfuhr warum (WSL-Test 2026-11-10).
+	restarts     func(ctx context.Context) (int, error)
+	expectedDown func() bool
+	lastReport   time.Time
+}
+
+// WithRestartCount enables crash detection via the container's restart
+// counter; expectedDown blendet geplante Ausfälle (Routinen, MC-Update,
+// Wartung) aus.
+func (c *Crash) WithRestartCount(restarts func(ctx context.Context) (int, error), expectedDown func() bool) *Crash {
+	c.restarts = restarts
+	c.expectedDown = expectedDown
+	return c
 }
 
 func NewCrash(dataDir string, bus *events.Bus, log *slog.Logger) *Crash {
@@ -37,6 +55,12 @@ func (c *Crash) Run(ctx context.Context) {
 	seen := map[string]bool{}
 	for _, f := range c.list() {
 		seen[f] = true
+	}
+	baseRestarts := -1
+	if c.restarts != nil {
+		if n, err := c.restarts(ctx); err == nil {
+			baseRestarts = n
+		}
 	}
 	t := time.NewTicker(c.Interval)
 	defer t.Stop()
@@ -51,6 +75,7 @@ func (c *Crash) Run(ctx context.Context) {
 				continue
 			}
 			seen[f] = true
+			c.lastReport = time.Now()
 			c.bus.Publish(events.Event{
 				Type: events.TypeCrash, Severity: events.SevError,
 				Title:   "💥 Der Server ist abgestürzt",
@@ -58,6 +83,8 @@ func (c *Crash) Run(ctx context.Context) {
 				Fields:  []events.Field{{Name: "Report", Value: f}, {Name: "Details", Value: c.snippet(f)}},
 			})
 		}
+		// nach den Reports prüfen: ein Absturz mit Report wird so nur einmal gemeldet
+		baseRestarts = c.checkRestarts(ctx, baseRestarts)
 	}
 }
 
@@ -110,14 +137,23 @@ type resolver interface {
 
 // Down alerts when the MC container is exited although nobody intended that:
 // keine laufende Routine (expectedDown) und Soll-Zustand nicht "stopped".
+//
+// „Wieder da" heißt: Minecraft antwortet — nicht bloß „Container läuft".
+// Beim gescheiterten 26.2-Update meldete der Wächter sechsmal Entwarnung,
+// weil der Container in der Absturzschleife immer wieder kurz auf "running"
+// stand, während die JVM hochfuhr und Sekunden später starb (Learning 16).
 type Down struct {
 	containers   resolver
 	mcName       string
-	expectedDown func() bool // scheduler: gerade absichtlich gestoppt?
+	mcOnline     func() bool // antwortet Minecraft wirklich? (nil = nur Container-Status)
+	expectedDown func() bool // scheduler/upgrade: gerade absichtlich unterwegs?
 	desiredStop  func() bool // soll-zustand: bewusst aus?
 	bus          *events.Bus
 	Interval     time.Duration
 	Grace        int // aufeinanderfolgende Down-Messungen bis Alarm
+	// StartGrace gilt, solange der Container läuft, Minecraft aber (noch)
+	// nicht antwortet — Start und Welt-Laden brauchen Zeit.
+	StartGrace int
 
 	downAlerted bool
 }
@@ -126,8 +162,15 @@ func NewDown(containers resolver, mcName string, expectedDown, desiredStop func(
 	return &Down{
 		containers: containers, mcName: mcName,
 		expectedDown: expectedDown, desiredStop: desiredStop, bus: bus,
-		Interval: 30 * time.Second, Grace: 2,
+		Interval: 30 * time.Second, Grace: 2, StartGrace: 10,
 	}
+}
+
+// WithMCOnline lets the watcher judge by actual Minecraft availability
+// instead of the container state alone.
+func (d *Down) WithMCOnline(f func() bool) *Down {
+	d.mcOnline = f
+	return d
 }
 
 func (d *Down) Run(ctx context.Context) {
@@ -152,7 +195,10 @@ func (d *Down) Run(ctx context.Context) {
 			misses = 0
 			continue
 		}
-		if running {
+		// Erreichbar = Container läuft UND Minecraft antwortet. Ohne
+		// mcOnline-Prüfer bleibt es beim reinen Container-Status.
+		reachable := running && (d.mcOnline == nil || d.mcOnline())
+		if reachable {
 			misses = 0
 			if d.downAlerted {
 				d.downAlerted = false
@@ -164,8 +210,14 @@ func (d *Down) Run(ctx context.Context) {
 			}
 			continue
 		}
+		// Container läuft, Minecraft schweigt noch: großzügiger sein, das
+		// ist der normale Start- bzw. Welt-Ladevorgang.
+		grace := d.Grace
+		if running {
+			grace = d.StartGrace
+		}
 		misses++
-		if misses >= d.Grace && !d.downAlerted {
+		if misses >= grace && !d.downAlerted {
 			d.downAlerted = true
 			d.bus.Publish(events.Event{
 				Type: events.TypeServerDown, Severity: events.SevError,
@@ -333,4 +385,37 @@ func (r *Resource) step(h collector.HostSample) {
 			r.memAlerted = false
 		}
 	}
+}
+
+// checkRestarts publishes a crash event when the restart counter grew —
+// außer bei geplantem Ausfall oder wenn gerade ein Crash-Report gemeldet
+// wurde (derselbe Absturz). base < 0: Zähler noch unbekannt.
+func (c *Crash) checkRestarts(ctx context.Context, base int) int {
+	if c.restarts == nil {
+		return base
+	}
+	n, err := c.restarts(ctx)
+	if err != nil {
+		return base
+	}
+	if base < 0 || n < base { // erster Wert oder Container neu erstellt
+		return n
+	}
+	if n == base {
+		return n
+	}
+	if c.expectedDown != nil && c.expectedDown() {
+		return n
+	}
+	if time.Since(c.lastReport) < 3*time.Minute {
+		return n // schon mit Crash-Report gemeldet
+	}
+	c.bus.Publish(events.Event{
+		Type: events.TypeCrash, Severity: events.SevError,
+		Title:   "💥 Der Server ist abgestürzt",
+		Message: "Er startet gerade automatisch neu. Falls nicht: der Admin wurde informiert.",
+		Fields: []events.Field{{Name: "Details", Value: fmt.Sprintf(
+			"Minecraft-Prozess beendet ohne Crash-Report — Docker hat den Container neu gestartet (%d×). Häufige Ursache: zu wenig Arbeitsspeicher.", n-base)}},
+	})
+	return n
 }

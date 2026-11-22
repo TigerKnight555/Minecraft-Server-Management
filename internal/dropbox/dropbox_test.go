@@ -147,3 +147,88 @@ func TestConfigComplete(t *testing.T) {
 		t.Error("vollständige Config als unvollständig gemeldet")
 	}
 }
+
+// Häufigster Einrichtungsfehler (2026-11-08 real erlebt): Rechte erst nach
+// dem Autorisieren gesetzt → Token nur account_info.read → missing_scope.
+// Die Meldung muss sagen, was zu tun ist, nicht nur den Rohfehler zeigen.
+func TestMissingScopeExplained(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/oauth2/token") {
+			json.NewEncoder(w).Encode(map[string]any{"access_token": "AT", "expires_in": 14400})
+			return
+		}
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error_summary":"missing_scope/..","error":{".tag":"missing_scope","required_scope":"files.content.write"}}`))
+	}))
+	defer srv.Close()
+	c := New(Config{AppKey: "k", AppSecret: "s", RefreshToken: "r"})
+	c.SetEndpoints(srv.URL+"/oauth2/token", srv.URL, srv.URL)
+	err := c.Upload(context.Background(), "/MSM/x.zip", strings.NewReader("data"))
+	if err == nil || !strings.Contains(err.Error(), "Permissions") || !strings.Contains(err.Error(), "neu autorisieren") {
+		t.Fatalf("err = %v, want Klartext-Hinweis zu fehlenden Rechten", err)
+	}
+}
+
+func TestZipExtraFiles(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "config", "sub"), 0o755)
+	os.WriteFile(filepath.Join(root, "config", "sub", "a.json"), []byte("A"), 0o644)
+	var buf bytes.Buffer
+	n, err := zipAll(&buf, map[string]string{}, root, []string{"config/sub/a.json", "../evil"})
+	if err != nil || n != 1 {
+		t.Fatalf("n = %d, err = %v", n, err)
+	}
+	zr, _ := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	if len(zr.File) != 1 || zr.File[0].Name != "config/sub/a.json" {
+		t.Errorf("zip = %v", zr.File)
+	}
+}
+
+func zipNames(t *testing.T, b []byte) []string {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(b), int64(len(b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, f := range zr.File {
+		out = append(out, f.Name)
+	}
+	return out
+}
+
+func TestZipExtraDotDotInName(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "config"), 0o755)
+	os.WriteFile(filepath.Join(root, "config", "foo..bar.cfg"), []byte("x"), 0o644)
+	var buf bytes.Buffer
+	n, err := zipAll(&buf, map[string]string{}, root, []string{"config/foo..bar.cfg"})
+	if err != nil || n != 1 {
+		t.Fatalf("n = %d, err = %v", n, err)
+	}
+	if got := zipNames(t, buf.Bytes()); len(got) != 1 || got[0] != "config/foo..bar.cfg" {
+		t.Errorf("zip = %v", got)
+	}
+}
+
+func TestZipExtraSkipsNonRegularAndOutside(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "root")
+	os.MkdirAll(filepath.Join(root, "config", "adir"), 0o755)
+	os.WriteFile(filepath.Join(root, "config", "ok.cfg"), []byte("ok"), 0o644)
+	os.WriteFile(filepath.Join(base, "secret.txt"), []byte("secret"), 0o644)
+	extra := []string{"config/adir", "../secret.txt", "config/ok.cfg"}
+	if err := os.Symlink(filepath.Join(base, "secret.txt"), filepath.Join(root, "config", "link.cfg")); err == nil {
+		extra = append(extra, "config/link.cfg")
+	} else {
+		t.Logf("Symlink nicht anlegbar: %v", err)
+	}
+	var buf bytes.Buffer
+	n, err := zipAll(&buf, map[string]string{}, root, extra)
+	if err != nil || n != 1 {
+		t.Fatalf("n = %d, err = %v", n, err)
+	}
+	if got := zipNames(t, buf.Bytes()); len(got) != 1 || got[0] != "config/ok.cfg" {
+		t.Errorf("zip = %v", got)
+	}
+}

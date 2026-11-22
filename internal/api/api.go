@@ -3,20 +3,24 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/auth"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/backup"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/basepack"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
-	"github.com/TigerKnight555/Minecraft-Server-Management/internal/dropbox"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modpack"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/packpub"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/selfupdate"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/settings"
@@ -33,13 +37,19 @@ type Server struct {
 	sched             *scheduler.Scheduler
 	authmgr           *auth.Manager
 	modmgr            *mods.Manager
+	basepack          *basepack.Service // nil = Basis-Modpack-Feature aus
 	watcher           *mods.Watcher
 	restore           *backup.Restore
 	mcDataDir         string      // read-only mount of the MC data dir ("" = feature off)
 	maintActive       func() bool // Wartungsfenster gerade aktiv?
-	dropbox           *dropbox.Client
+	packs             *packpub.Publisher
+	modpack           *modpack.Channel
 	upgrader          *upgrade.Orchestrator
+	upgradeActive     func() bool                                                    // Ein-Klick-MC-Update läuft? (nil = nie)
+	publishPack       func(ctx context.Context, channels []string, force bool) error // Client-Paket-Versand inkl. Zustands-Pflege
+	applyBusy         atomic.Bool                                                    // „Anwenden + Neustart" läuft
 	settings          *settings.Store
+	discordTest       func(ctx context.Context, ev events.Event) error
 	selfupdate        *selfupdate.Checker
 	mcContainer       string
 	fallbackMCVersion string
@@ -60,13 +70,17 @@ type Deps struct {
 	Scheduler         *scheduler.Scheduler
 	Auth              *auth.Manager
 	ModManager        *mods.Manager
+	Basepack          *basepack.Service
 	Watcher           *mods.Watcher
 	Restore           *backup.Restore
 	MCDataDir         string      // read-only MC data dir for the player list
 	MaintActive       func() bool // maintenance.Manager.Active
-	Dropbox           *dropbox.Client
+	Packs             *packpub.Publisher
+	Modpack           *modpack.Channel
 	Upgrader          *upgrade.Orchestrator
+	PublishPack       func(ctx context.Context, channels []string, force bool) error // Paket-Versand inkl. Zustands-Pflege
 	Settings          *settings.Store
+	DiscordTest       func(ctx context.Context, ev events.Event) error // Testnachricht synchron zustellen
 	SelfUpdate        *selfupdate.Checker
 	MCContainer       string   // name of the minecraft container (mod apply restart)
 	FallbackMCVersion string   // used when query has no version yet
@@ -83,7 +97,12 @@ func New(d Deps) *Server {
 			managed[name] = true
 		}
 	}
+	var upgradeActive func() bool
+	if d.Upgrader != nil {
+		upgradeActive = d.Upgrader.Active
+	}
 	return &Server{
+		upgradeActive:     upgradeActive,
 		collector:         d.Collector,
 		docker:            d.Docker,
 		controller:        d.Controller,
@@ -93,13 +112,17 @@ func New(d Deps) *Server {
 		sched:             d.Scheduler,
 		authmgr:           d.Auth,
 		modmgr:            d.ModManager,
+		basepack:          d.Basepack,
 		watcher:           d.Watcher,
 		restore:           d.Restore,
 		mcDataDir:         d.MCDataDir,
 		maintActive:       d.MaintActive,
-		dropbox:           d.Dropbox,
+		packs:             d.Packs,
+		modpack:           d.Modpack,
 		upgrader:          d.Upgrader,
+		publishPack:       d.PublishPack,
 		settings:          d.Settings,
+		discordTest:       d.DiscordTest,
 		selfupdate:        d.SelfUpdate,
 		mcContainer:       d.MCContainer,
 		fallbackMCVersion: d.FallbackMCVersion,
@@ -138,7 +161,24 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("POST /api/mods/stage", s.handleModsStage)
 		mux.HandleFunc("POST /api/mods/apply", s.handleModsApply)
 		mux.HandleFunc("POST /api/mods/rollback", s.handleModsRollback)
-		if s.dropbox != nil {
+		mux.HandleFunc("GET /api/mods/search", s.handleModsSearch)
+		mux.HandleFunc("GET /api/mods/plan", s.handleModsPlan)
+		mux.HandleFunc("POST /api/mods/add", s.handleModsAdd)
+		mux.HandleFunc("POST /api/mods/upload", s.handleModsUpload)
+		mux.HandleFunc("GET /api/mods/remove-info", s.handleModsRemoveInfo)
+		mux.HandleFunc("POST /api/mods/remove", s.handleModsRemove)
+		mux.HandleFunc("POST /api/mods/discard", s.handleModsDiscard)
+		mux.HandleFunc("GET /api/mods/apply-info", s.handleModsApplyInfo)
+		if s.basepack != nil {
+			mux.HandleFunc("GET /api/basepack", s.handleBasepackStatus)
+			mux.HandleFunc("GET /api/basepack/search", s.handleBasepackSearch)
+			mux.HandleFunc("GET /api/basepack/preview", s.handleBasepackPreview)
+			mux.HandleFunc("POST /api/basepack/apply", s.handleBasepackApply)
+			mux.HandleFunc("POST /api/basepack/toggle", s.handleBasepackToggle)
+			mux.HandleFunc("POST /api/basepack/configs", s.handleBasepackConfigs)
+			mux.HandleFunc("DELETE /api/basepack", s.handleBasepackRemove)
+		}
+		if s.packs != nil && s.publishPack != nil {
 			mux.HandleFunc("POST /api/mods/publish", s.handlePublishClientPack)
 		}
 	}
@@ -163,6 +203,12 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 		mux.HandleFunc("PUT /api/settings", s.handleSaveSettings)
 		mux.HandleFunc("POST /api/settings/discord/test", s.handleTestDiscord)
+	}
+	if s.modpack != nil {
+		mux.HandleFunc("GET /api/modpack", s.handleModpackStatus)
+		if s.settings != nil {
+			mux.HandleFunc("POST /api/settings/modrinth/test", s.handleModrinthTest)
+		}
 	}
 	// MSM-Selbst-Update
 	if s.selfupdate != nil {

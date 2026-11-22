@@ -89,7 +89,10 @@ func (r *Runner) Run(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("backup %w", err)
 	}
 	dur := det.FinishedAt.Sub(started).Round(time.Second)
-	logs, _ := r.docker.TailLogs(ctx, id, 40)
+	// forget/prune hängen nach der Sicherung schnell 50+ Zeilen an — mit
+	// nur 40 Zeilen fehlte die Zusammenfassung, sobald alte Snapshots
+	// wegfielen (WSL-Test 2026-11-10), also im Dauerbetrieb jede Nacht.
+	logs, _ := r.docker.TailLogs(ctx, id, 400)
 	if det.ExitCode != 0 {
 		return "", fmt.Errorf("backup fehlgeschlagen (exit %d nach %s): %s",
 			det.ExitCode, dur, tailSummary(logs, 400))
@@ -135,13 +138,13 @@ var (
 
 func resticSummary(logs string) string {
 	var parts []string
-	if m := reProcessed.FindStringSubmatch(logs); m != nil {
+	if m := lastMatch(reProcessed, logs); m != nil {
 		parts = append(parts, fmt.Sprintf("%s geprüft (%s Dateien, %s min)", m[2], m[1], m[3]))
 	}
-	if m := reAdded.FindStringSubmatch(logs); m != nil {
+	if m := lastMatch(reAdded, logs); m != nil {
 		parts = append(parts, m[1]+" neu gesichert")
 	}
-	if m := reSnapshot.FindStringSubmatch(logs); m != nil {
+	if m := lastMatch(reSnapshot, logs); m != nil {
 		parts = append(parts, "Stand "+m[1])
 	}
 	if len(parts) == 0 {
@@ -156,4 +159,14 @@ func tailSummary(logs string, n int) string {
 		return logs
 	}
 	return "…" + logs[len(logs)-n:]
+}
+
+// lastMatch returns the last submatch — der Backup-Container wird
+// wiederverwendet, sein Log enthält auch frühere Läufe.
+func lastMatch(re *regexp.Regexp, s string) []string {
+	all := re.FindAllStringSubmatch(s, -1)
+	if len(all) == 0 {
+		return nil
+	}
+	return all[len(all)-1]
 }

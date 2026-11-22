@@ -168,3 +168,22 @@ func TestParseWebhooks(t *testing.T) {
 		t.Errorf("empty: hooks=%+v err=%v", hooks, err)
 	}
 }
+
+func TestTestReportsDeliveryErrors(t *testing.T) {
+	ok := &capture{}
+	okSrv := httptest.NewServer(ok.handler())
+	defer okSrv.Close()
+	bad := &capture{fails: 99}
+	badSrv := httptest.NewServer(bad.handler())
+	defer badSrv.Close()
+
+	d := NewDiscordStatic([]Webhook{{Name: "admin", URL: okSrv.URL, Events: []string{"mods."}}}, testLogger())
+	if err := d.Test(context.Background(), events.Event{Title: "t", Time: time.Now()}); err != nil {
+		t.Fatalf("Test = %v, want nil (Filter gilt für den Test nicht)", err)
+	}
+	d = NewDiscordStatic([]Webhook{{Name: "admin", URL: okSrv.URL}, {Name: "spieler", URL: badSrv.URL}}, testLogger())
+	err := d.Test(context.Background(), events.Event{Title: "t", Time: time.Now()})
+	if err == nil || !strings.Contains(err.Error(), "spieler") || strings.Contains(err.Error(), "admin") {
+		t.Fatalf("Test = %v, want Fehler nur für den Webhook spieler", err)
+	}
+}

@@ -86,3 +86,40 @@ func TestNASCheck(t *testing.T) {
 		t.Error("NASOnline = false for existing directory")
 	}
 }
+
+func TestMountedIn(t *testing.T) {
+	info := "22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n" +
+		"273 97 8:48 /home/simon/minecraft/nas /home/simon/minecraft/nas rw,relatime shared:281 - ext4 /dev/sdd rw\n" +
+		"300 22 0:50 / /mnt/nas rw,relatime - cifs //nas/share rw\n" +
+		`301 22 0:51 / /mnt/mit\040leer rw - ext4 /dev/sde rw` + "\n"
+	cases := map[string]bool{
+		"/home/simon/minecraft/nas":  true,  // Bind-Mount, exakt
+		"/home/simon/minecraft/nas/": true,  // Clean
+		"/home/simon/minecraft":      false, // kein Mountpunkt (liegt nur auf /)
+		"/mnt/nas/minecraft":         true,  // unter Netz-Mount
+		"/mnt/mc-backups":            false, // nicht eingebunden
+		"/mnt/mit leer":              true,  // escapte Leerzeichen
+	}
+	for p, want := range cases {
+		if got := mountedIn(info, p); got != want {
+			t.Errorf("mountedIn(%q) = %v, want %v", p, got, want)
+		}
+	}
+}
+
+// Mit lesbarem mountinfo zählt der Mount, nicht der leere Ordner.
+func TestNASCheckUsesHostMountinfo(t *testing.T) {
+	dir := writeProcFixtures(t, "cpu  1 0 1 1 1 0 0 0 0 0\n")
+	nas := t.TempDir() // existiert, ist aber kein Mount
+	os.MkdirAll(filepath.Join(dir, "1"), 0o755)
+	os.WriteFile(filepath.Join(dir, "1", "mountinfo"), []byte("22 1 8:1 / / rw - ext4 /dev/sda1 rw\n"), 0o644)
+	got, _ := New(dir, "", nas).Sample(context.Background())
+	if got.NASOnline {
+		t.Error("leerer Ordner ohne Mount darf nicht online sein")
+	}
+	os.WriteFile(filepath.Join(dir, "1", "mountinfo"), []byte("22 1 8:1 / / rw - ext4 /dev/sda1 rw\n300 22 0:50 / "+filepath.ToSlash(nas)+" rw - nfs4 nas:/x rw\n"), 0o644)
+	got, _ = New(dir, "", nas).Sample(context.Background())
+	if !got.NASOnline && filepath.Separator == '/' {
+		t.Error("eingebundener NAS muss online sein")
+	}
+}

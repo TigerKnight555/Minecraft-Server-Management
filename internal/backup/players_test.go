@@ -67,3 +67,29 @@ func TestListPlayersMissingDirFails(t *testing.T) {
 		t.Error("fehlendes playerdata-Verzeichnis muss Fehler geben")
 	}
 }
+
+// Ab MC 26.x: world/players/data (beim Weltupgrade migriert). Liegt
+// zusätzlich noch ein altes playerdata herum, gewinnt das neue Layout.
+func TestListPlayersNewLayout(t *testing.T) {
+	dir := t.TempDir()
+	nd := filepath.Join(dir, "world", "players", "data")
+	od := filepath.Join(dir, "world", "playerdata")
+	for _, d := range []string{nd, od} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(nd, "069a79f4-44e9-4726-a5be-fca90e38aaf5.dat"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(od, "853c80ef-3c37-49fd-aa49-938b674adae6.dat"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	players, err := ListPlayers(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(players) != 1 || players[0].UUID != "069a79f4-44e9-4726-a5be-fca90e38aaf5" {
+		t.Fatalf("players = %+v, want nur den Spieler aus players/data", players)
+	}
+}

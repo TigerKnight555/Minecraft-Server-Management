@@ -34,12 +34,16 @@ func TestRestoreWritesScriptAndSupervises(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"playerdata/069a79f4-44e9-4726-a5be-fca90e38aaf5.dat",
-		"restic restore latest",
+		`U="069a79f4-44e9-4726-a5be-fca90e38aaf5"`,
+		"rm -rf /restore-out\nmkdir -p /restore-out\nrestic restore latest", // nie Reste früherer Läufe
+		// beide Layouts im Snapshot suchen, neues zuerst
+		`--include "/data/world/players/data/$U.dat" --include "/data/world/playerdata/$U.dat"`,
+		`if [ -d /data/world/players/data ]; then D=/data/world/players/data; O=/data/world/playerdata; else D=/data/world/playerdata; O=/data/world/players/data; fi`,
+		`for C in "/restore-out$D/$U.dat" "/restore-out$O/$U.dat"; do`, // aktuelles Layout zuerst
 		".pre-restore-",
 		"set -eu",
-		`cp -p "/restore-out$F" "$F"`, // Ownership erhalten (MC-Server muss lesen können)
-		`chown "$(stat -c '%u:%g' /data/world/playerdata)" "$F"`, // Gürtel + Hosenträger
+		`cp -p "$S" "$F"`, // Ownership erhalten (MC-Server muss lesen können)
+		`chown "$(stat -c '%u:%g' "$D")" "$F"`, // Gürtel + Hosenträger
 	} {
 		if !strings.Contains(string(script), want) {
 			t.Errorf("script fehlt %q:\n%s", want, script)
@@ -84,5 +88,14 @@ func TestRestoreRefusesDoubleRun(t *testing.T) {
 	_, err := r.RestorePlayer(context.Background(), "069a79f4-44e9-4726-a5be-fca90e38aaf5")
 	if err == nil || !strings.Contains(err.Error(), "läuft bereits") {
 		t.Fatalf("err = %v, want Doppelstart-Schutz", err)
+	}
+}
+
+func TestRestoreErrorShowsOnlyCurrentRun(t *testing.T) {
+	d := &fakeDocker{exitCode: 3, logs: jobMarker + "\nFEHLER: alt.dat fehlt\n" + jobMarker + "\nFEHLER: Spielerdatei neu.dat fehlt\n"}
+	r, _ := newRestoreRunner(t, d)
+	_, err := r.RestorePlayer(context.Background(), "069a79f4-44e9-4726-a5be-fca90e38aaf5")
+	if err == nil || strings.Contains(err.Error(), "alt.dat") || !strings.Contains(err.Error(), "neu.dat") {
+		t.Fatalf("err = %v, want nur Ausgabe des aktuellen Laufs", err)
 	}
 }

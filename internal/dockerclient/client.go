@@ -18,7 +18,10 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
 )
 
-const apiVersion = "v1.43"
+// Docker 29 lehnt alles unter API 1.44 ab ("client version 1.43 is too
+// old") — dann sieht MSM keinen Container mehr und Stop/Start/Backup/Update
+// scheitern. 1.44 = Docker 25+, also auch ältere Server.
+const apiVersion = "v1.44"
 
 type Client struct {
 	base string // e.g. http://socket-proxy:2375
@@ -94,15 +97,21 @@ func (c *Client) InspectContainer(ctx context.Context, id string) (collector.Con
 			StartedAt  time.Time `json:"StartedAt"`
 			FinishedAt time.Time `json:"FinishedAt"`
 		} `json:"State"`
+		RestartCount int `json:"RestartCount"`
+		Config       struct {
+			Env []string `json:"Env"`
+		} `json:"Config"`
 	}
 	if err := c.get(ctx, "/containers/"+url.PathEscape(id)+"/json", &raw); err != nil {
 		return collector.ContainerDetail{}, err
 	}
 	return collector.ContainerDetail{
-		Running:    raw.State.Running,
-		ExitCode:   raw.State.ExitCode,
-		StartedAt:  raw.State.StartedAt,
-		FinishedAt: raw.State.FinishedAt,
+		Running:      raw.State.Running,
+		ExitCode:     raw.State.ExitCode,
+		StartedAt:    raw.State.StartedAt,
+		FinishedAt:   raw.State.FinishedAt,
+		RestartCount: raw.RestartCount,
+		Env:          raw.Config.Env,
 	}, nil
 }
 

@@ -28,14 +28,18 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -48,6 +52,7 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/api"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/auth"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/backup"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/basepack"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/dockerclient"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/dropbox"
@@ -59,10 +64,13 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mcrcon"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mcstatus"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mock"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modnews"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modpack"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modrinth"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/netcheck"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/notify"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/packpub"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/selfupdate"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/settings"
@@ -120,6 +128,8 @@ func main() {
 		admin       api.AdminStore
 		modAPI      mods.ModrinthAPI
 		modProfiles []mods.Profile
+		// Wurzel des Client-Pakets; leer im Mock-Modus
+		clientPackRoot string
 	)
 
 	if *mockMode {
@@ -162,13 +172,13 @@ func main() {
 
 		modAPI = modrinth.New()
 		serverMods := envOr("MSM_SERVER_MODS_DIR", "/mc/mods")
-		clientPack := envOr("MSM_CLIENT_PACK_DIR", "/mc/client-pack")
+		clientPackRoot = envOr("MSM_CLIENT_PACK_DIR", "/mc/client-pack")
 		modProfiles = []mods.Profile{
 			{Name: "server", Dirs: map[string]string{"mods": serverMods}},
 			{Name: "client", Dirs: map[string]string{
-				"mods":          filepath.Join(clientPack, "mods"),
-				"shaderpacks":   filepath.Join(clientPack, "shaderpacks"),
-				"resourcepacks": filepath.Join(clientPack, "resourcepacks"),
+				"mods":          filepath.Join(clientPackRoot, "mods"),
+				"shaderpacks":   filepath.Join(clientPackRoot, "shaderpacks"),
+				"resourcepacks": filepath.Join(clientPackRoot, "resourcepacks"),
 			}},
 		}
 	}
@@ -205,6 +215,12 @@ func main() {
 		kvSet = func(key, value string) { memMu.Lock(); defer memMu.Unlock(); mem[key] = value }
 	}
 	cfg := settings.New(kvGet, kvSet)
+
+	// zuletzt gesehene MC-Version überlebt Neustarts — MC_VERSION in der
+	// MSM-Umgebung ist nach einem Ein-Klick-Update veraltet
+	coll.SetVersionStore(
+		func() string { return kvGet("mc.version") },
+		func(v string) { kvSet("mc.version", v) })
 
 	notifier := notify.NewDiscord(cfg.DiscordHooks, log)
 	{
@@ -278,7 +294,7 @@ func main() {
 
 	// Wächter (Phase 4.7): Crash-Reports, unerwarteter Ausfall, Internet-
 	// Hysterese, Ressourcen-Schwellwerte — melden nur, greifen nie ein
-	go watchers.NewCrash(mcDataDir, bus, log).Run(ctx)
+	crashWatch := watchers.NewCrash(mcDataDir, bus, log)
 	desiredStopped := func() bool {
 		if ds, ok := admin.(hostctl.DesiredStore); ok {
 			states, err := ds.ListDesiredStates(context.Background())
@@ -292,7 +308,8 @@ func main() {
 		}
 		return false
 	}
-	go watchers.NewDown(coll, mcName, sched.ExpectedDown, desiredStopped, bus).Run(ctx)
+	// NewDown startet weiter unten — er braucht den Upgrade-Orchestrator,
+	// um während eines Versionssprungs zu schweigen.
 	go watchers.NewNet(func() collector.WANSample { return coll.Snapshot().WAN }, bus).Run(ctx)
 	go watchers.NewResource(hostState, bus).Run(ctx)
 	if err := sched.Start(ctx); err != nil {
@@ -303,17 +320,67 @@ func main() {
 	loader := envOr("MSM_LOADER", "fabric")
 	modmgr := mods.NewManager(modAPI, loader, modProfiles)
 	sched.SetStagedApplier(modmgr)
+	// Mod-Neuigkeiten (Hinzufügen/Entfernen): sammelt angewendete
+	// Änderungen und meldet sie nach dem nächsten Neustart in Discord
+	news := modnews.New(kvGet, kvSet, bus, func() bool { return mcState().Online }, log)
+	modmgr.SetChangeHook(news.OnApply)
+	// Basis-Modpack (nur mit echtem Modrinth-Client)
+	var bp *basepack.Service
+	if mrc, ok := modAPI.(*modrinth.Client); ok && clientPackRoot != "" {
+		bp = basepack.New(mrc, modmgr, clientPackRoot, kvGet, kvSet,
+			func(c []mods.Change) { news.OnApply(mods.ProfileClient, c) }, log)
+		modmgr.SetPinned(func(profile, filename string) bool {
+			return profile == mods.ProfileClient && bp.Pinned(filename)
+		})
+	}
+	news.SetPendingServer(func() map[string]bool {
+		out := map[string]bool{}
+		for _, e := range modmgr.Entries(mods.ProfileServer) {
+			if e.Pending == "" {
+				continue
+			}
+			if e.ProjectID != "" {
+				out[e.ProjectID] = true
+			} else {
+				out[e.Name] = true
+			}
+		}
+		return out
+	})
 	watcher := mods.NewWatcher(modAPI, modmgr, loader)
+	if bp != nil {
+		watcher.SetBasepack(bp.Ready)
+	}
 	watcher.SetBus(bus)
 	if kvGet != nil {
 		watcher.SetAnnounceStore(kvGet, kvSet)
 	}
-	go watcher.Run(ctx, func() string {
-		if v := coll.MCVersion(); v != "" {
-			return v
+	go func() {
+		// Erster Lauf direkt nach dem (Host-)Start: kurz auf die LIVE-Version
+		// warten. Die gespeicherte Version stimmt nach einem bewussten
+		// Rückschritt (Backup-Restore auf ältere Version) nicht — der Watch
+		// hielte die Welt dann 24 h lang für neuer, als sie ist.
+		wait := time.NewTimer(5 * time.Minute)
+		defer wait.Stop()
+		tick := time.NewTicker(5 * time.Second)
+		defer tick.Stop()
+	waitLive:
+		for !mcState().Online {
+			select {
+			case <-ctx.Done():
+				return
+			case <-wait.C:
+				break waitLive
+			case <-tick.C:
+			}
 		}
-		return os.Getenv("MC_VERSION")
-	})
+		watcher.Run(ctx, func() string {
+			if v := coll.MCVersion(); v != "" {
+				return v
+			}
+			return os.Getenv("MC_VERSION")
+		})
+	}()
 
 	// MSM-Selbst-Update (Entscheidung #15): Checker fragt GitHub nach dem
 	// neuesten Release-Tag; der Klick geht als Signaldatei an den Host-Helfer
@@ -332,31 +399,173 @@ func main() {
 	var upgrader *upgrade.Orchestrator
 	if bd, ok := docker.(backup.Docker); ok {
 		bkRunner := backup.New(bd, coll, envOr("MSM_BACKUP_CONTAINER", "mc-backup"), log)
+		upgradeSignal := hostctl.NewSignaler(signalDir)
 		upgrader = upgrade.New(rcon, controller, coll, mcState, bkRunner, modmgr,
-			watcher, hostctl.NewSignaler(signalDir), bus, mcName, log)
+			watcher, upgradeSignal, bus, mcName, log)
+		// Rückmeldung des Host-Helfers: gescheiterter Container-Neubau
+		upgrader.HostFailure = upgradeSignal.UpgradeFailure
+		// Java-Guard: Zielversion verlangt Java N, Image liefert Java M —
+		// passt es nicht, bricht die Kette ab, statt in eine Neustart-
+		// Schleife zu laufen (Learning 15).
+		if insp, ok := docker.(upgrade.Inspector); ok {
+			upgrader.JavaProbe = upgrade.NewImageJavaProbe(insp, coll, mcName)
+			// Watchdog: Absturzschleife früh erkennen statt 25 min zu warten
+			upgrader.Inspect = func(ctx context.Context) (collector.ContainerDetail, error) {
+				return insp.InspectContainer(ctx, upgrade.ResolveID(coll, mcName))
+			}
+		}
+		// Watchdog-Diagnose: Ursache aus dem Container-Log lesen
+		if lt, ok := docker.(interface {
+			TailLogs(context.Context, string, int) (string, error)
+		}); ok {
+			upgrader.TailLogs = func(ctx context.Context, lines int) (string, error) {
+				return lt.TailLogs(ctx, upgrade.ResolveID(coll, mcName), lines)
+			}
+			// gleiche Diagnose für den Rückfall nach gescheitertem Einspielen
+			sched.SetStartDiagnosis(func(ctx context.Context) string {
+				logs, err := lt.TailLogs(ctx, upgrade.ResolveID(coll, mcName), 400)
+				if err != nil {
+					return ""
+				}
+				return upgrade.Diagnose(logs)
+			})
+		}
+		// Rückfall auf die alte Version, wenn der Sprung scheitert und die
+		// Welt nachweislich unangetastet ist (Learning 19)
+		upgrader.ModRollback = modmgr.RollbackLabel
+		upgrader.ModSeal = modmgr.SealLabel
+		if bp != nil {
+			upgrader.BasepackReady = bp.Ready
+			upgrader.BasepackSwitch = bp.SwitchMC
+			upgrader.Pinned = func(profile, filename string) bool {
+				return profile == mods.ProfileClient && bp.Pinned(filename)
+			}
+		}
+		// Routinen und Versionssprung schließen sich gegenseitig aus
+		upgrader.RoutineBusy = sched.Busy
+		sched.SetUpgradeCheck(upgrader.Active)
+		upgrader.PendingChanges = func() bool {
+			return modmgr.HasStaged(mods.ProfileServer) || modmgr.HasStaged(mods.ProfileClient)
+		}
+		// nach dem Sprung Versions-Watch + Mod-Inventar sofort auffrischen —
+		// sonst zeigt die Kachel bis zum Tageslauf „Update verfügbar" für die
+		// gerade installierte Version (WSL-Test 2026-11-09)
+		upgrader.OnSuccess = func(_ context.Context, version string) {
+			go func() {
+				rctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+				defer cancel()
+				for _, p := range modmgr.Profiles() {
+					modmgr.CheckUpdates(rctx, p.Name, version)
+				}
+				if st, err := watcher.Check(rctx, version); err == nil {
+					watcher.SetLast(st)
+				} else {
+					log.Warn("versions-watch nach update fehlgeschlagen", "err", err)
+				}
+			}()
+		}
 	}
+
+	// Down-Wächter erst jetzt: er muss den Upgrade-Zustand kennen, sonst
+	// meldet er ein geplantes Update als „unerwartet offline". Und er urteilt
+	// nach echter Minecraft-Erreichbarkeit, nicht nach Container-Status —
+	// sonst gibt es Entwarnungen mitten in einer Absturzschleife.
+	upgradeActive := func() bool { return upgrader != nil && upgrader.Active() }
+	plannedDown := func() bool { return sched.ExpectedDown() || upgradeActive() || (maint != nil && maint.Active()) }
+	if in, ok := docker.(interface {
+		InspectContainer(context.Context, string) (collector.ContainerDetail, error)
+	}); ok {
+		crashWatch.WithRestartCount(func(ctx context.Context) (int, error) {
+			det, err := in.InspectContainer(ctx, upgrade.ResolveID(coll, mcName))
+			return det.RestartCount, err
+		}, plannedDown)
+	}
+	go crashWatch.Run(ctx)
+	go watchers.NewDown(coll, mcName,
+		// Wartungsfenster zählt als geplanter Ausfall — sonst folgte auf
+		// „✅ Wartung beendet" noch ein „✅ Server läuft wieder" (WSL-Test)
+		plannedDown,
+		desiredStopped, bus).
+		WithMCOnline(func() bool { return mcState().Online }).
+		Run(ctx)
 
 	// Dropbox (Phase 4.8): Client liest die Credentials dynamisch aus dem
 	// Einstellungen-Store (.env als Fallback) — konfigurierbar im Dashboard.
 	dbx := dropbox.NewDynamic(cfg.DropboxConfig)
-	{
-		var clientDirs map[string]string
-		for _, p := range modProfiles {
-			if p.Name == "client" {
-				clientDirs = p.Dirs
-			}
-		}
-		if upgrader != nil && clientDirs != nil {
-			// nach dem Ein-Klick-MC-Update das frische Client-Paket
-			// automatisch verteilen — nur wenn Dropbox konfiguriert ist
-			upgrader.Publish = func(ctx context.Context) error {
-				if !dbx.Ready() {
-					return nil // Feature aus — kein Fehler, kein Hinweis nötig
-				}
-				return dropbox.Publish(ctx, dbx, clientDirs, bus, log)
-			}
+	var clientDirs map[string]string
+	for _, p := range modProfiles {
+		if p.Name == mods.ProfileClient {
+			clientDirs = p.Dirs
 		}
 	}
+	// Modrinth-Modpack (zweiter Versandweg): nur mit echtem Modrinth-Client,
+	// im Mock-Modus bleibt der Kanal aus
+	var mpChannel *modpack.Channel
+	if mrc, ok := modAPI.(*modrinth.Client); ok && clientDirs != nil {
+		mpChannel = modpack.New(mrc, cfg.ModrinthConfig, clientDirs, mcDataDir,
+			func() string { return mcState().Version }, kvGet, kvSet, log)
+	}
+	var bpRoot string
+	bpConfigs := func() []string { return nil }
+	bpContent := func() map[string]bool { return nil }
+	if bp != nil {
+		bpRoot = bp.Root()
+		bpConfigs = bp.WrittenConfigs
+		bpContent = bp.OverrideFiles
+		if mpChannel != nil {
+			mpChannel.SetBasepack(bpRoot, bp.WrittenConfigs, bp.IndexFiles)
+		}
+	}
+	channels := []packpub.Channel{dropbox.Channel{C: dbx, Dirs: clientDirs, Root: bpRoot, Extra: bpConfigs}}
+	if mpChannel != nil {
+		channels = append(channels, mpChannel)
+	}
+	// Versandwege für das Client-Paket (packpub): Dropbox und Modrinth; jeder
+	// Kanal merkt sich seinen zuletzt verschickten Stand selbst
+	packs := packpub.New(func() string { return packFingerprint(clientDirs, bpRoot, bpConfigs(), bpContent()) }, kvGet, kvSet, bus, log, channels...)
+	// runPack ist der einzige Weg zum Paket-Versand (Button, MC-Update,
+	// Mod-Neuigkeiten); announced = eine 📦-Meldung ging an die Spieler.
+	// „Paket veraltet" wird erst gelöscht, wenn JEDER eingerichtete Kanal den
+	// aktuellen Stand hat (packs.Current) — egal ob dieser Lauf alle Kanäle
+	// oder nur einen (Knopf ?channel=…) betraf. Ein gescheiterter Kanal wird
+	// beim nächsten Neustart nachgeholt, aktuelle überspringt packpub.
+	runPack := func(ctx context.Context, channels []string, force bool) (bool, error) {
+		if clientDirs == nil {
+			return false, fmt.Errorf("kein Client-Profil konfiguriert")
+		}
+		gen := news.BeginPublish()
+		announced, err := packs.RunReport(ctx, channels, force)
+		if err != nil {
+			return announced, err
+		}
+		if packs.Current() {
+			news.Published(gen)
+		}
+		return announced, nil
+	}
+	publishPack := func(ctx context.Context, channels []string, force bool) error {
+		_, err := runPack(ctx, channels, force)
+		return err
+	}
+	if upgrader != nil && clientDirs != nil {
+		// nach dem Ein-Klick-MC-Update das Client-Paket verteilen — nur wenn
+		// ein Versandweg eingerichtet ist. published=true nur, wenn wirklich
+		// eine 📦-Meldung kam (sonst kein „Download-Link findet ihr …").
+		upgrader.Publish = func(ctx context.Context) (bool, error) {
+			if !packs.Ready("") {
+				return false, nil // Feature aus — kein Fehler
+			}
+			return runPack(ctx, nil, false)
+		}
+	}
+	news.SetPublisher(func() bool { return packs.Ready("") }, func(ctx context.Context) error {
+		return publishPack(ctx, nil, false)
+	})
+	if clientDirs != nil {
+		news.SetFingerprint(func() string { return packFingerprint(clientDirs, bpRoot, bpConfigs(), bpContent()) })
+	}
+	news.SetBusy(upgradeActive)
+	go news.Run(ctx)
 
 	passwordHash := os.Getenv("MSM_ADMIN_PASSWORD_HASH")
 	if passwordHash == "" && !*mockMode {
@@ -389,9 +598,13 @@ func main() {
 			MaintActive: func() bool {
 				return maint != nil && maint.Active()
 			},
-			Dropbox:           dbx,
+			Packs:             packs,
+			Modpack:           mpChannel,
+			Basepack:          bp,
+			PublishPack:       publishPack,
 			Upgrader:          upgrader,
 			Settings:          cfg,
+			DiscordTest:       notifier.Test,
 			SelfUpdate:        updater,
 			MCContainer:       envOr("MSM_MC_CONTAINER", "mc-fabric"),
 			FallbackMCVersion: os.Getenv("MC_VERSION"),
@@ -447,4 +660,86 @@ func pruneLoop(ctx context.Context, s *storage.SQLite, log *slog.Logger) {
 			}
 		}
 	}
+}
+
+// hashCache keeps content hashes of pack files per path; ein Eintrag gilt,
+// solange Größe und Änderungszeit gleich sind (Fingerprint läuft oft).
+var hashCache = struct {
+	sync.Mutex
+	m map[string]cachedHash
+}{m: map[string]cachedHash{}}
+
+type cachedHash struct {
+	size  int64
+	mtime time.Time
+	hash  string
+}
+
+// contentHash returns a short sha256 of the file (gestreamt, gecacht).
+func contentHash(full string, info os.FileInfo) (string, bool) {
+	hashCache.Lock()
+	c, ok := hashCache.m[full]
+	hashCache.Unlock()
+	if ok && c.size == info.Size() && c.mtime.Equal(info.ModTime()) {
+		return c.hash, true
+	}
+	f, err := os.Open(full)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", false
+	}
+	sum := fmt.Sprintf("%x", h.Sum(nil)[:8])
+	hashCache.Lock()
+	hashCache.m[full] = cachedHash{size: info.Size(), mtime: info.ModTime(), hash: sum}
+	hashCache.Unlock()
+	return sum, true
+}
+
+// packFingerprint hashes the client pack listing (Kategorie, Name, Größe).
+// Reicht, um „inhaltlich wie zuletzt verschickt" zu erkennen, ohne alle
+// Dateien zu lesen. Dateien in content ("<Kategorie>/<Datei>", mitgelieferte
+// Basis-Pack-Dateien mit gleichbleibendem Namen) gehen mit Inhalts-Hash ein.
+func packFingerprint(dirs map[string]string, root string, extra []string, content map[string]bool) string {
+	var lines []string
+	for cat, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			line := fmt.Sprintf("%s/%s/%d", cat, e.Name(), info.Size())
+			if content[cat+"/"+e.Name()] && info.Mode().IsRegular() {
+				if h, ok := contentHash(filepath.Join(dir, e.Name()), info); ok {
+					line += "/" + h
+				}
+			}
+			lines = append(lines, line)
+		}
+	}
+	for _, rel := range extra {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		if info, err := os.Lstat(full); err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		b, err := os.ReadFile(full)
+		if err != nil {
+			continue
+		}
+		h := sha256.Sum256(b)
+		lines = append(lines, fmt.Sprintf("extra/%s/%d/%x", rel, len(b), h[:8]))
+	}
+	sort.Strings(lines)
+	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+	return hex.EncodeToString(sum[:])
 }

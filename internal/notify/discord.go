@@ -296,3 +296,28 @@ func clip(s string, n int) string {
 	}
 	return s[:cut] + "…"
 }
+
+// Test delivers ev synchronously to every configured webhook (ohne Filter
+// und ohne Warteschlange) und meldet Fehler je Webhook. Der Test-Knopf
+// meldete vorher immer „verschickt" — auch bei falscher URL oder nicht
+// erreichbarem Ziel (WSL-Test 2026-11-10).
+func (d *Discord) Test(ctx context.Context, ev events.Event) error {
+	hooks := d.hooks()
+	if len(hooks) == 0 {
+		return fmt.Errorf("kein Webhook konfiguriert")
+	}
+	var errs []string
+	for _, h := range hooks {
+		if err := d.send(ctx, h.URL, ev); err != nil {
+			name := h.Name
+			if name == "" {
+				name = "Webhook"
+			}
+			errs = append(errs, name+": "+err.Error())
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return nil
+}

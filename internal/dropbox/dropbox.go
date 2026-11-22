@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mrpack"
 )
 
 // Config holds the app credentials (alle aus der .env, nie im Repo).
@@ -204,12 +206,22 @@ func (c *Client) api(ctx context.Context, tok, endpoint, body string, out any) e
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("dropbox %s: %s: %s", endpoint, resp.Status, raw)
+		return apiError(endpoint, resp.Status, raw)
 	}
 	if out != nil {
 		return json.Unmarshal(raw, out)
 	}
 	return nil
+}
+
+// apiError formats a Dropbox error; missing_scope bekommt einen Klartext-
+// Hinweis — häufigster Einrichtungsfehler: Rechte erst NACH dem Autorisieren
+// gesetzt, der Token hat dann nur account_info.read.
+func apiError(endpoint, status string, raw []byte) error {
+	if bytes.Contains(raw, []byte("missing_scope")) {
+		return fmt.Errorf("Dropbox-Token fehlen Rechte (missing_scope) — in der Dropbox-App unter „Permissions“ files.content.write, files.content.read, sharing.write und sharing.read setzen, „Submit“ klicken, dann neu autorisieren und den neuen Refresh-Token eintragen (Anleitung im Einstellungen-Tab). Dropbox meldet: %s", raw)
+	}
+	return fmt.Errorf("dropbox %s: %s: %s", endpoint, status, raw)
 }
 
 // content posts to content.dropboxapi.com with the API arg header.
@@ -231,7 +243,7 @@ func (c *Client) content(ctx context.Context, tok, endpoint, apiArg string, body
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("dropbox %s: %s: %s", endpoint, resp.Status, raw)
+		return apiError(endpoint, resp.Status, raw)
 	}
 	if out != nil {
 		return json.Unmarshal(raw, out)
@@ -242,8 +254,49 @@ func (c *Client) content(ctx context.Context, tok, endpoint, apiArg string, body
 // ZipDirs streams the given category dirs as one ZIP into w. Pfade im
 // Archiv: <category>/<datei> — genau die Struktur, die Spieler in ihren
 // .minecraft-Ordner entpacken.
-func ZipDirs(w io.Writer, dirs map[string]string) (files int, err error) {
+func ZipDirs(w io.Writer, dirs map[string]string) (int, error) {
 	zw := zip.NewWriter(w)
+	n, err := zipDirsInto(zw, dirs)
+	if err != nil {
+		return n, err
+	}
+	return n, zw.Close()
+}
+
+// zipAll zips the category dirs plus extra files (Pfade relativ zu root,
+// z. B. freigegebene Configs des Basis-Modpacks).
+func zipAll(w io.Writer, dirs map[string]string, root string, extra []string) (int, error) {
+	zw := zip.NewWriter(w)
+	files, err := zipDirsInto(zw, dirs)
+	if err != nil {
+		return files, err
+	}
+	for _, rel := range extra {
+		if !mrpack.ValidPath(rel) {
+			continue
+		}
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		if info, err := os.Lstat(full); err != nil || !info.Mode().IsRegular() {
+			continue // weg, Verzeichnis oder Symlink — nicht fatal, nicht packen
+		}
+		f, err := os.Open(full)
+		if err != nil {
+			continue // Datei inzwischen weg — nicht fatal
+		}
+		dst, err := zw.Create(rel)
+		if err == nil {
+			_, err = io.Copy(dst, f)
+		}
+		f.Close()
+		if err != nil {
+			return files, err
+		}
+		files++
+	}
+	return files, zw.Close()
+}
+
+func zipDirsInto(zw *zip.Writer, dirs map[string]string) (files int, err error) {
 	// deterministische Reihenfolge
 	var cats []string
 	for c := range dirs {
@@ -282,7 +335,7 @@ func ZipDirs(w io.Writer, dirs map[string]string) (files int, err error) {
 			files++
 		}
 	}
-	return files, zw.Close()
+	return files, nil
 }
 
 func sortStrings(s []string) {

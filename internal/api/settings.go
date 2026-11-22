@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modpack"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/settings"
 )
 
@@ -28,33 +30,99 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		DropboxKey     *string `json:"dropboxKey"`
 		DropboxSecret  *string `json:"dropboxSecret"`
 		DropboxToken   *string `json:"dropboxToken"`
+
+		ModrinthProject      *string `json:"modrinthProject"`
+		ModrinthToken        *string `json:"modrinthToken"`
+		ModrinthStartVersion *string `json:"modrinthStartVersion"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384)).Decode(&req); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if req.DiscordWebhook != nil {
-		v := strings.TrimSpace(*req.DiscordWebhook)
-		if v != "" && !strings.HasPrefix(v, "https://discord.com/api/webhooks/") {
+	// Unveränderte Felder überspringen: das UI zeigt die wirksamen Werte
+	// (auch aus der .env) und schickte sie früher alle mit. Folge: ein
+	// .env-Webhook, der die Prüfung nicht besteht (alte discordapp.com-URL,
+	// Test-Attrappe), blockierte das Speichern der Dropbox-Daten komplett —
+	// und jeder Speichervorgang kopierte .env-Werte in die DB (überstimmte
+	// damit z. B. die MSM_DISCORD_WEBHOOKS-Aufteilung).
+	current := s.settings.Values()
+	changed := func(ptr *string, field string) (string, bool) {
+		if ptr == nil {
+			return "", false
+		}
+		v := strings.TrimSpace(*ptr)
+		return v, v != current[field]
+	}
+	// Phase 1: alle Werte prüfen und Schreibvorgänge sammeln — noch nichts
+	// speichern. Eine ungültige Eingabe lässt so nichts halb gespeichert zurück.
+	var writes []func()
+	if v, ok := changed(req.DiscordWebhook, "discordWebhook"); ok {
+		if v != "" && !validWebhook(v) {
 			httpError(w, http.StatusBadRequest, "Webhook-URL muss mit https://discord.com/api/webhooks/ beginnen")
 			return
 		}
-		s.settings.Set(settings.KeyDiscordWebhook, v)
-		s.audit(r.Context(), "settings.discord", "webhook geändert (Wert nicht protokolliert)")
+		writes = append(writes, func() {
+			s.settings.Set(settings.KeyDiscordWebhook, v)
+			s.audit(r.Context(), "settings.discord", "webhook geändert (Wert nicht protokolliert)")
+		})
 	}
-	set := func(ptr *string, key, name string) {
-		if ptr != nil {
-			s.settings.Set(key, *ptr)
-			s.audit(r.Context(), "settings.dropbox", name+" geändert (Wert nicht protokolliert)")
+	if v, ok := changed(req.ModrinthStartVersion, "modrinthStartVersion"); ok {
+		if v != "" && !modpack.ValidVersion(v) {
+			httpError(w, http.StatusBadRequest, "Startversion muss die Form 1.0.0 haben")
+			return
+		}
+		writes = append(writes, func() {
+			s.settings.Set(settings.KeyModrinthStart, v)
+			s.audit(r.Context(), "settings.modrinth", "startversion="+v)
+		})
+	}
+	collect := func(ptr *string, field, key, category, name string) {
+		if v, ok := changed(ptr, field); ok {
+			writes = append(writes, func() {
+				s.settings.Set(key, v)
+				s.audit(r.Context(), category, name+" geändert (Wert nicht protokolliert)")
+			})
 		}
 	}
-	set(req.DropboxKey, settings.KeyDropboxKey, "app-key")
-	set(req.DropboxSecret, settings.KeyDropboxSecret, "app-secret")
-	set(req.DropboxToken, settings.KeyDropboxToken, "refresh-token")
+	collect(req.DropboxKey, "dropboxKey", settings.KeyDropboxKey, "settings.dropbox", "app-key")
+	collect(req.DropboxSecret, "dropboxSecret", settings.KeyDropboxSecret, "settings.dropbox", "app-secret")
+	collect(req.DropboxToken, "dropboxToken", settings.KeyDropboxToken, "settings.dropbox", "refresh-token")
+	collect(req.ModrinthProject, "modrinthProject", settings.KeyModrinthProject, "settings.modrinth", "projekt")
+	collect(req.ModrinthToken, "modrinthToken", settings.KeyModrinthToken, "settings.modrinth", "token")
+
+	// Phase 2: erst nach vollständiger Prüfung persistieren.
+	for _, write := range writes {
+		write()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"view":   s.settings.View(),
 		"values": s.settings.Values(),
 	})
+}
+
+// handleModrinthTest prüft Token + Projekt („Verbindung prüfen").
+func (s *Server) handleModrinthTest(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	msg, err := s.modpack.Check(ctx)
+	if err != nil {
+		s.audit(r.Context(), "settings.modrinth.test", "fehlgeschlagen: "+err.Error())
+		httpError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	s.audit(r.Context(), "settings.modrinth.test", "ok")
+	writeJSON(w, http.StatusOK, map[string]string{"message": msg})
+}
+
+// validWebhook accepts Discord webhook URLs incl. the legacy discordapp.com
+// domain and the ptb/canary clients — Discord liefert alle weiterhin aus.
+func validWebhook(v string) bool {
+	for _, host := range []string{"discord.com", "discordapp.com", "ptb.discord.com", "canary.discord.com"} {
+		if strings.HasPrefix(v, "https://"+host+"/api/webhooks/") {
+			return true
+		}
+	}
+	return false
 }
 
 // handleSelfUpdateStatus returns current/latest MSM version; ?check=1
@@ -100,12 +168,26 @@ func (s *Server) handleTestDiscord(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusConflict, "kein Webhook konfiguriert")
 		return
 	}
-	s.bus.Publish(events.Event{
+	ev := events.Event{
 		Type:     events.TypeRoutineFailed, // "*"-Filter erreicht jeden Webhook; Fehltyp egal für den Test
 		Severity: events.SevInfo,
 		Title:    "🔔 Testnachricht vom MSM-Dashboard",
 		Message:  "Wenn du das liest, funktioniert die Discord-Anbindung. Gesendet: " + time.Now().Format("15:04:05"),
-	})
-	s.audit(r.Context(), "settings.discord.test", "testnachricht gesendet")
-	writeJSON(w, http.StatusOK, map[string]string{"message": "Testnachricht verschickt — im Discord-Channel nachsehen."})
+		Time:     time.Now(),
+	}
+	if s.discordTest == nil {
+		s.bus.Publish(ev)
+		s.audit(r.Context(), "settings.discord.test", "testnachricht gesendet")
+		writeJSON(w, http.StatusOK, map[string]string{"message": "Testnachricht verschickt — im Discord-Channel nachsehen."})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	defer cancel()
+	if err := s.discordTest(ctx, ev); err != nil {
+		s.audit(r.Context(), "settings.discord.test", "fehlgeschlagen: "+err.Error())
+		httpError(w, http.StatusBadGateway, "Discord hat die Testnachricht nicht angenommen — "+err.Error())
+		return
+	}
+	s.audit(r.Context(), "settings.discord.test", "testnachricht zugestellt")
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Testnachricht zugestellt — im Discord-Channel nachsehen."})
 }

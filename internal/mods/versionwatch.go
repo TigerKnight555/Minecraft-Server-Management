@@ -4,12 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 )
+
+// BasepackReady meldet, ob das Basis-Modpack für die neueste MC-Version existiert.
+// Error ist gesetzt, wenn Modrinth nicht geprüft werden konnte (dann Ready=false).
+type BasepackReady struct {
+	Name  string `json:"name"`
+	Ready bool   `json:"ready"`
+	Error string `json:"error,omitempty"`
+}
 
 // WatchStatus answers "lohnt sich der Umstieg schon?" (concept chapter on
 // Versions-Watch): newest MC release, Fabric loader support and per-mod
@@ -22,6 +31,12 @@ type WatchStatus struct {
 	LoaderReady    bool              `json:"loaderReady"`
 	Profiles       []ProfileReady    `json:"profiles"`
 	Stragglers     map[string]string `json:"stragglers"` // mod name -> profile
+	// RequiredJava ist die Java-Hauptversion, die die Zielversion verlangt
+	// (0 = unbekannt). MC 26.2 braucht Java 25 — mit einem Java-21-Image
+	// startet der Server gar nicht erst (Learning 15).
+	RequiredJava int `json:"requiredJava"`
+	// Basepack ist nil, wenn kein Basis-Modpack eingerichtet ist.
+	Basepack *BasepackReady `json:"basepack,omitempty"`
 }
 
 type ProfileReady struct {
@@ -41,13 +56,16 @@ type Watcher struct {
 
 	mu   sync.Mutex
 	last *WatchStatus
-	bus  *events.Bus // optional; nil bus is a safe no-op
+	bus  *events.Bus  // optional; nil bus is a safe no-op
+	log  *slog.Logger // optional; nil = still
 
 	// optionaler Ankündigungs-Speicher: ohne ihn vergisst der Watcher bei
 	// jedem MSM-Neustart (= jedem Nacht-Reboot), was er schon gemeldet hat,
 	// und wiederholt version.new/version.ready täglich (Learning 13)
 	annGet func(key string) string
 	annSet func(key, value string)
+
+	basepack func(ctx context.Context, mc string) (string, bool, bool, error)
 }
 
 func NewWatcher(api ModrinthAPI, mgr *Manager, loader string) *Watcher {
@@ -64,6 +82,18 @@ func (w *Watcher) SetEndpoints(manifest, fabric string) {
 	w.manifest, w.fabric = manifest, fabric
 }
 
+// WithLogger attaches a logger for best-effort diagnostics.
+func (w *Watcher) WithLogger(l *slog.Logger) *Watcher {
+	w.log = l
+	return w
+}
+
+// SetBasepack lets the watch report whether the base modpack exists for the
+// newest MC version (Kachel; Client-Paket ohne passendes Pack wäre kaputt).
+func (w *Watcher) SetBasepack(f func(ctx context.Context, mc string) (string, bool, bool, error)) {
+	w.basepack = f
+}
+
 // SetBus wires the event bus; version transitions are published there.
 func (w *Watcher) SetBus(b *events.Bus) { w.bus = b }
 
@@ -77,6 +107,13 @@ func (w *Watcher) Last() *WatchStatus {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.last
+}
+
+// logJavaLookupFailed hält den Fehlschlag fest, ohne den Check zu kippen.
+func (w *Watcher) logJavaLookupFailed(version string, err error) {
+	if w.log != nil {
+		w.log.Warn("java-anforderung nicht ermittelbar", "version", version, "err", err)
+	}
 }
 
 // SetLast stores a manually triggered check result.
@@ -203,6 +240,10 @@ func (w *Watcher) Check(ctx context.Context, currentVersion string) (*WatchStatu
 		Latest struct {
 			Release string `json:"release"`
 		} `json:"latest"`
+		Versions []struct {
+			ID  string `json:"id"`
+			URL string `json:"url"`
+		} `json:"versions"`
 	}
 	if err := w.getJSON(ctx, w.manifest, &manifest); err != nil {
 		return nil, fmt.Errorf("mojang manifest: %w", err)
@@ -211,6 +252,25 @@ func (w *Watcher) Check(ctx context.Context, currentVersion string) (*WatchStatu
 	status.NewerAvailable = manifest.Latest.Release != "" && manifest.Latest.Release != currentVersion
 	if !status.NewerAvailable {
 		return status, nil
+	}
+
+	// 1b. Java-Anforderung der Zielversion (best effort — ein Fehler hier
+	// darf den Check nicht kippen, RequiredJava bleibt dann 0 = unbekannt)
+	for _, v := range manifest.Versions {
+		if v.ID != status.LatestVersion || v.URL == "" {
+			continue
+		}
+		var meta struct {
+			JavaVersion struct {
+				MajorVersion int `json:"majorVersion"`
+			} `json:"javaVersion"`
+		}
+		if err := w.getJSON(ctx, v.URL, &meta); err != nil {
+			w.logJavaLookupFailed(status.LatestVersion, err)
+		} else {
+			status.RequiredJava = meta.JavaVersion.MajorVersion
+		}
+		break
 	}
 
 	// 2. fabric loader support
@@ -233,7 +293,16 @@ func (w *Watcher) Check(ctx context.Context, currentVersion string) (*WatchStatu
 		entries := w.mgr.Entries(p.Name)
 		pr := ProfileReady{Profile: p.Name}
 		for _, e := range entries {
-			if !e.Managed {
+			// nur Mods: Shader und Resourcepacks führt Modrinth unter
+			// anderen Loadern (iris/optifine bzw. minecraft) — mit dem
+			// Mod-Loader abgefragt wären sie ewige Nachzügler, und die
+			// Update-Meldung riete den Spielern, sie zu entfernen
+			if !e.Managed || e.Category != "mods" {
+				continue
+			}
+			// Basis-Pack-Dateien wechseln nur mit dem Pack (Bereitschaft in
+			// status.Basepack) — kein Zählen, kein Nachzügler-Hinweis
+			if w.mgr.pinned(p.Name, e.Filename) {
 				continue
 			}
 			pr.Total++
@@ -252,6 +321,13 @@ func (w *Watcher) Check(ctx context.Context, currentVersion string) (*WatchStatu
 			}
 		}
 		status.Profiles = append(status.Profiles, pr)
+	}
+	if w.basepack != nil && status.LatestVersion != "" {
+		if name, ready, set, err := w.basepack(ctx, status.LatestVersion); err != nil {
+			status.Basepack = &BasepackReady{Name: name, Error: err.Error()}
+		} else if set {
+			status.Basepack = &BasepackReady{Name: name, Ready: ready}
+		}
 	}
 	return status, nil
 }
