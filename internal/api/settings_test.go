@@ -64,3 +64,46 @@ func TestSaveSettingsWebhookValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestSaveModrinthSettings(t *testing.T) {
+	srv, db := settingsServer(t)
+	rec := putSettings(srv, `{"modrinthProject":" mein-pack ","modrinthToken":"mrp_x","modrinthStartVersion":"1.2.0"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if db[settings.KeyModrinthProject] != "mein-pack" || db[settings.KeyModrinthToken] != "mrp_x" || db[settings.KeyModrinthStart] != "1.2.0" {
+		t.Errorf("db = %v", db)
+	}
+	if rec := putSettings(srv, `{"modrinthStartVersion":"v1"}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("ungültige Startversion: status = %d", rec.Code)
+	}
+}
+
+// Ungültige Startversion darf nichts speichern — auch nicht den (geänderten)
+// Discord-Webhook oder das Modrinth-Projekt, die im selben Request stehen.
+func TestSaveSettingsRejectsWithoutPartialSave(t *testing.T) {
+	srv, db := settingsServer(t)
+	rec := putSettings(srv, `{"discordWebhook":"https://discord.com/api/webhooks/1/new","modrinthProject":"p","modrinthStartVersion":"v1"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body)
+	}
+	if db[settings.KeyDiscordWebhook] != "" {
+		t.Errorf("webhook trotz 400 gespeichert: %q", db[settings.KeyDiscordWebhook])
+	}
+	if db[settings.KeyModrinthProject] != "" {
+		t.Errorf("modrinth-projekt trotz 400 gespeichert: %q", db[settings.KeyModrinthProject])
+	}
+}
+
+func TestSaveModrinthStartVersionClears(t *testing.T) {
+	srv, db := settingsServer(t)
+	if rec := putSettings(srv, `{"modrinthStartVersion":"1.2.0"}`); rec.Code != http.StatusOK {
+		t.Fatalf("setzen: status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if rec := putSettings(srv, `{"modrinthStartVersion":""}`); rec.Code != http.StatusOK {
+		t.Fatalf("leeren: status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if v := db[settings.KeyModrinthStart]; v != "" {
+		t.Errorf("startversion nach Leeren = %q, want leer", v)
+	}
+}

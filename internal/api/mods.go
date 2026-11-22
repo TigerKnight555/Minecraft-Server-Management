@@ -7,10 +7,15 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/TigerKnight555/Minecraft-Server-Management/internal/dropbox"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/packpub"
 )
+
+// handleModpackStatus liefert den letzten Modrinth-Modpack-Stand fürs Dashboard.
+func (s *Server) handleModpackStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.modpack.Status())
+}
 
 // handleModsList returns the cached entries of a profile (runs a check first
 // if the cache is empty).
@@ -22,6 +27,9 @@ func (s *Server) handleModsList(w http.ResponseWriter, r *http.Request) {
 	entries := s.modmgr.Entries(profile)
 	if entries == nil {
 		entries = []mods.Entry{}
+	}
+	if profile == mods.ProfileClient && s.basepack != nil {
+		entries = s.decorateClient(entries)
 	}
 	writeJSON(w, http.StatusOK, entries)
 }
@@ -178,44 +186,51 @@ func (s *Server) handleModsRollback(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int{"restored": n})
 }
 
-// handlePublishClientPack zips the client profile, uploads it to Dropbox
-// and posts the shared link to Discord (Phase 4.8). Läuft asynchron — der
-// Upload kann bei großen Paketen Minuten dauern; Ergebnis kommt als Event.
+// handlePublishClientPack verschickt das Client-Paket sofort (Knopf im
+// Mods-Tab). ?channel=dropbox|modrinth wählt einen Kanal, ohne Parameter
+// alle eingerichteten. Der Knopf erzwingt den Versand auch bei
+// unverändertem Inhalt.
 func (s *Server) handlePublishClientPack(w http.ResponseWriter, r *http.Request) {
-	var clientDirs map[string]string
-	for _, p := range s.modmgr.Profiles() {
-		if p.Name == "client" {
-			clientDirs = p.Dirs
+	channel := r.URL.Query().Get("channel")
+	switch channel {
+	case "", "dropbox", "modrinth":
+	default:
+		httpError(w, http.StatusBadRequest, "unbekannter Versandweg "+channel)
+		return
+	}
+	if !s.packs.Ready(channel) {
+		msg := packpub.ErrNotReady.Error()
+		switch channel {
+		case "dropbox":
+			msg = "Dropbox nicht konfiguriert — App-Key/Secret/Refresh-Token im Einstellungen-Tab hinterlegen"
+		case "modrinth":
+			msg = "Modrinth-Modpack nicht eingerichtet — Projekt und Token im Einstellungen-Tab hinterlegen"
 		}
-	}
-	if clientDirs == nil {
-		httpError(w, http.StatusServiceUnavailable, "kein Client-Profil konfiguriert")
+		httpError(w, http.StatusConflict, msg)
 		return
 	}
-	if !s.dropbox.Ready() {
-		httpError(w, http.StatusConflict, "Dropbox nicht konfiguriert — App-Key/Secret/Refresh-Token im Einstellungen-Tab hinterlegen")
-		return
-	}
-	if dropbox.Publishing() {
+	if s.packs.Busy() {
 		httpError(w, http.StatusConflict, "das Client-Paket wird gerade schon verschickt — die Meldung kommt gleich in Discord")
 		return
 	}
-	s.audit(r.Context(), "mods.publish", "client-pack upload gestartet")
+	var names []string
+	label := "alle"
+	if channel != "" {
+		names = []string{channel}
+		label = channel
+	}
+	s.audit(r.Context(), "mods.publish", "client-pack versand gestartet ("+label+")")
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 		defer cancel()
-		publish := func(ctx context.Context) error { return dropbox.Publish(ctx, s.dropbox, clientDirs, s.bus, s.log) }
-		if s.publishPack != nil {
-			publish = s.publishPack
-		}
-		if err := publish(ctx); err != nil {
+		if err := s.publishPack(ctx, names, true); err != nil {
 			s.audit(ctx, "mods.publish.failed", err.Error())
 		} else {
-			s.audit(ctx, "mods.publish.ok", "client-pack veröffentlicht")
+			s.audit(ctx, "mods.publish.ok", "client-pack veröffentlicht ("+label+")")
 		}
 	}()
 	writeJSON(w, http.StatusAccepted, map[string]string{
-		"message": "Upload gestartet — das Ergebnis kommt als Discord-Meldung (und ins Audit-Log).",
+		"message": "Versand gestartet — das Ergebnis kommt als Discord-Meldung (und ins Audit-Log).",
 	})
 }
 

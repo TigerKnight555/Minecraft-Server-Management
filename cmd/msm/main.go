@@ -33,6 +33,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -51,6 +52,7 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/api"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/auth"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/backup"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/basepack"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/collector"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/dockerclient"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/dropbox"
@@ -63,10 +65,12 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mcstatus"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mock"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modnews"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modpack"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/modrinth"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mods"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/netcheck"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/notify"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/packpub"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/scheduler"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/selfupdate"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/settings"
@@ -124,6 +128,8 @@ func main() {
 		admin       api.AdminStore
 		modAPI      mods.ModrinthAPI
 		modProfiles []mods.Profile
+		// Wurzel des Client-Pakets; leer im Mock-Modus
+		clientPackRoot string
 	)
 
 	if *mockMode {
@@ -166,13 +172,13 @@ func main() {
 
 		modAPI = modrinth.New()
 		serverMods := envOr("MSM_SERVER_MODS_DIR", "/mc/mods")
-		clientPack := envOr("MSM_CLIENT_PACK_DIR", "/mc/client-pack")
+		clientPackRoot = envOr("MSM_CLIENT_PACK_DIR", "/mc/client-pack")
 		modProfiles = []mods.Profile{
 			{Name: "server", Dirs: map[string]string{"mods": serverMods}},
 			{Name: "client", Dirs: map[string]string{
-				"mods":          filepath.Join(clientPack, "mods"),
-				"shaderpacks":   filepath.Join(clientPack, "shaderpacks"),
-				"resourcepacks": filepath.Join(clientPack, "resourcepacks"),
+				"mods":          filepath.Join(clientPackRoot, "mods"),
+				"shaderpacks":   filepath.Join(clientPackRoot, "shaderpacks"),
+				"resourcepacks": filepath.Join(clientPackRoot, "resourcepacks"),
 			}},
 		}
 	}
@@ -318,6 +324,15 @@ func main() {
 	// Änderungen und meldet sie nach dem nächsten Neustart in Discord
 	news := modnews.New(kvGet, kvSet, bus, func() bool { return mcState().Online }, log)
 	modmgr.SetChangeHook(news.OnApply)
+	// Basis-Modpack (nur mit echtem Modrinth-Client)
+	var bp *basepack.Service
+	if mrc, ok := modAPI.(*modrinth.Client); ok && clientPackRoot != "" {
+		bp = basepack.New(mrc, modmgr, clientPackRoot, kvGet, kvSet,
+			func(c []mods.Change) { news.OnApply(mods.ProfileClient, c) }, log)
+		modmgr.SetPinned(func(profile, filename string) bool {
+			return profile == mods.ProfileClient && bp.Pinned(filename)
+		})
+	}
 	news.SetPendingServer(func() map[string]bool {
 		out := map[string]bool{}
 		for _, e := range modmgr.Entries(mods.ProfileServer) {
@@ -333,6 +348,9 @@ func main() {
 		return out
 	})
 	watcher := mods.NewWatcher(modAPI, modmgr, loader)
+	if bp != nil {
+		watcher.SetBasepack(bp.Ready)
+	}
 	watcher.SetBus(bus)
 	if kvGet != nil {
 		watcher.SetAnnounceStore(kvGet, kvSet)
@@ -416,6 +434,13 @@ func main() {
 		// Welt nachweislich unangetastet ist (Learning 19)
 		upgrader.ModRollback = modmgr.RollbackLabel
 		upgrader.ModSeal = modmgr.SealLabel
+		if bp != nil {
+			upgrader.BasepackReady = bp.Ready
+			upgrader.BasepackSwitch = bp.SwitchMC
+			upgrader.Pinned = func(profile, filename string) bool {
+				return profile == mods.ProfileClient && bp.Pinned(filename)
+			}
+		}
 		// Routinen und Versionssprung schließen sich gegenseitig aus
 		upgrader.RoutineBusy = sched.Busy
 		sched.SetUpgradeCheck(upgrader.Active)
@@ -473,32 +498,71 @@ func main() {
 			clientDirs = p.Dirs
 		}
 	}
-	// publishPack ist der einzige Weg zum Paket-Versand (Button, MC-Update,
-	// Mod-Neuigkeiten) — jeder Erfolg löscht „Paket veraltet".
-	publishPack := func(ctx context.Context) error {
+	// Modrinth-Modpack (zweiter Versandweg): nur mit echtem Modrinth-Client,
+	// im Mock-Modus bleibt der Kanal aus
+	var mpChannel *modpack.Channel
+	if mrc, ok := modAPI.(*modrinth.Client); ok && clientDirs != nil {
+		mpChannel = modpack.New(mrc, cfg.ModrinthConfig, clientDirs, mcDataDir,
+			func() string { return mcState().Version }, kvGet, kvSet, log)
+	}
+	var bpRoot string
+	bpConfigs := func() []string { return nil }
+	bpContent := func() map[string]bool { return nil }
+	if bp != nil {
+		bpRoot = bp.Root()
+		bpConfigs = bp.WrittenConfigs
+		bpContent = bp.OverrideFiles
+		if mpChannel != nil {
+			mpChannel.SetBasepack(bpRoot, bp.WrittenConfigs, bp.IndexFiles)
+		}
+	}
+	channels := []packpub.Channel{dropbox.Channel{C: dbx, Dirs: clientDirs, Root: bpRoot, Extra: bpConfigs}}
+	if mpChannel != nil {
+		channels = append(channels, mpChannel)
+	}
+	// Versandwege für das Client-Paket (packpub): Dropbox und Modrinth; jeder
+	// Kanal merkt sich seinen zuletzt verschickten Stand selbst
+	packs := packpub.New(func() string { return packFingerprint(clientDirs, bpRoot, bpConfigs(), bpContent()) }, kvGet, kvSet, bus, log, channels...)
+	// runPack ist der einzige Weg zum Paket-Versand (Button, MC-Update,
+	// Mod-Neuigkeiten); announced = eine 📦-Meldung ging an die Spieler.
+	// „Paket veraltet" wird erst gelöscht, wenn JEDER eingerichtete Kanal den
+	// aktuellen Stand hat (packs.Current) — egal ob dieser Lauf alle Kanäle
+	// oder nur einen (Knopf ?channel=…) betraf. Ein gescheiterter Kanal wird
+	// beim nächsten Neustart nachgeholt, aktuelle überspringt packpub.
+	runPack := func(ctx context.Context, channels []string, force bool) (bool, error) {
 		if clientDirs == nil {
-			return fmt.Errorf("kein Client-Profil konfiguriert")
+			return false, fmt.Errorf("kein Client-Profil konfiguriert")
 		}
 		gen := news.BeginPublish()
-		if err := dropbox.Publish(ctx, dbx, clientDirs, bus, log); err != nil {
-			return err
+		announced, err := packs.RunReport(ctx, channels, force)
+		if err != nil {
+			return announced, err
 		}
-		news.Published(gen)
-		return nil
+		if packs.Current() {
+			news.Published(gen)
+		}
+		return announced, nil
+	}
+	publishPack := func(ctx context.Context, channels []string, force bool) error {
+		_, err := runPack(ctx, channels, force)
+		return err
 	}
 	if upgrader != nil && clientDirs != nil {
-		// nach dem Ein-Klick-MC-Update das frische Client-Paket
-		// automatisch verteilen — nur wenn Dropbox konfiguriert ist
+		// nach dem Ein-Klick-MC-Update das Client-Paket verteilen — nur wenn
+		// ein Versandweg eingerichtet ist. published=true nur, wenn wirklich
+		// eine 📦-Meldung kam (sonst kein „Download-Link findet ihr …").
 		upgrader.Publish = func(ctx context.Context) (bool, error) {
-			if !dbx.Ready() {
+			if !packs.Ready("") {
 				return false, nil // Feature aus — kein Fehler
 			}
-			return true, publishPack(ctx)
+			return runPack(ctx, nil, false)
 		}
 	}
-	news.SetPublisher(dbx.Ready, publishPack)
+	news.SetPublisher(func() bool { return packs.Ready("") }, func(ctx context.Context) error {
+		return publishPack(ctx, nil, false)
+	})
 	if clientDirs != nil {
-		news.SetFingerprint(func() string { return packFingerprint(clientDirs) })
+		news.SetFingerprint(func() string { return packFingerprint(clientDirs, bpRoot, bpConfigs(), bpContent()) })
 	}
 	news.SetBusy(upgradeActive)
 	go news.Run(ctx)
@@ -534,7 +598,9 @@ func main() {
 			MaintActive: func() bool {
 				return maint != nil && maint.Active()
 			},
-			Dropbox:           dbx,
+			Packs:             packs,
+			Modpack:           mpChannel,
+			Basepack:          bp,
 			PublishPack:       publishPack,
 			Upgrader:          upgrader,
 			Settings:          cfg,
@@ -596,10 +662,48 @@ func pruneLoop(ctx context.Context, s *storage.SQLite, log *slog.Logger) {
 	}
 }
 
+// hashCache keeps content hashes of pack files per path; ein Eintrag gilt,
+// solange Größe und Änderungszeit gleich sind (Fingerprint läuft oft).
+var hashCache = struct {
+	sync.Mutex
+	m map[string]cachedHash
+}{m: map[string]cachedHash{}}
+
+type cachedHash struct {
+	size  int64
+	mtime time.Time
+	hash  string
+}
+
+// contentHash returns a short sha256 of the file (gestreamt, gecacht).
+func contentHash(full string, info os.FileInfo) (string, bool) {
+	hashCache.Lock()
+	c, ok := hashCache.m[full]
+	hashCache.Unlock()
+	if ok && c.size == info.Size() && c.mtime.Equal(info.ModTime()) {
+		return c.hash, true
+	}
+	f, err := os.Open(full)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", false
+	}
+	sum := fmt.Sprintf("%x", h.Sum(nil)[:8])
+	hashCache.Lock()
+	hashCache.m[full] = cachedHash{size: info.Size(), mtime: info.ModTime(), hash: sum}
+	hashCache.Unlock()
+	return sum, true
+}
+
 // packFingerprint hashes the client pack listing (Kategorie, Name, Größe).
 // Reicht, um „inhaltlich wie zuletzt verschickt" zu erkennen, ohne alle
-// Dateien zu lesen.
-func packFingerprint(dirs map[string]string) string {
+// Dateien zu lesen. Dateien in content ("<Kategorie>/<Datei>", mitgelieferte
+// Basis-Pack-Dateien mit gleichbleibendem Namen) gehen mit Inhalts-Hash ein.
+func packFingerprint(dirs map[string]string, root string, extra []string, content map[string]bool) string {
 	var lines []string
 	for cat, dir := range dirs {
 		entries, err := os.ReadDir(dir)
@@ -614,8 +718,26 @@ func packFingerprint(dirs map[string]string) string {
 			if err != nil {
 				continue
 			}
-			lines = append(lines, fmt.Sprintf("%s/%s/%d", cat, e.Name(), info.Size()))
+			line := fmt.Sprintf("%s/%s/%d", cat, e.Name(), info.Size())
+			if content[cat+"/"+e.Name()] && info.Mode().IsRegular() {
+				if h, ok := contentHash(filepath.Join(dir, e.Name()), info); ok {
+					line += "/" + h
+				}
+			}
+			lines = append(lines, line)
 		}
+	}
+	for _, rel := range extra {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		if info, err := os.Lstat(full); err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		b, err := os.ReadFile(full)
+		if err != nil {
+			continue
+		}
+		h := sha256.Sum256(b)
+		lines = append(lines, fmt.Sprintf("extra/%s/%d/%x", rel, len(b), h[:8]))
 	}
 	sort.Strings(lines)
 	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))

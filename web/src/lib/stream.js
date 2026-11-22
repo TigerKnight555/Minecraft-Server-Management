@@ -86,7 +86,7 @@ async function apiFetch(path, opts = {}) {
     throw new Error('nicht angemeldet')
   }
   const data = await resp.json().catch(() => ({}))
-  if (!resp.ok) throw new Error(data.error ?? resp.statusText)
+  if (!resp.ok) throw Object.assign(new Error(data.error ?? resp.statusText), { status: resp.status })
   return data
 }
 
@@ -157,7 +157,10 @@ export const endMaintenance = (id) => apiFetch(`/api/maintenance/${id}/end`, { m
 export const deleteMaintenance = (id) => apiFetch(`/api/maintenance/${id}`, { method: 'DELETE' })
 
 // --- Client-Pack-Veröffentlichung (Phase 4.8) ---
-export const publishClientPack = () => apiFetch('/api/mods/publish', { method: 'POST' })
+export const publishClientPack = (channel) =>
+  apiFetch(`/api/mods/publish${channel ? `?channel=${encodeURIComponent(channel)}` : ''}`, { method: 'POST' })
+export const modpackStatus = () => apiFetch('/api/modpack')
+export const testModrinth = () => apiFetch('/api/settings/modrinth/test', { method: 'POST' })
 
 // --- Mods hinzufügen/entfernen ---
 export const searchMods = (q) => apiFetch(`/api/mods/search?q=${encodeURIComponent(q)}`)
@@ -204,3 +207,13 @@ export const testDiscord = () => apiFetch('/api/settings/discord/test', { method
 export const selfUpdateStatus = (check) => apiFetch(`/api/system/update${check ? '?check=1' : ''}`)
 export const selfUpdateApply = (tag) =>
   apiFetch('/api/system/update', { method: 'POST', body: JSON.stringify({ tag }) })
+
+// --- Basis-Modpack ---
+export const basepackStatus = () => apiFetch('/api/basepack')
+export const basepackSearch = (q) => apiFetch(`/api/basepack/search?q=${encodeURIComponent(q)}`)
+export const basepackPreview = (project) => apiFetch(`/api/basepack/preview?project=${encodeURIComponent(project)}`)
+export const basepackApply = (projectId, versionId, configs) =>
+  apiFetch('/api/basepack/apply', { method: 'POST', body: JSON.stringify({ projectId, versionId, configs }) })
+export const basepackToggle = (key, on) => apiFetch('/api/basepack/toggle', { method: 'POST', body: JSON.stringify({ key, on }) })
+export const basepackConfigs = (configs) => apiFetch('/api/basepack/configs', { method: 'POST', body: JSON.stringify({ configs }) })
+export const basepackRemove = () => apiFetch('/api/basepack', { method: 'DELETE' })

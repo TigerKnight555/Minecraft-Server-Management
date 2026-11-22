@@ -12,6 +12,14 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 )
 
+// BasepackReady meldet, ob das Basis-Modpack für die neueste MC-Version existiert.
+// Error ist gesetzt, wenn Modrinth nicht geprüft werden konnte (dann Ready=false).
+type BasepackReady struct {
+	Name  string `json:"name"`
+	Ready bool   `json:"ready"`
+	Error string `json:"error,omitempty"`
+}
+
 // WatchStatus answers "lohnt sich der Umstieg schon?" (concept chapter on
 // Versions-Watch): newest MC release, Fabric loader support and per-mod
 // Modrinth readiness for both profiles.
@@ -27,6 +35,8 @@ type WatchStatus struct {
 	// (0 = unbekannt). MC 26.2 braucht Java 25 — mit einem Java-21-Image
 	// startet der Server gar nicht erst (Learning 15).
 	RequiredJava int `json:"requiredJava"`
+	// Basepack ist nil, wenn kein Basis-Modpack eingerichtet ist.
+	Basepack *BasepackReady `json:"basepack,omitempty"`
 }
 
 type ProfileReady struct {
@@ -54,6 +64,8 @@ type Watcher struct {
 	// und wiederholt version.new/version.ready täglich (Learning 13)
 	annGet func(key string) string
 	annSet func(key, value string)
+
+	basepack func(ctx context.Context, mc string) (string, bool, bool, error)
 }
 
 func NewWatcher(api ModrinthAPI, mgr *Manager, loader string) *Watcher {
@@ -74,6 +86,12 @@ func (w *Watcher) SetEndpoints(manifest, fabric string) {
 func (w *Watcher) WithLogger(l *slog.Logger) *Watcher {
 	w.log = l
 	return w
+}
+
+// SetBasepack lets the watch report whether the base modpack exists for the
+// newest MC version (Kachel; Client-Paket ohne passendes Pack wäre kaputt).
+func (w *Watcher) SetBasepack(f func(ctx context.Context, mc string) (string, bool, bool, error)) {
+	w.basepack = f
 }
 
 // SetBus wires the event bus; version transitions are published there.
@@ -282,6 +300,11 @@ func (w *Watcher) Check(ctx context.Context, currentVersion string) (*WatchStatu
 			if !e.Managed || e.Category != "mods" {
 				continue
 			}
+			// Basis-Pack-Dateien wechseln nur mit dem Pack (Bereitschaft in
+			// status.Basepack) — kein Zählen, kein Nachzügler-Hinweis
+			if w.mgr.pinned(p.Name, e.Filename) {
+				continue
+			}
 			pr.Total++
 			ok, err := w.api.ProjectSupports(ctx, e.ProjectID, w.loader, status.LatestVersion)
 			if err != nil {
@@ -298,6 +321,13 @@ func (w *Watcher) Check(ctx context.Context, currentVersion string) (*WatchStatu
 			}
 		}
 		status.Profiles = append(status.Profiles, pr)
+	}
+	if w.basepack != nil && status.LatestVersion != "" {
+		if name, ready, set, err := w.basepack(ctx, status.LatestVersion); err != nil {
+			status.Basepack = &BasepackReady{Name: name, Error: err.Error()}
+		} else if set {
+			status.Basepack = &BasepackReady{Name: name, Ready: ready}
+		}
 	}
 	return status, nil
 }

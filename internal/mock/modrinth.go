@@ -54,6 +54,7 @@ func (m *Modrinth) LatestVersions(_ context.Context, sha512s []string, _, _ stri
 				URL: "mock://" + filename, Filename: filename, Primary: true,
 				Hashes: struct {
 					SHA512 string `json:"sha512"`
+						SHA1   string `json:"sha1"`
 				}{SHA512: hex.EncodeToString(sum[:])},
 			}},
 		}

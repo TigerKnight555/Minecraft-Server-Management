@@ -79,6 +79,12 @@ type Entry struct {
 	// Pending: was vorgemerkt ist — "add" (neu), "remove" (wird entfernt),
 	// "update" (gestagtes Update); leer = nichts vorgemerkt
 	Pending string `json:"pending,omitempty"`
+	// Source: "basepack" für Dateien aus dem Basis-Modpack (setzt die API)
+	Source string `json:"source,omitempty"`
+	// Disabled: abgeschaltete Basis-Pack-Mod (liegt nicht im Paket)
+	Disabled bool `json:"disabled,omitempty"`
+	// PackKey: Schlüssel der Pack-Datei für /api/basepack/toggle (setzt die API)
+	PackKey string `json:"packKey,omitempty"`
 }
 
 // Manager coordinates scans, update checks, staging and rollback.
@@ -96,6 +102,8 @@ type Manager struct {
 	// onChange meldet angewendete Änderungen (Discord-Neuigkeiten, Paket
 	// veraltet); nil = aus
 	onChange func(profile string, changes []Change)
+	// pinnedFn: Basis-Pack-Dateien (keine Einzel-Updates); nil = keine
+	pinnedFn func(profile, filename string) bool
 }
 
 func NewManager(api ModrinthAPI, loader string, profiles []Profile) *Manager {
@@ -280,7 +288,7 @@ func (m *Manager) CheckUpdates(ctx context.Context, profileName, mcVersion strin
 			}
 			e.Version = cur.VersionNumber
 		}
-		if up, ok := latest[e.SHA512]; ok && e.Managed {
+		if up, ok := latest[e.SHA512]; ok && e.Managed && !m.pinned(profileName, e.Filename) {
 			if f, ok := up.PrimaryFile(); ok && f.Hashes.SHA512 != e.SHA512 {
 				e.UpdateVersion = up.VersionNumber
 				e.UpdateFilename = f.Filename
@@ -775,6 +783,11 @@ func (m *Manager) Rollback(profileName string) (int, error) {
 	for _, liveDir := range p.Dirs {
 		if v, err := os.ReadFile(filepath.Join(liveDir, ".backup", label, sealFile)); err == nil {
 			return 0, fmt.Errorf("der letzte Mod-Satz gehört zum Minecraft-Update auf %s — ein Rollback dahinter würde Mods der alten Version einsetzen und der Server startet nicht. Zurück auf die alte Version nur über ein Backup", strings.TrimSpace(string(v)))
+		}
+	}
+	for _, liveDir := range p.Dirs {
+		if v, err := os.ReadFile(filepath.Join(liveDir, ".backup", label, basepackFile)); err == nil {
+			return 0, fmt.Errorf("der letzte Satz gehört zum Basis-Modpack (%s) — Änderungen am Basis-Pack bitte im Bereich „Basis-Modpack“ vornehmen (andere Version übernehmen oder Mod wieder anschalten)", strings.TrimSpace(string(v)))
 		}
 	}
 	return m.RollbackLabel(profileName, label)

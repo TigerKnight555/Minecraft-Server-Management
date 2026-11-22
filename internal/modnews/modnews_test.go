@@ -304,3 +304,37 @@ func TestServerRemovalOfClientRequiredSaysNothingToDo(t *testing.T) {
 		t.Errorf("Meldung = %q", ev.Message)
 	}
 }
+
+func TestPackChangeIsOneLine(t *testing.T) {
+	a, _, ch, _, _ := setup(t, true)
+	a.OnApply(mods.ProfileClient, []mods.Change{{Action: "pack", Profile: mods.ProfileClient, Name: "Fabulously Optimized 6.4.0 → 6.5.0 (3 neu, 1 entfernt, 12 aktualisiert)"}})
+	a.AfterRestart(context.Background())
+	ev, ok := next(t, ch)
+	if !ok || !strings.Contains(ev.Message, "**Basis-Modpack:**") || !strings.Contains(ev.Message, "• Fabulously Optimized 6.4.0 → 6.5.0") {
+		t.Fatalf("event = %+v", ev)
+	}
+	if ev.Title != "🧩 Mod-Paket aktualisiert" {
+		t.Errorf("Titel = %q", ev.Title)
+	}
+}
+
+// WSL-Live-Test 2026-11-22: Pack-Update + abgeschaltete Pack-Mod lief als
+// „Aus dem Mod-Paket entfernt", und „Basis-Modpack" stand doppelt da.
+func TestPackLineTitleAndNoDoublePrefix(t *testing.T) {
+	a, _, ch, _, _ := setup(t, true)
+	a.OnApply(mods.ProfileClient, []mods.Change{
+		{Action: "pack", Profile: mods.ProfileClient, Name: "Basis-Modpack Fabulously Optimized 6.4.0 übernommen (40 Mods)"},
+		{Action: "remove", Profile: mods.ProfileClient, Name: "BetterGrassify", Filename: "bg.jar", ProjectID: "p-bg"},
+	})
+	a.AfterRestart(context.Background())
+	ev, ok := next(t, ch)
+	if !ok {
+		t.Fatal("keine Meldung")
+	}
+	if ev.Title != "🧩 Mod-Paket aktualisiert" {
+		t.Errorf("Titel = %q", ev.Title)
+	}
+	if strings.Contains(ev.Message, "• Basis-Modpack ") || !strings.Contains(ev.Message, "• Fabulously Optimized 6.4.0 übernommen (40 Mods)") {
+		t.Errorf("Meldung = %q", ev.Message)
+	}
+}

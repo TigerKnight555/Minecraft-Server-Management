@@ -1,18 +1,33 @@
 <script>
   import { onMount } from 'svelte'
   import AddMod from './AddMod.svelte'
+  import BasePack from './BasePack.svelte'
   import {
     listMods, checkMods, stageMods, applyMods, rollbackMods,
-    versionWatch, versionWatchCheck, publishClientPack,
-    removeInfo, removeMod, discardMod,
+    versionWatch, versionWatchCheck, publishClientPack, modpackStatus,
+    removeInfo, removeMod, discardMod, basepackToggle,
   } from './stream.js'
 
-  async function doPublish() {
-    if (!confirm('Client-Paket als ZIP zu Dropbox hochladen und den Link in Discord posten?\nVorher einmal Mod-Lizenzen geprüft?')) return
+  let modpack = $state(null)
+  async function loadModpack() {
     try {
-      const res = await publishClientPack()
+      modpack = await modpackStatus()
+    } catch {
+      modpack = null // Feature aus (Route fehlt) oder nicht erreichbar
+    }
+  }
+  onMount(loadModpack)
+
+  async function doPublish(channel) {
+    const text = channel === 'modrinth'
+      ? 'Client-Paket jetzt als neue Version des Modrinth-Modpacks hochladen?'
+      : 'Client-Paket als ZIP zu Dropbox hochladen und den Link in Discord posten?\nVorher einmal Mod-Lizenzen geprüft?'
+    if (!confirm(text)) return
+    try {
+      const res = await publishClientPack(channel)
       info = res.message
       error = ''
+      if (channel === 'modrinth') setTimeout(loadModpack, 15000)
     } catch (err) {
       error = err.message
     }
@@ -25,7 +40,7 @@
   let error = $state('')
   let info = $state('')
 
-  let updatable = $derived(entries.filter((e) => e.updateVersion && !e.pending))
+  let updatable = $derived(entries.filter((e) => e.updateVersion && !e.pending && e.source !== 'basepack'))
   let stagedCount = $derived(entries.filter((e) => e.pending).length)
 
   async function load() {
@@ -109,6 +124,14 @@
     }, () => (profile === 'server' ? 'Entfernen vorgemerkt' : 'Entfernt') + (also.length ? ' (auch im anderen Profil)' : ''))
   }
 
+  let basePack = $state(null)
+  const doTogglePack = (e) => run(async () => {
+    await basepackToggle(e.packKey, !!e.disabled)
+    basePack?.reload() // Zähler „abgeschaltet“ im Basis-Pack-Bereich aktualisieren
+  },
+    () => (e.disabled ? `${e.name || e.filename} angeschaltet` : `${e.name || e.filename} abgeschaltet`)
+      + ' — wird beim nächsten Neustart an die Spieler verteilt')
+
   const doDiscard = (e) => run(() => discardMod(profile, e.filename), () => `Vormerkung für ${e.name || e.filename} verworfen`)
 </script>
 
@@ -133,6 +156,14 @@
       {:else}
         <div class="watch-line ok-text">Aktuell — {watch.currentVersion} ist die neueste Release.</div>
       {/if}
+      {#if watch.newerAvailable && watch.basepack}
+        <div class="dim-sm">
+          Basis-Modpack {watch.basepack.name}:
+          {#if watch.basepack.error}konnte nicht geprüft werden
+          {:else if watch.basepack.ready}bereit für {watch.latestVersion}
+          {:else}noch nicht für {watch.latestVersion}{/if}
+        </div>
+      {/if}
       <div class="dim-sm">Geprüft: {new Date(watch.checked).toLocaleString('de-DE')}</div>
     </div>
   {:else}
@@ -142,6 +173,8 @@
 </div>
 
 <AddMod onchange={load} />
+
+{#if profile === 'client'}<BasePack bind:this={basePack} onchange={load} />{/if}
 
 <div class="panel wide">
   <h2>
@@ -165,9 +198,25 @@
     </button>
     <button class="btn danger" onclick={doRollback} disabled={busy}>Rollback</button>
     {#if profile === 'client'}
-      <button class="btn" onclick={doPublish} disabled={busy}>Client-Paket veröffentlichen (Dropbox)</button>
+      <button class="btn" onclick={() => doPublish('dropbox')} disabled={busy}>Client-Paket veröffentlichen (Dropbox)</button>
+      {#if modpack?.ready}
+        <button class="btn" onclick={() => doPublish('modrinth')} disabled={busy}>Modpack veröffentlichen (Modrinth)</button>
+      {/if}
     {/if}
   </div>
+
+  {#if profile === 'client' && modpack?.ready}
+    <div class="dim-sm">
+      Modrinth-Modpack: {modpack.version ? `zuletzt ${modpack.version} (MC ${modpack.mc} · Fabric ${modpack.loader})` : 'noch nicht veröffentlicht'}
+      {#if modpack.projectUrl} · <a href={modpack.projectUrl} target="_blank" rel="noreferrer">Projektseite</a>{/if}
+    </div>
+    {#if modpack.omitted?.length}
+      <div class="warn-msg">⚠️ Nicht im Modpack (nicht auf Modrinth): {modpack.omitted.join(', ')}</div>
+    {/if}
+    {#if modpack.lastError}
+      <div class="err-msg">Letzter Modpack-Versand fehlgeschlagen: {modpack.lastError}</div>
+    {/if}
+  {/if}
 
   {#if entries.length === 0}
     <div class="empty">Keine Daten — „Updates prüfen" ausführen.</div>
@@ -177,13 +226,15 @@
         <tr><th>Datei</th><th>Mod</th><th>Version</th><th>Update</th><th></th></tr>
       </thead>
       <tbody>
-        {#each entries as e (e.category + '/' + e.filename)}
-          <tr class={e.managed ? '' : 'unmanaged'}>
+        {#each entries as e (e.packKey ? 'bp:' + e.packKey + (e.disabled ? ':off' : '') : e.category + '/' + e.filename)}
+          <tr class={e.disabled || !e.managed ? 'unmanaged' : ''}>
             <td class="mono">{e.filename}<span class="dim-sm"> {e.category !== 'mods' ? '· ' + e.category : ''}</span></td>
-            <td>{e.name || '—'}</td>
+            <td>{e.name || '—'}{#if e.source === 'basepack'} <span class="badge staged">Basis-Pack</span>{/if}</td>
             <td class="mono">{e.version || '?'}</td>
             <td>
-              {#if e.pending === 'add'}
+              {#if e.disabled}
+                <span class="badge unmanaged">aus</span>
+              {:else if e.pending === 'add'}
                 <span class="badge staged">neu · vorgemerkt</span>
               {:else if e.pending === 'remove'}
                 <span class="badge remove">wird entfernt</span>
@@ -198,7 +249,10 @@
               {/if}
             </td>
             <td class="row-actions">
-              {#if e.pending}
+              {#if e.source === 'basepack'}
+                <button class="btn sm" role="switch" aria-checked={!e.disabled} aria-label="{e.name || e.filename} im Client-Paket"
+                  onclick={() => doTogglePack(e)} disabled={busy || !e.packKey}>{e.disabled ? 'Anschalten' : 'Abschalten'}</button>
+              {:else if e.pending}
                 <button class="btn sm" onclick={() => doDiscard(e)} disabled={busy}>Verwerfen</button>
               {:else}
                 {#if e.updateVersion}
@@ -249,6 +303,7 @@
   .badge.remove { background: #3a1c1c; color: var(--err); }
   .row-actions { white-space: nowrap; }
   .row-actions .btn { margin-right: 0.3rem; }
+  .warn-msg { color: var(--warn); font-size: 0.85rem; margin: 0.3rem 0; }
   .err-msg { color: var(--err); font-size: 0.85rem; margin-bottom: 0.6rem; }
   .info-msg { color: var(--accent); font-size: 0.85rem; margin-bottom: 0.6rem; }
 </style>

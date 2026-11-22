@@ -71,9 +71,11 @@ type Orchestrator struct {
 	OnlineTimeout time.Duration // Welt-Upgrade beim ersten Start kann dauern
 	PollStep      time.Duration
 
-	// Publish veröffentlicht das Client-Paket (Dropbox + Discord-Link) —
-	// optional; läuft automatisch nach erfolgreichem Client-Mod-Update.
-	// published=false: Veröffentlichung ist nicht eingerichtet (kein Fehler)
+	// Publish veröffentlicht das Client-Paket (Dropbox, Modrinth) —
+	// optional; läuft nach jedem erfolgreichen Sprung (außer bei
+	// gescheitertem Client-Weg). published=true nur, wenn eine
+	// „📦 Neues Mod-Paket"-Meldung an die Spieler ging; false ohne
+	// eingerichteten Versandweg oder wenn kein Kanal etwas verschickt hat.
 	Publish func(ctx context.Context) (published bool, err error)
 
 	// JavaProbe meldet die Java-Hauptversion des laufenden Container-Images
@@ -119,6 +121,14 @@ type Orchestrator struct {
 	// ein Versionssprung mitten in einer Backup-/Neustart-Kette würde sich
 	// mit ihr um den Server streiten.
 	RoutineBusy func() string
+	// BasepackReady: gibt es das Basis-Modpack für die Zielversion?
+	// set=false = kein Basis-Pack eingerichtet; err = Modrinth nicht erreichbar.
+	BasepackReady func(ctx context.Context, mc string) (name string, ready, set bool, err error)
+	// BasepackSwitch stellt das Basis-Modpack nach dem Sprung um.
+	BasepackSwitch func(ctx context.Context, mc string) error
+	// Pinned: Basis-Pack-Datei? Solche Mods sind nie Nachzügler (wechseln
+	// mit dem Pack); nil = keine.
+	Pinned func(profile, filename string) bool
 
 	// OnSuccess läuft nach einem erfolgreichen Sprung (z. B. Versions-Watch
 	// und Mod-Inventar sofort neu prüfen — sonst zeigt die Kachel bis zum
@@ -174,48 +184,39 @@ func (o *Orchestrator) setStatus(s string) {
 	}
 }
 
-// Start validates the request and launches the chain in the background.
-func (o *Orchestrator) Start(version string) error {
-	o.mu.Lock()
+// checkLocked führt die billigen Vorab-Prüfungen aus. o.mu muss gehalten sein.
+func (o *Orchestrator) checkLocked(version string) error {
 	if o.running {
-		o.mu.Unlock()
 		return fmt.Errorf("es läuft bereits ein Upgrade (%s)", o.status)
 	}
 	if o.RoutineBusy != nil {
 		if busy := o.RoutineBusy(); busy != "" {
-			o.mu.Unlock()
 			return fmt.Errorf("gerade läuft „%s“ — das Update danach starten", busy)
 		}
 	}
 	if o.PendingChanges != nil && o.PendingChanges() {
-		o.mu.Unlock()
 		return fmt.Errorf("im Mods-Tab sind Änderungen vorgemerkt — erst anwenden oder verwerfen, dann das Update starten")
 	}
 	// veralteter Versions-Watch darf keinen zweiten Sprung auf dieselbe
 	// Version auslösen (Backup + Neustart + Neubau für nichts)
 	if o.mcStatus != nil {
 		if cur := o.mcStatus().Version; cur != "" && cur == version {
-			o.mu.Unlock()
 			return fmt.Errorf("der Server läuft bereits auf Minecraft %s — Versions-Check mit „Jetzt prüfen“ aktualisieren", version)
 		}
 	}
 	// Guards VOR dem Start — der Button darf nur Grünes auslösen
 	last := o.watch.Last()
 	if last == nil || !last.NewerAvailable {
-		o.mu.Unlock()
 		return fmt.Errorf("kein Update verfügbar (Versions-Watch lief noch nicht?)")
 	}
 	if version != last.LatestVersion {
-		o.mu.Unlock()
 		return fmt.Errorf("angefragte Version %q ist nicht die geprüfte Zielversion %q", version, last.LatestVersion)
 	}
 	if !last.LoaderReady {
-		o.mu.Unlock()
 		return fmt.Errorf("fabric-Loader unterstützt %s noch nicht", version)
 	}
 	for _, p := range last.Profiles {
 		if p.Profile == "server" && (p.Total == 0 || p.Ready < p.Total) {
-			o.mu.Unlock()
 			return fmt.Errorf("noch nicht alle Server-Mods für %s bereit (%d/%d)", version, p.Ready, p.Total)
 		}
 	}
@@ -228,10 +229,41 @@ func (o *Orchestrator) Start(version string) error {
 		// ändert daran nichts, der Container muss neu erstellt werden. Mit
 		// unveränderter MC_VERSION ist das gefahrlos (gleiche Version).
 		if have := o.JavaProbe(context.Background()); have > 0 && have < last.RequiredJava {
-			o.mu.Unlock()
 			return fmt.Errorf("minecraft %s benötigt Java %d, der Server-Container läuft mit Java %d — auf dem Host im Repo-Verzeichnis: docker compose pull mc-fabric && docker compose up -d mc-fabric (bleibt auf der aktuellen Version), danach Update erneut starten",
 				version, last.RequiredJava, have)
 		}
+	}
+	return nil
+}
+
+// Start validates the request and launches the chain in the background.
+func (o *Orchestrator) Start(version string) error {
+	o.mu.Lock()
+	err := o.checkLocked(version)
+	o.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	// Basis-Pack-Abfrage = Netzwerk (bis 30 s): ohne o.mu, sonst hängen
+	// Status()/Active() und damit die UI-Abfrage so lange.
+	if o.BasepackReady != nil {
+		bctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		name, ready, set, berr := o.BasepackReady(bctx, version)
+		cancel()
+		switch {
+		case berr != nil:
+			name = nameOr(name, "Basis-Modpack")
+			return fmt.Errorf("Basis-Modpack „%s“ konnte bei Modrinth nicht geprüft werden (%v) — später noch einmal versuchen", name, berr)
+		case set && !ready:
+			return fmt.Errorf("Basis-Modpack „%s“ gibt es noch nicht für Minecraft %s — abwarten oder Basis-Pack im Mods-Tab entfernen", name, version)
+		}
+	}
+	// Zustand kann sich währenddessen geändert haben (zweiter Start, neue
+	// Vormerkung) — unter Sperre erneut prüfen, dann erst running setzen.
+	o.mu.Lock()
+	if err := o.checkLocked(version); err != nil {
+		o.mu.Unlock()
+		return err
 	}
 	o.running = true
 	o.mu.Unlock()
@@ -256,6 +288,13 @@ func (o *Orchestrator) Start(version string) error {
 		}
 	}()
 	return nil
+}
+
+func nameOr(name, fallback string) string {
+	if name == "" {
+		return fallback
+	}
+	return name
 }
 
 func (o *Orchestrator) run(ctx context.Context, version string) error {
@@ -421,6 +460,14 @@ func (o *Orchestrator) explain(ctx context.Context) string {
 
 // finish updates the client profile and celebrates.
 func (o *Orchestrator) finish(ctx context.Context, version string) error {
+	var clientErrPre error
+	if o.BasepackSwitch != nil {
+		o.setStatus("stelle Basis-Modpack um")
+		if err := o.BasepackSwitch(ctx, version); err != nil {
+			o.log.Error("basis-modpack umstellen", "err", err)
+			clientErrPre = fmt.Errorf("basis-modpack umstellen: %w", err)
+		}
+	}
 	o.setStatus("aktualisiere Client-Mods")
 	clientNote := ""
 	clientUpdated := false
@@ -434,6 +481,10 @@ func (o *Orchestrator) finish(ctx context.Context, version string) error {
 	entries, err := o.modmgr.CheckUpdates(ctx, "client", version)
 	for _, e := range entries {
 		if e.UpdateVersion != "" && e.Name != "" {
+			nowAvailable[e.Name] = true
+		}
+		// Basis-Pack-Mods: Bereitschaft prüft der Pack-Check, nie entfernen lassen
+		if e.Name != "" && o.Pinned != nil && o.Pinned("client", e.Filename) {
 			nowAvailable[e.Name] = true
 		}
 	}
@@ -454,18 +505,20 @@ func (o *Orchestrator) finish(ctx context.Context, version string) error {
 			clientErr = fmt.Errorf("client-mods einspielen: %w", err)
 		}
 	}
+	clientErr = errors.Join(clientErrPre, clientErr)
 	var fields []events.Field
 	if clientErr != nil {
 		o.log.Error("client-mods nach upgrade", "err", clientErr)
 		clientNote = " (Client-Mods konnten nicht automatisch aktualisiert werden — der Admin kümmert sich.)"
 		fields = append(fields, events.Field{Name: "Details", Value: clientErr.Error()})
 	}
-	// neues Paket automatisch verteilen, damit niemand mit alten Mods
-	// gegen den neuen Server anrennt
-	// Den Link nur ankündigen, wenn er wirklich gepostet wurde — ohne
-	// eingerichtete Veröffentlichung kam bisher „Download-Link folgt" und
-	// dann nichts (in der Testumgebung beobachtet).
-	if clientUpdated {
+	// Paket nach jedem erfolgreichen Sprung verteilen — auch ohne geänderte
+	// Client-Mods: das Modrinth-Modpack muss die neue MC-/Loader-Version
+	// deklarieren. Kanäle mit passendem Stand (Dropbox bei gleichem Inhalt)
+	// überspringt packpub. Bei gescheitertem Client-Weg nicht: das Paket
+	// hätte alte Mods unter neuer MC-Version, der Admin ist informiert.
+	// Den Link nur ankündigen, wenn die 📦-Meldung wirklich kam.
+	if clientErr == nil {
 		published := false
 		var pubErr error
 		if o.Publish != nil {
@@ -477,7 +530,7 @@ func (o *Orchestrator) finish(ctx context.Context, version string) error {
 			clientNote += " (Paket-Upload fehlgeschlagen — im Mods-Tab manuell veröffentlichen.)"
 		case published:
 			clientNote += " Den Download-Link findet ihr in der Meldung „📦 Neues Mod-Paket“."
-		default:
+		case clientUpdated:
 			clientNote += " Das neue Mod-Paket verteilt der Admin."
 		}
 	}

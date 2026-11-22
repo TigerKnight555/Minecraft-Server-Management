@@ -29,6 +29,7 @@ type fakes struct {
 	// clientCheckErr lässt den Client-Mod-Check nach dem Sprung scheitern
 	clientCheckErr error
 	emptyClient    bool         // Client-Paket ohne Dateien
+	clientEntries  []mods.Entry // ersetzt den Standard-Client-Eintrag
 	version        atomic.Value // string: was der "Server" nach dem Upgrade meldet
 	online         atomic.Bool
 	staleStatus    atomic.Bool // mcStatus liefert einen veralteten Snapshot
@@ -86,6 +87,9 @@ func (f *fakes) CheckUpdates(_ context.Context, profile, v string) ([]mods.Entry
 		}
 		if f.emptyClient {
 			return nil, nil
+		}
+		if f.clientEntries != nil {
+			return f.clientEntries, nil
 		}
 		return []mods.Entry{{Profile: "client", Filename: "sodium.jar"}}, nil
 	}
@@ -489,4 +493,209 @@ func TestUpgradeSealsModSets(t *testing.T) {
 	if len(sealed) == 0 || sealed[0] != "server@26.2" {
 		t.Errorf("sealed = %v, want server@26.2 (und ggf. client)", sealed)
 	}
+}
+
+// Auch ohne geänderte Client-Mods wird das Paket verteilt: das Modpack muss
+// die neue MC-Version deklarieren. Der Spieler-Hinweis folgt dem, was
+// Publish meldet (📦-Meldung ja/nein).
+func TestPublishWithoutClientChange(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		announced bool
+		want, not string
+	}{
+		{"Modpack verschickt", true, "Meldung „📦 Neues Mod-Paket“", "verteilt der Admin"},
+		{"nichts verschickt", false, "", "Mod-Paket"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakes{backupOK: true, applyErr: mods.ErrNothingStaged}
+			f.online.Store(true)
+			bus := events.New()
+			ch, cancel := bus.Subscribe(16)
+			defer cancel()
+			o := newOrch(f, bus)
+			calls := 0
+			o.Publish = func(context.Context) (bool, error) { calls++; return tc.announced, nil }
+			if err := o.Start("26.2"); err != nil {
+				t.Fatal(err)
+			}
+			waitDone(t, o)
+			if calls != 1 {
+				t.Fatalf("Publish %d× aufgerufen, want 1 (auch ohne Client-Änderung)", calls)
+			}
+			for _, ev := range drain(ch) {
+				if ev.Type != events.TypeUpgradeOK {
+					continue
+				}
+				if !strings.Contains(ev.Message, tc.want) || strings.Contains(ev.Message, tc.not) {
+					t.Errorf("Meldung = %q (want %q, nicht %q)", ev.Message, tc.want, tc.not)
+				}
+				return
+			}
+			t.Fatal("keine Erfolgsmeldung")
+		})
+	}
+}
+
+func TestUpgradeRefusesWithoutBasepackVersion(t *testing.T) {
+	f := &fakes{backupOK: true}
+	f.online.Store(true)
+	o := newOrch(f, events.New())
+	o.BasepackReady = func(context.Context, string) (string, bool, bool, error) {
+		return "Fabulously Optimized", false, true, nil
+	}
+	err := o.Start("26.2")
+	if err == nil || !strings.Contains(err.Error(), "Fabulously Optimized") || !strings.Contains(err.Error(), "26.2") {
+		t.Fatalf("err = %v", err)
+	}
+	if steps := f.list(); len(steps) != 0 {
+		t.Errorf("Kette lief trotzdem an: %v", steps)
+	}
+}
+
+func TestUpgradeSwitchesBasepack(t *testing.T) {
+	f := &fakes{backupOK: true}
+	f.online.Store(true)
+	o := newOrch(f, events.New())
+	var switched atomic.Value
+	o.BasepackReady = func(context.Context, string) (string, bool, bool, error) { return "FO", true, true, nil }
+	o.BasepackSwitch = func(_ context.Context, mc string) error { switched.Store(mc); return nil }
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+	if v, _ := switched.Load().(string); v != "26.2" {
+		t.Errorf("Pack-Umstellung auf %q, want 26.2", v)
+	}
+}
+
+func TestUpgradeRefusesWhenBasepackCheckFails(t *testing.T) {
+	f := &fakes{backupOK: true}
+	f.online.Store(true)
+	o := newOrch(f, events.New())
+	o.BasepackReady = func(context.Context, string) (string, bool, bool, error) {
+		return "Fabulously Optimized", false, true, errors.New("modrinth 503")
+	}
+	err := o.Start("26.2")
+	if err == nil || !strings.Contains(err.Error(), "Fabulously Optimized") || !strings.Contains(err.Error(), "nicht geprüft") ||
+		strings.Contains(err.Error(), "gibt es noch nicht") {
+		t.Fatalf("err = %v, want Modrinth-Prüffehler (nicht 'gibt es noch nicht')", err)
+	}
+	if steps := f.list(); len(steps) != 0 {
+		t.Errorf("Kette lief trotzdem an: %v", steps)
+	}
+}
+
+func TestStartBasepackLookupDoesNotHoldLock(t *testing.T) {
+	f := &fakes{backupOK: true}
+	f.online.Store(true)
+	o := newOrch(f, events.New())
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	o.BasepackReady = func(context.Context, string) (string, bool, bool, error) {
+		close(entered)
+		<-release
+		return "FO", true, true, nil
+	}
+	errc := make(chan error, 1)
+	go func() { errc <- o.Start("26.2") }()
+	<-entered
+	got := make(chan struct{})
+	go func() { o.Status(); o.Active(); close(got) }()
+	select {
+	case <-got:
+	case <-time.After(time.Second):
+		t.Fatal("Status()/Active() blockiert während der Basis-Pack-Abfrage")
+	}
+	close(release)
+	if err := <-errc; err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+}
+
+func TestStartSameVersionBeatsBasepackLookup(t *testing.T) {
+	f := &fakes{backupOK: true}
+	f.online.Store(true)
+	f.version.Store("26.2")
+	o := newOrch(f, events.New())
+	called := false
+	o.BasepackReady = func(context.Context, string) (string, bool, bool, error) {
+		called = true
+		return "FO", false, true, nil
+	}
+	err := o.Start("26.2")
+	if err == nil || !strings.Contains(err.Error(), "läuft bereits auf") {
+		t.Fatalf("err = %v, want 'läuft bereits auf'", err)
+	}
+	if called {
+		t.Error("Basis-Pack-Abfrage lief trotz billiger Vorab-Absage")
+	}
+}
+
+func TestBasepackSwitchErrorKeepsSuccessAndDetails(t *testing.T) {
+	f := &fakes{backupOK: true, clientCheckErr: errors.New("modrinth 503")}
+	f.online.Store(true)
+	bus := events.New()
+	ch, cancel := bus.Subscribe(32)
+	defer cancel()
+	o := newOrch(f, bus)
+	o.BasepackSwitch = func(context.Context, string) error { return errors.New("pack kaputt") }
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+	for _, ev := range drain(ch) {
+		if ev.Type != events.TypeUpgradeOK {
+			continue
+		}
+		var details string
+		for _, fl := range ev.Fields {
+			details += fl.Value
+		}
+		if !strings.Contains(details, "pack kaputt") || !strings.Contains(details, "modrinth 503") {
+			t.Errorf("Details = %q, want beide Fehler", details)
+		}
+		return
+	}
+	t.Fatal("keine Erfolgsmeldung")
+}
+
+// Basis-Pack-Mods wechseln mit dem Pack — die Spieler sollen sie nie
+// „vorerst aus dem mods-Ordner nehmen“, auch wenn ein älterer Watch-Lauf
+// sie noch als Nachzügler führt (Final-Review Important 4).
+func TestPinnedPackModIsNoStraggler(t *testing.T) {
+	f := &fakes{backupOK: true, clientEntries: []mods.Entry{
+		{Profile: "client", Filename: "sodium-fo.jar", Name: "Sodium"},
+		{Profile: "client", Filename: "xaero.jar", Name: "Xaero's Minimap"},
+	}}
+	f.online.Store(true)
+	bus := events.New()
+	ch, cancel := bus.Subscribe(16)
+	defer cancel()
+	st := readyFor("26.2", 0)
+	st.Stragglers = map[string]string{"Xaero's Minimap": "client", "Sodium": "client"}
+	o := New(f, f, f, f.mcStatus, f, f, fixedReadiness{st}, f, bus, "mc-fabric", testLogger())
+	o.WarnMinutes = 1
+	o.WarnStep = time.Millisecond
+	o.PollStep = time.Millisecond
+	o.Pinned = func(profile, filename string) bool { return profile == "client" && filename == "sodium-fo.jar" }
+
+	if err := o.Start("26.2"); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, o)
+	for _, ev := range drain(ch) {
+		if ev.Type != events.TypeUpgradeOK {
+			continue
+		}
+		if !strings.Contains(ev.Message, "Xaero's Minimap") {
+			t.Errorf("eigener Nachzügler nicht genannt: %q", ev.Message)
+		}
+		if strings.Contains(ev.Message, "Sodium") {
+			t.Errorf("Basis-Pack-Mod als Nachzügler genannt: %q", ev.Message)
+		}
+		return
+	}
+	t.Fatal("keine Erfolgsmeldung")
 }

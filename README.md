@@ -56,7 +56,22 @@ Homeserver getestet.
   Wechsel selbst ist ein Klick und läuft automatisch ab, inklusive
   vorherigem Backup als Rollback-Punkt
 - **Client-Paket:** die Mods für die Spieler werden als ZIP zu Dropbox
-  hochgeladen, der Download-Link wird in den Discord-Channel gepostet
+  hochgeladen, der Download-Link wird in den Discord-Channel gepostet.
+  Zusätzlich kann das Client-Paket als Version eines eigenen
+  Modrinth-Modpacks veröffentlicht werden (Upload nach Neustarts und
+  Minecraft-Updates automatisch, sonst per Knopf im Mods-Tab); die Spieler
+  klicken dann in der Modrinth App nur noch auf „Update". Einrichtung
+  (Projekt anlegen, Token eintragen) laut Anleitung im Einstellungen-Tab;
+  die Versionsnummer folgt MAJOR = Minecraft-Version, MINOR = Loader oder
+  Inhalt, PATCH = Mod-Updates. Das Client-Paket kann außerdem auf einem
+  Basis-Modpack von Modrinth (z. B. Fabulously Optimized) aufbauen: der
+  Admin ergänzt eigene Mods, schaltet Pack-Mods ab und wählt, welche
+  Pack-Configs mitgeliefert werden; das Pack wird per Klick als Ganzes
+  aktualisiert und beim Minecraft-Update automatisch auf die passende
+  Version umgestellt (ohne passende Version wird das Update verweigert).
+  Pack-Configs werden ohne Sicherung geschrieben; Quelle ist immer das
+  Pack (Neu laden/Übernehmen stellt sie wieder her). Rollback setzt
+  Configs nicht zurück
 - **Discord-Benachrichtigungen:** verständlich formuliert; Erfolgsmeldungen
   nur, wenn Spieler betroffen waren, Fehler und Ausfälle immer
 - **Wartungsfenster:** geplante Auszeiten mit Ankündigung (1 h und 5 min
