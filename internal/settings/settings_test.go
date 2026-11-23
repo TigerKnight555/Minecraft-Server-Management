@@ -87,3 +87,19 @@ func TestModrinthConfigDBBeforeEnv(t *testing.T) {
 		t.Errorf("values = %v", vals)
 	}
 }
+
+// Ohne Eintrag (bestehende Installationen) bleibt der Autoversand an.
+func TestAutoPublishDefaultsOn(t *testing.T) {
+	s, kv := newMem()
+	if !s.AutoPublish() || !s.View().AutoPublish {
+		t.Fatal("Standard muss an sein")
+	}
+	s.SetAutoPublish(false)
+	if kv[KeyAutoPublish] != "off" || s.AutoPublish() || s.View().AutoPublish {
+		t.Fatalf("aus: kv=%q", kv[KeyAutoPublish])
+	}
+	s.SetAutoPublish(true)
+	if kv[KeyAutoPublish] != "" || !s.AutoPublish() {
+		t.Fatalf("wieder an: kv=%q", kv[KeyAutoPublish])
+	}
+}

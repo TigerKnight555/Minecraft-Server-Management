@@ -552,13 +552,15 @@ func main() {
 		// ein Versandweg eingerichtet ist. published=true nur, wenn wirklich
 		// eine 📦-Meldung kam (sonst kein „Download-Link findet ihr …").
 		upgrader.Publish = func(ctx context.Context) (bool, error) {
-			if !packs.Ready("") {
-				return false, nil // Feature aus — kein Fehler
+			if !packs.Ready("") || !cfg.AutoPublish() {
+				return false, nil // Feature aus oder Autoversand abgeschaltet — kein Fehler
 			}
 			return runPack(ctx, nil, false)
 		}
 	}
-	news.SetPublisher(func() bool { return packs.Ready("") }, func(ctx context.Context) error {
+	// Autoversand nach Neustart nur, wenn nicht abgeschaltet (Einstellungen);
+	// sonst „Das neue Mod-Paket verteilt der Admin." und der Knopf im Mods-Tab
+	news.SetPublisher(func() bool { return packs.Ready("") && cfg.AutoPublish() }, func(ctx context.Context) error {
 		return publishPack(ctx, nil, false)
 	})
 	if clientDirs != nil {
