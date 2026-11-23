@@ -107,3 +107,21 @@ func TestSaveModrinthStartVersionClears(t *testing.T) {
 		t.Errorf("startversion nach Leeren = %q, want leer", v)
 	}
 }
+
+func TestSaveAutoPublish(t *testing.T) {
+	srv, db := settingsServer(t)
+	rec := putSettings(srv, `{"autoPublish":false}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"autoPublish":false`) {
+		t.Fatalf("aus = %d %s", rec.Code, rec.Body)
+	}
+	if db[settings.KeyAutoPublish] != "off" {
+		t.Errorf("db = %q", db[settings.KeyAutoPublish])
+	}
+	// Feld fehlt = unverändert
+	if rec := putSettings(srv, `{}`); rec.Code != http.StatusOK || db[settings.KeyAutoPublish] != "off" {
+		t.Errorf("leerer Request änderte den Wert: %q", db[settings.KeyAutoPublish])
+	}
+	if rec := putSettings(srv, `{"autoPublish":true}`); rec.Code != http.StatusOK || db[settings.KeyAutoPublish] != "" {
+		t.Errorf("an = %d, db = %q", rec.Code, db[settings.KeyAutoPublish])
+	}
+}

@@ -25,6 +25,10 @@ const (
 	KeyModrinthProject = "settings.modrinth.project"
 	KeyModrinthToken   = "settings.modrinth.token"
 	KeyModrinthStart   = "settings.modrinth.startversion"
+
+	// KeyAutoPublish: "off" = Client-Paket nicht automatisch verschicken
+	// (nach Neustart / MC-Update); leer = an (Standard)
+	KeyAutoPublish = "settings.clientpack.autopublish"
 )
 
 // Store liest/schreibt Einstellungen. get/set kommen aus SQLite (app_state);
@@ -96,6 +100,19 @@ func (s *Store) ModrinthConfig() modpack.Config {
 	}
 }
 
+// AutoPublish reports whether the client pack is sent automatically after a
+// restart or MC update. Standard an; der Knopf „Veröffentlichen" wirkt immer.
+func (s *Store) AutoPublish() bool { return s.value(KeyAutoPublish) != "off" }
+
+// SetAutoPublish stores the switch (an = Eintrag löschen → Standard).
+func (s *Store) SetAutoPublish(on bool) {
+	v := "off"
+	if on {
+		v = ""
+	}
+	s.Set(KeyAutoPublish, v)
+}
+
 // Masked liefert die UI-Ansicht: nie den Wert, nur gesetzt/Quelle/Endung.
 type Masked struct {
 	Set    bool   `json:"set"`
@@ -124,6 +141,8 @@ type View struct {
 	ModrinthProject Masked `json:"modrinthProject"`
 	ModrinthToken   Masked `json:"modrinthToken"`
 	ModrinthReady   bool   `json:"modrinthReady"`
+
+	AutoPublish bool `json:"autoPublish"`
 }
 
 func (s *Store) View() View {
@@ -137,6 +156,8 @@ func (s *Store) View() View {
 		ModrinthProject: s.masked(KeyModrinthProject, "MSM_MODRINTH_PROJECT"),
 		ModrinthToken:   s.masked(KeyModrinthToken, "MSM_MODRINTH_TOKEN"),
 		ModrinthReady:   s.ModrinthConfig().Complete(),
+
+		AutoPublish: s.AutoPublish(),
 	}
 }
 

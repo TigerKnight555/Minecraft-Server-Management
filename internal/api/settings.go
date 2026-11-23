@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -34,6 +35,8 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		ModrinthProject      *string `json:"modrinthProject"`
 		ModrinthToken        *string `json:"modrinthToken"`
 		ModrinthStartVersion *string `json:"modrinthStartVersion"`
+
+		AutoPublish *bool `json:"autoPublish"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384)).Decode(&req); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid json")
@@ -89,6 +92,13 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	collect(req.DropboxToken, "dropboxToken", settings.KeyDropboxToken, "settings.dropbox", "refresh-token")
 	collect(req.ModrinthProject, "modrinthProject", settings.KeyModrinthProject, "settings.modrinth", "projekt")
 	collect(req.ModrinthToken, "modrinthToken", settings.KeyModrinthToken, "settings.modrinth", "token")
+	if req.AutoPublish != nil && *req.AutoPublish != s.settings.AutoPublish() {
+		on := *req.AutoPublish
+		writes = append(writes, func() {
+			s.settings.SetAutoPublish(on)
+			s.audit(r.Context(), "settings.clientpack", fmt.Sprintf("autoversand=%v", on))
+		})
+	}
 
 	// Phase 2: erst nach vollständiger Prüfung persistieren.
 	for _, write := range writes {
