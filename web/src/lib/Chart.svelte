@@ -2,7 +2,7 @@
   import uPlot from 'uplot'
   import 'uplot/dist/uPlot.min.css'
   import { onMount } from 'svelte'
-  import { history } from './stream.js'
+  import { history, track } from './stream.js'
 
   // series: [{key, label, color}], unit: axis label
   let { series = [], unit = '', height = 180 } = $props()
@@ -10,26 +10,48 @@
   let el
   let plot = null
 
+  // typischer Abstand der Zeitachse (Median), daraus die Lückenschwelle:
+  // fehlen mehr als ~4 Messungen (Tab im Hintergrund, Standby, MSM aus),
+  // zeigt der Graph eine Lücke statt einer geraden Linie
+  function gapSeconds(t) {
+    if (t.length < 3) return Infinity
+    const d = []
+    for (let i = 1; i < t.length; i++) d.push(t[i] - t[i - 1])
+    d.sort((a, b) => a - b)
+    return Math.max(d[Math.floor(d.length / 2)] * 4, 20)
+  }
+
   function buildData(h) {
-    // align all series on the first series' time axis (they tick together)
+    // Zeitachse der ersten Serie; die übrigen messen im selben Takt, aber
+    // nicht in exakt derselben Sekunde → nächster Punkt innerhalb der Toleranz
     const first = h[series[0]?.key]
     if (!first || first.t.length === 0) return null
-    const data = [first.t]
-    for (const s of series) {
-      const buf = h[s.key]
-      data.push(buf ? alignTo(first.t, buf) : new Array(first.t.length).fill(null))
+    const gap = gapSeconds(first.t)
+    const tol = Math.min(gap / 4, 15)
+    const cols = series.map((s) => h[s.key])
+    const pos = cols.map(() => 0)
+    const data = [[], ...series.map(() => [])]
+    for (let i = 0; i < first.t.length; i++) {
+      const t = first.t[i]
+      if (i > 0 && t - first.t[i - 1] > gap) {
+        // Lückenmarke: eine leere Zeile direkt nach dem letzten Punkt
+        data[0].push(first.t[i - 1] + 1)
+        cols.forEach((_, k) => data[k + 1].push(null))
+      }
+      data[0].push(t)
+      cols.forEach((buf, k) => {
+        if (!buf) return data[k + 1].push(null)
+        let j = pos[k]
+        while (j + 1 < buf.t.length && Math.abs(buf.t[j + 1] - t) <= Math.abs(buf.t[j] - t)) j++
+        pos[k] = j
+        data[k + 1].push(Math.abs(buf.t[j] - t) <= tol ? buf.v[j] : null)
+      })
     }
     return data
   }
 
-  function alignTo(times, buf) {
-    if (buf.t.length === times.length) return buf.v
-    // simple nearest-fill for slightly out-of-sync series
-    const map = new Map(buf.t.map((t, i) => [t, buf.v[i]]))
-    return times.map((t) => map.get(t) ?? null)
-  }
-
   onMount(() => {
+    track(series.map((s) => s.key))
     const opts = {
       width: el.clientWidth,
       height,
@@ -53,7 +75,8 @@
           label: s.label,
           stroke: s.color,
           width: 1.5,
-          spanGaps: true,
+          // Lücken (Leerzeile aus buildData) bleiben sichtbar
+          spanGaps: false,
         })),
       ],
     }
