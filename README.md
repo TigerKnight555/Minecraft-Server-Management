@@ -72,6 +72,11 @@ Homeserver getestet.
   Pack-Configs werden ohne Sicherung geschrieben; Quelle ist immer das
   Pack (Neu laden/Übernehmen stellt sie wieder her). Rollback setzt
   Configs nicht zurück
+- **Autoversand abschaltbar:** im Einstellungen-Tab „Client-Paket
+  automatisch verschicken" (Standard an). Aus: MSM verschickt ein
+  geändertes Client-Paket weder nach Neustarts noch nach Minecraft-Updates;
+  die Mod-Neuigkeiten sagen „Das neue Mod-Paket verteilt der Admin", der
+  Versand läuft dann nur über „Veröffentlichen" im Mods-Tab
 - **Discord-Benachrichtigungen:** verständlich formuliert; Erfolgsmeldungen
   nur, wenn Spieler betroffen waren, Fehler und Ausfälle immer
 - **Wartungsfenster:** geplante Auszeiten mit Ankündigung (1 h und 5 min
