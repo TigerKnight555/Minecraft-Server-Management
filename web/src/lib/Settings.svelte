@@ -7,11 +7,11 @@
   let info = $state('')
   // Felder zeigen immer die aktuell wirksamen Werte (Nutzer-Entscheidung:
   // konfigurierte Werte sind sichtbar). Leeren + Speichern = löschen.
-  let fields = $state({ discordWebhook: '', dropboxKey: '', dropboxSecret: '', dropboxToken: '', modrinthProject: '', modrinthToken: '', modrinthStartVersion: '' })
+  let fields = $state({ discordWebhook: '', dropboxKey: '', dropboxSecret: '', dropboxToken: '', modrinthProject: '', modrinthToken: '', modrinthStartVersion: '', autoPublish: true })
 
   function apply(res) {
     view = res.view
-    fields = { ...fields, ...res.values }
+    fields = { ...fields, ...res.values, autoPublish: res.view.autoPublish !== false }
   }
 
   async function refresh() {
@@ -37,6 +37,7 @@
         modrinthProject: fields.modrinthProject.trim(),
         modrinthToken: fields.modrinthToken.trim(),
         modrinthStartVersion: fields.modrinthStartVersion.trim(),
+        autoPublish: fields.autoPublish,
       }))
       info = 'Gespeichert — wirkt sofort, kein Neustart nötig.'
     } catch (err) {
@@ -122,6 +123,16 @@ Das Dashboard ist während des Neubaus (~1-2 min) kurz nicht erreichbar. Der Min
         <button class="btn" onclick={doTest}>Testnachricht senden</button>
       {/if}
     </div>
+
+    <h3>Client-Paket-Versand</h3>
+    <label class="check">
+      <input type="checkbox" bind:checked={fields.autoPublish} />
+      Client-Paket automatisch verschicken (nach Neustart und MC-Update)
+    </label>
+    <p class="dim">
+      Aus: MSM verschickt ein geändertes Client-Paket nicht selbst — die Spieler lesen „Das neue Mod-Paket verteilt der Admin",
+      und du verschickst es mit „Veröffentlichen" im Mods-Tab, wenn es so weit ist.
+    </p>
 
     <h3>Dropbox (Client-Paket-Verteilung)</h3>
     <p class="dim">Status: <strong>{view.dropboxReady ? '✔ einsatzbereit' : 'unvollständig — Anleitung unten'}</strong></p>
@@ -220,6 +231,8 @@ Das Dashboard ist während des Neubaus (~1-2 min) kurz nicht erreichbar. Der Min
   }
   .btn.accent { background: var(--accent); color: #0f1419; font-weight: 600; }
   .err-msg { color: var(--err); font-size: 0.85rem; margin: 0.4rem 0; }
+  .check { display: flex; gap: 0.5rem; align-items: center; font-size: 0.85rem; }
+  .check input { padding: 0; }
   .ok-msg { color: var(--accent); font-size: 0.85rem; margin: 0.4rem 0; }
   .howto { margin-top: 1.2rem; font-size: 0.85rem; }
   .howto summary { cursor: pointer; color: var(--text); }
