@@ -48,7 +48,7 @@ type Tick struct {
 	ServerCPU   float64 // % eines Kerns
 	HasCPU      bool    // Thread-Messung in diesem Takt vorhanden
 	MSPT, TPS   float64
-	HasMSPT     bool    // NEUER MC-Messwert in diesem Takt
+	HasMSPT     bool // NEUER MC-Messwert in diesem Takt
 	Players     int
 	GCPauseMax  float64 // längste GC-Pause in diesem Takt, ms
 	HeapAfterGC uint64  // 0 = unbekannt
