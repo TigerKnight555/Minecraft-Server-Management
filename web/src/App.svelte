@@ -14,6 +14,7 @@
   import Audit from './lib/Audit.svelte'
   import Mods from './lib/Mods.svelte'
   import Settings from './lib/Settings.svelte'
+  import Perf from './lib/Perf.svelte'
 
   let authChecked = $state(false)
   let tab = $state('dashboard')
@@ -129,6 +130,7 @@
     <span class="sub">Minecraft Server Management</span>
     <nav class="tabs">
       <button class={tab === 'dashboard' ? 'active' : ''} onclick={() => (tab = 'dashboard')}>Dashboard</button>
+      <button class={tab === 'perf' ? 'active' : ''} onclick={() => (tab = 'perf')}>Leistung</button>
       <button class={tab === 'mods' ? 'active' : ''} onclick={() => (tab = 'mods')}>Mods</button>
       <button class={tab === 'routines' ? 'active' : ''} onclick={() => (tab = 'routines')}>Routinen</button>
       <button class={tab === 'audit' ? 'active' : ''} onclick={() => (tab = 'audit')}>Audit</button>
@@ -142,7 +144,9 @@
     {/if}
   </header>
 
-  {#if tab === 'routines'}
+  {#if tab === 'perf'}
+    <Perf />
+  {:else if tab === 'routines'}
     <div class="panels"><Routines /></div>
   {:else if tab === 'audit'}
     <div class="panels"><Audit /></div>
