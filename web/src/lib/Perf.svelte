@@ -31,7 +31,9 @@
   // „nicht eingeschaltet" (Datei fehlt) → Compose-Zeile zeigen, sonst nur Grund + Rechte-Hinweis
   let gcNotEnabled = $derived(($perf?.gcLog?.reason ?? '').includes("nicht eingeschaltet"))
   let bands = $derived(lagBands(lags, p?.openLag))
-  let maxGroupCpu = $derived(Math.max(1, ...(p?.groups ?? []).map((g) => g.cpu)))
+  // Balken-Maßstab: ein ganzer Kern (100 %) — sonst wirkt der stärkste Thread
+  // auch bei 1 % „voll". Gruppen über mehrere Kerne (z. B. Worker) strecken ihn.
+  let maxGroupCpu = $derived(Math.max(100, ...(p?.groups ?? []).map((g) => g.cpu)))
   // Zeitraum der Graphen; ein Wechsel bindet sie per {#key} neu ein
   let win = $derived(jump ? { hours: null, from: jump.from, to: jump.to } : { hours: range === 1 ? null : range, from: null, to: null })
   let chartKey = $derived(jump ? `lag-${jump.from}-${jump.to}` : `h-${range}`)
