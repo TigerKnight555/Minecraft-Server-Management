@@ -646,6 +646,7 @@ func main() {
 			Managed:           managed,
 			Bus:               bus,
 			Frontend:          frontend,
+			Perf:              perf,
 			Log:               log,
 		}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
