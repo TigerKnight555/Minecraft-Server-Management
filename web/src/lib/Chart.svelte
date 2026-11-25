@@ -2,7 +2,7 @@
   import uPlot from 'uplot'
   import 'uplot/dist/uPlot.min.css'
   import { onMount } from 'svelte'
-  import { history } from './stream.js'
+  import { history, track } from './stream.js'
 
   // series: [{key, label, color}], unit: axis label
   let { series = [], unit = '', height = 180 } = $props()
@@ -10,26 +10,55 @@
   let el
   let plot = null
 
+  // typischer Abstand einer Serie (Median), daraus die Lückenschwelle:
+  // fehlen mehr als ~4 Messungen (Tab im Hintergrund, Standby, MSM aus),
+  // zeigt der Graph eine Lücke statt einer geraden Linie
+  function gapSeconds(t) {
+    if (t.length < 3) return Infinity
+    const d = []
+    for (let i = 1; i < t.length; i++) d.push(t[i] - t[i - 1])
+    d.sort((a, b) => a - b)
+    // mindestens 90 s: der Verlauf aus der DB ist gröber (30–60 s) als live (5 s)
+    return Math.max(d[Math.floor(d.length / 2)] * 4, 90)
+  }
+
+  // Die Serien messen in unterschiedlichem Takt (Host, Container, Verlauf aus
+  // der DB gröber als live). Gemeinsame Zeitachse = alle Zeitpunkte aller
+  // Serien; jede Serie wird zwischen ihren eigenen Punkten linear ergänzt und
+  // nur bei echten Lücken unterbrochen (null + Marke direkt nach dem Punkt).
   function buildData(h) {
-    // align all series on the first series' time axis (they tick together)
-    const first = h[series[0]?.key]
-    if (!first || first.t.length === 0) return null
-    const data = [first.t]
-    for (const s of series) {
-      const buf = h[s.key]
-      data.push(buf ? alignTo(first.t, buf) : new Array(first.t.length).fill(null))
-    }
+    const bufs = series.map((s) => h[s.key]).map((b) => (b && b.t.length ? b : null))
+    if (!bufs[0]) return null
+    const gaps = bufs.map((b) => (b ? gapSeconds(b.t) : Infinity))
+    const axis = new Set()
+    bufs.forEach((b, k) => {
+      if (!b) return
+      b.t.forEach((t, i) => {
+        axis.add(t)
+        if (i > 0 && t - b.t[i - 1] > gaps[k]) axis.add(b.t[i - 1] + 1)
+      })
+    })
+    const xs = [...axis].sort((a, b) => a - b)
+    const data = [xs]
+    bufs.forEach((b, k) => {
+      const col = []
+      let j = 0
+      for (const x of xs) {
+        if (!b) { col.push(null); continue }
+        while (j + 1 < b.t.length && b.t[j + 1] <= x) j++
+        const t0 = b.t[j], v0 = b.v[j]
+        if (t0 === x) { col.push(v0); continue }
+        const t1 = b.t[j + 1], v1 = b.v[j + 1]
+        if (t0 > x || t1 === undefined || t1 - t0 > gaps[k] || v0 == null || v1 == null) { col.push(null); continue }
+        col.push(v0 + ((v1 - v0) * (x - t0)) / (t1 - t0))
+      }
+      data.push(col)
+    })
     return data
   }
 
-  function alignTo(times, buf) {
-    if (buf.t.length === times.length) return buf.v
-    // simple nearest-fill for slightly out-of-sync series
-    const map = new Map(buf.t.map((t, i) => [t, buf.v[i]]))
-    return times.map((t) => map.get(t) ?? null)
-  }
-
   onMount(() => {
+    track(series.map((s) => s.key))
     const opts = {
       width: el.clientWidth,
       height,
@@ -53,7 +82,8 @@
           label: s.label,
           stroke: s.color,
           width: 1.5,
-          spanGaps: true,
+          // Lücken (Leerzeile aus buildData) bleiben sichtbar
+          spanGaps: false,
         })),
       ],
     }

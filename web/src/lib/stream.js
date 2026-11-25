@@ -22,16 +22,65 @@ function pushPoint(key, time, value) {
   })
 }
 
+// Verlauf aus der Datenbank (/api/history) vorladen: die Graphen zeigen beim
+// Öffnen sofort die letzte Stunde statt leer zu starten. Speicherwerte liegen
+// dort in Bytes, live kommen sie als GiB.
+const tracked = new Set()
+const toChart = (key, v) => (key.endsWith('.mem') ? v / 1024 / 1024 / 1024 : v)
+
+async function preload(keys) {
+  await Promise.all(keys.map(async (key) => {
+    try {
+      const resp = await fetch(`/api/history?series=${encodeURIComponent(key)}&hours=1`)
+      if (!resp.ok) return
+      const rows = (await resp.json()) ?? []
+      const pts = rows.map((r) => [Math.floor(new Date(r.time).getTime() / 1000), toChart(key, r.value)])
+      history.update((h) => {
+        const cur = h[key] ?? { t: [], v: [] }
+        // zusammenführen, nach Zeit sortieren, gleiche Sekunde nur einmal
+        // (Live-Punkt gewinnt)
+        const byT = new Map(pts)
+        cur.t.forEach((t, i) => byT.set(t, cur.v[i]))
+        const t = [...byT.keys()].sort((a, b) => a - b).slice(-MAX_POINTS)
+        return { ...h, [key]: { t, v: t.map((x) => byT.get(x)) } }
+      })
+    } catch {
+      // ohne Verlauf zeigt der Graph eben nur die Live-Punkte
+    }
+  }))
+}
+
+// track registers chart series and loads their recent history.
+export function track(keys) {
+  if (tracked.size === 0 && typeof document !== 'undefined') {
+    // Tab war im Hintergrund (Browser drosseln den Stream): Lücke nachladen
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && tracked.size) preload([...tracked])
+    })
+  }
+  const fresh = keys.filter((k) => !tracked.has(k))
+  fresh.forEach((k) => tracked.add(k))
+  if (fresh.length) preload(fresh)
+}
+
 let es = null
 let retryMs = 1000
+let wasDown = false
 
 export function connect() {
   if (es) es.close()
   es = new EventSource('/api/stream/stats')
 
-  es.onopen = () => { connected.set(true); retryMs = 1000 }
+  es.onopen = () => {
+    connected.set(true)
+    retryMs = 1000
+    // nach einer Unterbrechung (Standby, Netz) die Lücke aus der DB füllen
+    if (wasDown && tracked.size) preload([...tracked])
+    wasDown = false
+  }
   es.onerror = () => {
     connected.set(false)
+    wasDown = true
     es.close()
     setTimeout(connect, retryMs)
     retryMs = Math.min(retryMs * 2, 30000)
