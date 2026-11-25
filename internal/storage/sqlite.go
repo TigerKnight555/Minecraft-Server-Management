@@ -66,6 +66,9 @@ CREATE TABLE IF NOT EXISTS samples_minute (
 	if err := s.migrateMaintenance(); err != nil {
 		return err
 	}
+	if err := s.migrateLags(); err != nil {
+		return err
+	}
 	return s.migrateRoutines()
 }
 
@@ -139,6 +142,10 @@ func (s *SQLite) Prune(ctx context.Context) error {
 	now := time.Now()
 	if _, err := s.db.ExecContext(ctx,
 		`DELETE FROM samples_raw WHERE ts < ?`, now.Add(-rawRetention).Unix()); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM lag_events WHERE end_ts < ?`, now.Add(-lagRetention).Unix()); err != nil {
 		return err
 	}
 	_, err := s.db.ExecContext(ctx,
