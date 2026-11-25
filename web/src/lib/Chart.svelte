@@ -28,11 +28,17 @@
   let plot = null
   let win = null // Zeitfenster im Abruf-Modus: x-Achse zeigt genau diesen Bereich
 
-  // Achsenbereich so wählen, dass die Grenzlinien immer sichtbar sind
+  // Achsenbereich so wählen, dass die Grenzlinien immer sichtbar sind.
+  // Ob die Achse einen eigenen Bereich bekommt, entscheidet sich beim
+  // Einbinden; die Grenzwerte selbst liest die Funktion bei jeder
+  // Skalierung frisch, spätere Änderungen wirken also.
   function scaleRange(axis) {
-    const limits = thresholds.filter((t) => (t.axis ?? 1) === axis).map((t) => t.value)
-    if (!limits.length) return null
-    return (u, min, max) => [Math.min(0, min ?? 0), Math.max(max ?? 0, ...limits) * 1.1]
+    const mine = (t) => (t.axis ?? 1) === axis
+    if (!thresholds.some(mine)) return null
+    return (u, min, max) => {
+      const limits = thresholds.filter(mine).map((t) => t.value)
+      return [Math.min(0, min ?? 0), Math.max(max ?? 0, ...limits) * 1.1]
+    }
   }
 
   function drawBands(u) {
@@ -146,10 +152,14 @@
     })
 
     let timer = null
+    let seq = 0 // nur die Antwort des jüngsten Abrufs gilt
     async function load() {
+      const my = ++seq
       const now = Math.floor(Date.now() / 1000)
-      win = from != null ? { from, to: to ?? now } : { from: now - hours * 3600, to: now }
-      source.set(await fetchRange(keys, win.from, win.to))
+      // mindestens 60 s Fenster, sonst lehnt /api/history ab (to <= from)
+      win = from != null ? { from, to: Math.max(to ?? now, from + 60) } : { from: now - hours * 3600, to: now }
+      const data = await fetchRange(keys, win.from, win.to)
+      if (my === seq) source.set(data)
     }
     if (fixed) {
       load()
@@ -174,7 +184,8 @@
   $effect(() => {
     bands
     thresholds
-    plot?.redraw(false)
+    // setData skaliert neu (Grenzlinien), zeichnet Bänder und Linien frisch
+    if (plot) plot.setData(plot.data, true)
   })
 </script>
 
