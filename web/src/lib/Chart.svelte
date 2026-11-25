@@ -2,80 +2,120 @@
   import uPlot from 'uplot'
   import 'uplot/dist/uPlot.min.css'
   import { onMount } from 'svelte'
-  import { history, track } from './stream.js'
+  import { writable } from 'svelte/store'
+  import { history, track, fetchRange } from './stream.js'
+  import { buildData } from './chartdata.js'
 
-  // series: [{key, label, color}], unit: axis label
-  let { series = [], unit = '', height = 180 } = $props()
+  // series: [{key, label, color, axis?}] — axis: 2 hängt die Serie an die
+  // rechte Achse (unit2). Alle Props nach height sind optional: ohne sie
+  // verhält sich der Graph wie bisher (Live-Stunde aus dem gemeinsamen
+  // Verlauf, eine Achse) — die Dashboard-Graphen bleiben unverändert.
+  // Zeitraum-Props werden nur beim Einbinden gelesen; zum Wechseln den
+  // Graphen per {#key} neu einbinden.
+  let {
+    series = [],
+    unit = '',
+    height = 180,
+    unit2 = '',      // Beschriftung der rechten Achse
+    thresholds = [], // [{value, axis?: 1|2, color?}] gestrichelte Grenzlinie
+    bands = [],      // [{from, to}] Unix-Sekunden, rot hinterlegt (Lags)
+    hours = null,    // gleitender Zeitraum in Stunden aus /api/history (lädt alle 60 s neu)
+    from = null,     // fester Zeitraum in Unix-Sekunden (mit to), z. B. ein Lag
+    to = null,
+  } = $props()
 
   let el
   let plot = null
+  let win = null // Zeitfenster im Abruf-Modus: x-Achse zeigt genau diesen Bereich
 
-  // typischer Abstand einer Serie (Median), daraus die Lückenschwelle:
-  // fehlen mehr als ~4 Messungen (Tab im Hintergrund, Standby, MSM aus),
-  // zeigt der Graph eine Lücke statt einer geraden Linie
-  function gapSeconds(t) {
-    if (t.length < 3) return Infinity
-    const d = []
-    for (let i = 1; i < t.length; i++) d.push(t[i] - t[i - 1])
-    d.sort((a, b) => a - b)
-    // mindestens 90 s: der Verlauf aus der DB ist gröber (30–60 s) als live (5 s)
-    return Math.max(d[Math.floor(d.length / 2)] * 4, 90)
+  // Achsenbereich so wählen, dass die Grenzlinien immer sichtbar sind
+  function scaleRange(axis) {
+    const limits = thresholds.filter((t) => (t.axis ?? 1) === axis).map((t) => t.value)
+    if (!limits.length) return null
+    return (u, min, max) => [Math.min(0, min ?? 0), Math.max(max ?? 0, ...limits) * 1.1]
   }
 
-  // Die Serien messen in unterschiedlichem Takt (Host, Container, Verlauf aus
-  // der DB gröber als live). Gemeinsame Zeitachse = alle Zeitpunkte aller
-  // Serien; jede Serie wird zwischen ihren eigenen Punkten linear ergänzt und
-  // nur bei echten Lücken unterbrochen (null + Marke direkt nach dem Punkt).
-  function buildData(h) {
-    const bufs = series.map((s) => h[s.key]).map((b) => (b && b.t.length ? b : null))
-    if (!bufs[0]) return null
-    const gaps = bufs.map((b) => (b ? gapSeconds(b.t) : Infinity))
-    const axis = new Set()
-    bufs.forEach((b, k) => {
-      if (!b) return
-      b.t.forEach((t, i) => {
-        axis.add(t)
-        if (i > 0 && t - b.t[i - 1] > gaps[k]) axis.add(b.t[i - 1] + 1)
-      })
-    })
-    const xs = [...axis].sort((a, b) => a - b)
-    const data = [xs]
-    bufs.forEach((b, k) => {
-      const col = []
-      let j = 0
-      for (const x of xs) {
-        if (!b) { col.push(null); continue }
-        while (j + 1 < b.t.length && b.t[j + 1] <= x) j++
-        const t0 = b.t[j], v0 = b.v[j]
-        if (t0 === x) { col.push(v0); continue }
-        const t1 = b.t[j + 1], v1 = b.v[j + 1]
-        if (t0 > x || t1 === undefined || t1 - t0 > gaps[k] || v0 == null || v1 == null) { col.push(null); continue }
-        col.push(v0 + ((v1 - v0) * (x - t0)) / (t1 - t0))
-      }
-      data.push(col)
-    })
-    return data
+  function drawBands(u) {
+    if (!bands.length) return
+    const { left, top, width, height: h } = u.bbox
+    const ctx = u.ctx
+    ctx.save()
+    ctx.fillStyle = 'rgba(248, 113, 113, 0.18)'
+    for (const b of bands) {
+      const x0 = u.valToPos(b.from, 'x', true)
+      const x1 = u.valToPos(b.to, 'x', true)
+      if (x1 < left || x0 > left + width) continue
+      const a = Math.max(x0, left)
+      const z = Math.min(x1, left + width)
+      // sehr kurze Lags trotzdem sichtbar (mind. 3 px)
+      ctx.fillRect(a, top, Math.max(z - a, 3), h)
+    }
+    ctx.restore()
+  }
+
+  function drawThresholds(u) {
+    if (!thresholds.length) return
+    const { left, top, width, height: h } = u.bbox
+    const ctx = u.ctx
+    ctx.save()
+    ctx.setLineDash([6, 4])
+    ctx.lineWidth = 1.5
+    for (const th of thresholds) {
+      const scale = th.axis === 2 ? 'y2' : 'y'
+      if (u.scales[scale]?.min == null) continue
+      const y = u.valToPos(th.value, scale, true)
+      if (y < top || y > top + h) continue
+      ctx.strokeStyle = th.color ?? '#f87171'
+      ctx.beginPath()
+      ctx.moveTo(left, y)
+      ctx.lineTo(left + width, y)
+      ctx.stroke()
+    }
+    ctx.restore()
   }
 
   onMount(() => {
-    track(series.map((s) => s.key))
+    const keys = series.map((s) => s.key)
+    const fixed = from != null || hours != null
+    const hasY2 = series.some((s) => s.axis === 2)
+
+    const scales = { x: { time: true } }
+    if (fixed) scales.x.range = (u, min, max) => (win ? [win.from, win.to] : [min, max])
+    const r1 = scaleRange(1)
+    const r2 = scaleRange(2)
+    if (r1) scales.y = { range: r1 }
+    if (hasY2) scales.y2 = r2 ? { range: r2 } : {}
+
+    const axes = [
+      { stroke: '#8b949e', grid: { stroke: '#2a323c' }, ticks: { stroke: '#2a323c' } },
+      {
+        stroke: '#8b949e',
+        grid: { stroke: '#2a323c' },
+        ticks: { stroke: '#2a323c' },
+        label: unit,
+        labelGap: 8,
+      },
+    ]
+    if (hasY2) {
+      axes.push({
+        scale: 'y2',
+        side: 1,
+        stroke: '#8b949e',
+        grid: { show: false },
+        ticks: { stroke: '#2a323c' },
+        label: unit2,
+        labelGap: 8,
+      })
+    }
+
     const opts = {
       width: el.clientWidth,
       height,
       cursor: { drag: { setScale: false } },
       select: { show: false },
       legend: { live: true },
-      scales: { x: { time: true } },
-      axes: [
-        { stroke: '#8b949e', grid: { stroke: '#2a323c' }, ticks: { stroke: '#2a323c' } },
-        {
-          stroke: '#8b949e',
-          grid: { stroke: '#2a323c' },
-          ticks: { stroke: '#2a323c' },
-          label: unit,
-          labelGap: 8,
-        },
-      ],
+      scales,
+      axes,
       series: [
         {},
         ...series.map((s) => ({
@@ -84,15 +124,37 @@
           width: 1.5,
           // Lücken (Leerzeile aus buildData) bleiben sichtbar
           spanGaps: false,
+          ...(s.axis === 2 ? { scale: 'y2' } : {}),
         })),
       ],
+      hooks: {
+        drawClear: [drawBands], // hinter den Linien
+        draw: [drawThresholds],
+      },
     }
-    plot = new uPlot(opts, [[], ...series.map(() => [])], el)
+    const empty = [[], ...series.map(() => [])]
+    plot = new uPlot(opts, empty, el)
 
-    const unsub = history.subscribe((h) => {
-      const data = buildData(h)
+    // Live: gemeinsamer Verlauf (SSE + vorgeladene Stunde);
+    // Abruf-Modus: eigener Speicher aus /api/history
+    const source = fixed ? writable({}) : history
+    if (!fixed) track(keys)
+    const unsub = source.subscribe((h) => {
+      const data = buildData(series, h)
       if (data && plot) plot.setData(data)
+      else if (fixed && plot) plot.setData(empty)
     })
+
+    let timer = null
+    async function load() {
+      const now = Math.floor(Date.now() / 1000)
+      win = from != null ? { from, to: to ?? now } : { from: now - hours * 3600, to: now }
+      source.set(await fetchRange(keys, win.from, win.to))
+    }
+    if (fixed) {
+      load()
+      if (from == null) timer = setInterval(load, 60_000)
+    }
 
     const ro = new ResizeObserver(() => {
       if (plot && el) plot.setSize({ width: el.clientWidth, height })
@@ -101,9 +163,18 @@
 
     return () => {
       unsub()
+      clearInterval(timer)
       ro.disconnect()
       plot?.destroy()
+      plot = null
     }
+  })
+
+  // Lag-Bänder/Grenzlinien neu zeichnen, wenn sich die Listen ändern
+  $effect(() => {
+    bands
+    thresholds
+    plot?.redraw(false)
   })
 </script>
 
