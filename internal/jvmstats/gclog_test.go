@@ -172,3 +172,19 @@ func TestTailerMissingFile(t *testing.T) {
 		t.Errorf("err = %v, want fs.ErrNotExist", err)
 	}
 }
+
+func TestLastIgnoresRemarkForHeap(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gc.log")
+	appendTo(t, path, lineYoung+lineRemark)
+	tl := NewGCTailer(path)
+	if _, err := tl.Poll(); err != nil {
+		t.Fatal(err)
+	}
+	last, ok := tl.Last()
+	if !ok || last.After != 1200*mib {
+		t.Fatalf("Last = %+v, want Heap-Stand der Young-Pause (Remark meldet Belegung)", last)
+	}
+	if last.DurationMs != 3.21 {
+		t.Errorf("DurationMs = %v, want 3.21 (Dauer der letzten Pause, auch Remark)", last.DurationMs)
+	}
+}

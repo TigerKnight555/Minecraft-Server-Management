@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -97,6 +98,17 @@ ON CONFLICT(series, ts) DO UPDATE SET
 		return err
 	}
 	defer insMin.Close()
+	// Pausen-Maxima behalten pro Minute das Maximum, sonst verschwinden
+	// Spitzen nach 48 h im Mittelwert
+	insMax, err := tx.PrepareContext(ctx, `
+INSERT INTO samples_minute(series, ts, value, n) VALUES(?,?,?,1)
+ON CONFLICT(series, ts) DO UPDATE SET
+	value = MAX(value, excluded.value),
+	n = n + 1`)
+	if err != nil {
+		return err
+	}
+	defer insMax.Close()
 
 	for _, smp := range samples {
 		ts := smp.Time.Unix()
@@ -104,7 +116,11 @@ ON CONFLICT(series, ts) DO UPDATE SET
 			return err
 		}
 		minuteTS := smp.Time.Truncate(time.Minute).Unix()
-		if _, err := insMin.ExecContext(ctx, smp.Series, minuteTS, smp.Value); err != nil {
+		ins := insMin
+		if strings.HasSuffix(smp.Series, ".pause_max") {
+			ins = insMax
+		}
+		if _, err := ins.ExecContext(ctx, smp.Series, minuteTS, smp.Value); err != nil {
 			return err
 		}
 	}

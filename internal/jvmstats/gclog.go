@@ -73,14 +73,20 @@ type GCTailer struct {
 	offset  int64
 	partial []byte
 	primed  bool
-	last    GCPause
+	last    GCPause // letzte Pause mit Heap-Stand nach der Sammlung
 	hasLast bool
+	lastDur float64 // Dauer der letzten Pause jeder Art
 }
 
 func NewGCTailer(path string) *GCTailer { return &GCTailer{path: path} }
 
-// Last liefert die zuletzt gesehene Pause (auch aus dem Vorlauf).
-func (t *GCTailer) Last() (GCPause, bool) { return t.last, t.hasLast }
+// Last liefert den Heap-Stand der zuletzt gesehenen Young-/Mixed-/Full-Pause
+// (auch aus dem Vorlauf) mit der Dauer der zuletzt gesehenen Pause jeder Art.
+func (t *GCTailer) Last() (GCPause, bool) {
+	p := t.last
+	p.DurationMs = t.lastDur
+	return p, t.hasLast
+}
 
 // Poll liest neue vollständige Zeilen und liefert die gefundenen Pausen.
 // Der erste erfolgreiche Aufruf liest nur die letzten 64 KB für den
@@ -134,7 +140,11 @@ func (t *GCTailer) Poll() ([]GCPause, error) {
 		if !ok {
 			continue
 		}
-		t.last, t.hasLast = p, true
+		t.lastDur = p.DurationMs
+		// Remark/Cleanup melden die Belegung, nicht den Heap nach der Sammlung
+		if p.Kind == "Young" || p.Kind == "Mixed" || p.Kind == "Full" {
+			t.last, t.hasLast = p, true
+		}
 		out = append(out, p)
 	}
 	if priming {
