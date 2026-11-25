@@ -41,8 +41,9 @@ const toSec = (iso) => Math.floor(new Date(iso).getTime() / 1000)
 
 // Lag-Zeiträume für die roten Bänder; der laufende Lag kommt live dazu
 export function lagBands(lags, openLag) {
-  const all = [...(lags ?? [])]
-  if (openLag && !all.some((l) => l.id === openLag.id)) all.push(openLag)
+  // der laufende Lag kommt live (aktuelles Ende) und ersetzt die gespeicherte Kopie
+  const all = (lags ?? []).filter((l) => !(openLag && l.id === openLag.id))
+  if (openLag) all.push(openLag)
   // Lags unter 5 s (start = end) bekommen ein minimal sichtbares Fenster
   return all.map((l) => {
     const from = toSec(l.start)

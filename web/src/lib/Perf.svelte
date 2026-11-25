@@ -28,6 +28,8 @@
   })
 
   let p = $derived($perf)
+  // „nicht eingeschaltet" (Datei fehlt) → Compose-Zeile zeigen, sonst nur Grund + Rechte-Hinweis
+  let gcNotEnabled = $derived(($perf?.gcLog?.reason ?? '').includes("nicht eingeschaltet"))
   let bands = $derived(lagBands(lags, p?.openLag))
   let maxGroupCpu = $derived(Math.max(1, ...(p?.groups ?? []).map((g) => g.cpu)))
   // Zeitraum der Graphen; ein Wechsel bindet sie per {#key} neu ein
@@ -110,12 +112,19 @@
     <div class="panel">
       <h2>Heap (GiB)</h2>
       {#if p && !p.gcLog?.ok}
-        <div class="hint">
-          {p.gcLog?.reason} — in <code>docker-compose.yml</code> bei <code>mc-fabric</code> unter
-          <code>environment</code> eintragen:
-          <pre>{GC_LINE}</pre>
-          danach <code>docker compose up -d mc-fabric</code> (startet den Minecraft-Server neu).
-        </div>
+        {#if gcNotEnabled}
+          <div class="hint">
+            {p.gcLog?.reason} — in <code>docker-compose.yml</code> bei <code>mc-fabric</code> unter
+            <code>environment</code> eintragen:
+            <pre>{GC_LINE}</pre>
+            danach <code>docker compose up -d mc-fabric</code> (startet den Minecraft-Server neu).
+          </div>
+        {:else}
+          <div class="hint">
+            {p.gcLog?.reason} — MSM liest das Log als Benutzer 65532 über einen schreibgeschützten
+            Mount; <code>logs/gc.log</code> muss für ihn lesbar sein (Dateirechte prüfen).
+          </div>
+        {/if}
       {/if}
       <Chart
         unit="GiB"

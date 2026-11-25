@@ -130,12 +130,19 @@ Heap und GC-Pausen liest MSM aus dem GC-Log des Minecraft-Servers. Die
 JVM_XX_OPTS: "-Xlog:gc:file=/data/logs/gc.log:time,uptime:filecount=5,filesize=10m"
 ```
 
-Nach einem MSM-Update, das diese Zeile mitbringt, `mc-fabric` einmal neu
-erstellen (das ist ein Neustart des Minecraft-Servers):
+Nach einem MSM-Update, das diese Zeile mitbringt, zuerst das Log-Verzeichnis
+anlegen und dann `mc-fabric` einmal neu erstellen (das ist ein Neustart des
+Minecraft-Servers):
 
 ```sh
+mkdir -p "$MC_DATA_PATH/logs"
 docker compose up -d mc-fabric
 ```
+
+Das Verzeichnis muss vorher existieren: Auf einem frischen Datenordner
+verweigert die JVM sonst unter Umständen den Start, weil sie die Log-Datei
+nicht anlegen kann. Die Datei `logs/gc.log` muss außerdem für MSM lesbar sein
+(MSM liest als Benutzer 65532 über einen schreibgeschützten Mount).
 
 Ohne GC-Log zeigt der Tab „GC-Log nicht eingeschaltet"; Threads und
 MSPT funktionieren trotzdem.

@@ -48,6 +48,9 @@ test('lagBands: gespeicherte Lags + laufender Lag ohne Dopplung', () => {
     { from: t('2026-11-25T11:00:00Z'), to: t('2026-11-25T11:00:10Z') },
   ])
   assert.equal(lagBands([...lags, open], open).length, 2)
+  // gespeicherte Kopie des offenen Lags hat altes Ende → Live-Wert gewinnt
+  const stale = { ...open, end: '2026-11-25T11:00:02Z' }
+  assert.deepEqual(lagBands([...lags, stale], open)[1], { from: t(open.start), to: t(open.end) })
   assert.deepEqual(lagBands(null, null), [])
 })
 

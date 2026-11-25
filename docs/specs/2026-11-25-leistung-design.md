@@ -14,6 +14,10 @@ Der Admin soll sehen, **warum** der Server laggt (TPS-Einbruch, Ghost-Blöcke be
 
 ## Datenquellen (neues Paket `internal/jvmstats`, Takt 5 s)
 
+### MC-Status-Abfrage
+
+Die MC-Statusabfrage (spark TPS / Tick per RCON) läuft jetzt dauerhaft alle 10 s, auch ohne geöffnetes Dashboard, damit Lags unbeaufsichtigt erkannt werden.
+
 ### Threads aus `/host/proc`
 
 - `ContainerDetail` bekommt `Pid int` (Docker-Inspect `State.Pid`, Host-PID des Container-Init).
