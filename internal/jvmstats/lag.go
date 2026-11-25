@@ -86,26 +86,61 @@ func Diagnose(f Findings) string {
 	return strings.Join(parts, "; ")
 }
 
+// tickGap: größerer Abstand zwischen zwei beobachteten Takten (Takt = 5 s)
+// bedeutet eine Pause (Server aus, Monitor angehalten) — keine CPU-Serie.
+const tickGap = 15 * time.Second
+
 // Detector fasst Auslöser zu Lags zusammen. Nicht nebenläufig benutzen.
 type Detector struct {
 	open          *LagEvent
+	hasTop        bool // TopThreads des offenen Lags gesetzt
 	lastTrigger   time.Time
+	prevTime      time.Time // Zeit des zuletzt beobachteten Takts
 	cpuStreak     int
 	cpuStart      time.Time
+	cpuStartTick  Tick
 	cpuAtWorst    float64
 	hasCPUAtWorst bool
 }
 
 func NewDetector() *Detector { return &Detector{} }
 
+// Open liefert den aktuell offenen Lag (nil = keiner).
+func (d *Detector) Open() *LagEvent { return d.open }
+
+// Flush beendet einen offenen Lag (Server gestoppt, Monitor beendet) und setzt
+// den Zustand zurück. Liefert den Lag und true, oder nil und false.
+func (d *Detector) Flush() (*LagEvent, bool) {
+	ev := d.open
+	d.open = nil
+	d.cpuStreak = 0
+	d.prevTime = time.Time{}
+	return ev, ev != nil
+}
+
 // Observe verarbeitet einen Takt. Liefert den laufenden oder gerade
 // beendeten Lag (nil = kein Lag) und ob er mit diesem Takt beendet wurde.
 // Der Zeiger bleibt über alle Takte eines Lags derselbe — eine beim
 // Speichern vergebene ID bleibt so erhalten.
+//
+// Sonderfall Pause: Liegt der letzte Auslöser mindestens LagQuiet zurück,
+// wird der alte Lag beendet, bevor der Takt ausgewertet wird. Löst der Takt
+// selbst wieder aus, liefert Observe trotzdem nur den beendeten alten Lag
+// (ended = true); der neue, bereits offene Lag ist über Open erreichbar.
 func (d *Detector) Observe(t Tick) (*LagEvent, bool) {
+	var closed *LagEvent
+	if d.open != nil && t.Time.Sub(d.lastTrigger) >= LagQuiet {
+		closed = d.open
+		d.open = nil
+	}
+	if !d.prevTime.IsZero() && t.Time.Sub(d.prevTime) > tickGap {
+		d.cpuStreak = 0
+	}
+	d.prevTime = t.Time
+
 	if t.HasCPU && t.ServerCPU >= CPULimit {
 		if d.cpuStreak == 0 {
-			d.cpuStart = t.Time
+			d.cpuStart, d.cpuStartTick = t.Time, t
 		}
 		d.cpuStreak++
 	} else {
@@ -123,20 +158,23 @@ func (d *Detector) Observe(t Tick) (*LagEvent, bool) {
 	}
 
 	if len(trig) == 0 {
-		if d.open != nil && t.Time.Sub(d.lastTrigger) >= LagQuiet {
-			ev := d.open
-			d.open = nil
-			return ev, true
+		if closed != nil {
+			return closed, true
 		}
 		return d.open, false
 	}
 	if d.open == nil {
 		start := t.Time
-		if slices.Contains(trig, "cpu") && d.cpuStart.Before(start) {
+		viaCPU := slices.Contains(trig, "cpu") && d.cpuStart.Before(start)
+		if viaCPU {
 			start = d.cpuStart
 		}
-		d.open = &LagEvent{Start: start, Trigger: trig[0]}
+		d.open = &LagEvent{Start: start, Trigger: trig[0], TopThreads: []ThreadGroup{}}
+		d.hasTop = false
 		d.cpuAtWorst, d.hasCPUAtWorst = 0, false
+		if viaCPU {
+			d.update(d.cpuStartTick) // erste Messung der Serie gehört zum Lag
+		}
 	}
 	e := d.open
 	d.lastTrigger = t.Time
@@ -155,6 +193,9 @@ func (d *Detector) Observe(t Tick) (*LagEvent, bool) {
 		CPUAtWorstMSPT: d.cpuAtWorst,
 		HasCPUAtWorst:  d.hasCPUAtWorst,
 	})
+	if closed != nil {
+		return closed, true
+	}
 	return e, false
 }
 
@@ -171,13 +212,14 @@ func (d *Detector) update(t Tick) {
 	}
 	e.MaxGCPauseMs = max(e.MaxGCPauseMs, t.GCPauseMax)
 	e.Players = max(e.Players, t.Players)
-	if t.HeapTotal > 0 && (e.HeapTotal == 0 ||
+	if t.HeapTotal > 0 && t.HeapAfterGC > 0 && (e.HeapTotal == 0 ||
 		heapRatio(t.HeapAfterGC, t.HeapTotal) > heapRatio(e.HeapAfterGC, e.HeapTotal)) {
 		e.HeapAfterGC, e.HeapTotal = t.HeapAfterGC, t.HeapTotal
 	}
-	if t.HasCPU && (e.TopThreads == nil || t.ServerCPU > e.MaxServerCPU) {
+	if t.HasCPU && (!d.hasTop || t.ServerCPU > e.MaxServerCPU) {
+		d.hasTop = true
 		e.MaxServerCPU = t.ServerCPU
-		e.TopThreads = slices.Clone(t.Groups[:min(topThreadCount, len(t.Groups))])
+		e.TopThreads = append([]ThreadGroup{}, t.Groups[:min(topThreadCount, len(t.Groups))]...)
 	}
 }
 

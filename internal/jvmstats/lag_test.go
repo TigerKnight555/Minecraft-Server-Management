@@ -102,7 +102,7 @@ func TestLagMergesAndEndsAfterQuiet(t *testing.T) {
 	t2 := at(50)
 	t2.GCPauseMax = 200
 	next, _ := d.Observe(t2)
-	if next == nil || next == first || next.ID != 0 {
+	if next == nil || next == first || !next.Start.Equal(t2.Time) {
 		t.Error("neuer Lag muss ein neuer Eintrag sein")
 	}
 }
@@ -185,5 +185,116 @@ func TestLagEventCloneIsDeep(t *testing.T) {
 	c.TopThreads[0].Name = "y"
 	if e.Triggers[0] != "gc" || e.TopThreads[0].Name != "a" {
 		t.Error("clone teilt Slices mit dem Original")
+	}
+}
+
+func TestLagBoundaries(t *testing.T) {
+	d := NewDetector()
+	tk := at(0)
+	tk.HasMSPT, tk.MSPT = true, 50
+	if ev, _ := d.Observe(tk); ev != nil {
+		t.Errorf("MSPT genau 50 hat Lag ausgelöst: %+v", ev)
+	}
+	d = NewDetector()
+	cpu := func(sec int) Tick {
+		tk := at(sec)
+		tk.HasCPU, tk.ServerCPU = true, 95
+		return tk
+	}
+	d.Observe(cpu(0))
+	if ev, _ := d.Observe(cpu(5)); ev == nil || ev.Trigger != "cpu" {
+		t.Errorf("CPU genau 95 zählt nicht: %+v", ev)
+	}
+	if got := Diagnose(Findings{MaxGCPauseMs: 200, HeapRatio: 0.85}); got != "Speicherbereinigung hat den Server angehalten" {
+		t.Errorf("Heap genau 0,85: %q", got)
+	}
+}
+
+func TestLagGapStartsNewEvent(t *testing.T) {
+	d := NewDetector()
+	a := at(0)
+	a.GCPauseMax = 200
+	first, _ := d.Observe(a)
+	b := at(60) // Pause > LagQuiet, z. B. Server war aus
+	b.GCPauseMax = 300
+	old, ended := d.Observe(b)
+	if old != first || !ended {
+		t.Fatalf("alter Lag nicht beendet: ev=%p ended=%v", old, ended)
+	}
+	if !old.End.Equal(lagBase) || old.MaxGCPauseMs != 200 {
+		t.Errorf("alter Lag wurde erweitert: %+v", old)
+	}
+	cur := d.Open()
+	if cur == nil || cur == first || !cur.Start.Equal(b.Time) || cur.MaxGCPauseMs != 300 {
+		t.Errorf("neuer Lag = %+v", cur)
+	}
+}
+
+func TestLagGapBreaksCPUStreak(t *testing.T) {
+	d := NewDetector()
+	cpu := func(sec int) Tick {
+		tk := at(sec)
+		tk.HasCPU, tk.ServerCPU = true, 99
+		return tk
+	}
+	d.Observe(cpu(0))
+	if ev, _ := d.Observe(cpu(60)); ev != nil {
+		t.Fatal("Messungen vor und nach der Pause bilden keine Serie")
+	}
+	if ev, _ := d.Observe(cpu(65)); ev == nil || !ev.Start.Equal(at(60).Time) {
+		t.Fatalf("ev = %+v", ev)
+	}
+}
+
+func TestLagCPUStartFeedsFirstTick(t *testing.T) {
+	d := NewDetector()
+	a := at(0)
+	a.HasCPU, a.ServerCPU, a.Players, a.Groups = true, 96, 4, groupsN(2, 96)
+	d.Observe(a)
+	b := at(5)
+	b.HasCPU, b.ServerCPU, b.Players, b.Groups = true, 97, 2, groupsN(2, 97)
+	ev, _ := d.Observe(b)
+	if ev.Players != 4 || ev.MaxServerCPU != 97 || len(ev.TopThreads) != 2 {
+		t.Errorf("ev = %+v", ev)
+	}
+}
+
+func TestLagEmptyTopThreadsIsNotNil(t *testing.T) {
+	d := NewDetector()
+	tk := at(0)
+	tk.GCPauseMax = 200
+	ev, _ := d.Observe(tk)
+	if ev.TopThreads == nil {
+		t.Error("TopThreads nil, JSON würde null liefern")
+	}
+}
+
+func TestLagIgnoresUnknownHeap(t *testing.T) {
+	d := NewDetector()
+	tk := at(0)
+	tk.GCPauseMax, tk.HeapTotal = 200, 12<<30
+	ev, _ := d.Observe(tk)
+	if ev.HeapTotal != 0 {
+		t.Errorf("Heap ohne Messwert übernommen: %+v", ev)
+	}
+}
+
+func TestDetectorFlush(t *testing.T) {
+	d := NewDetector()
+	if ev, ended := d.Flush(); ev != nil || ended {
+		t.Fatal("Flush ohne Lag")
+	}
+	tk := at(0)
+	tk.GCPauseMax = 200
+	first, _ := d.Observe(tk)
+	ev, ended := d.Flush()
+	if ev != first || !ended {
+		t.Fatalf("Flush = %p, %v", ev, ended)
+	}
+	if d.Open() != nil {
+		t.Error("Lag nach Flush noch offen")
+	}
+	if ev, _ := d.Flush(); ev != nil {
+		t.Error("zweiter Flush liefert Lag")
 	}
 }
