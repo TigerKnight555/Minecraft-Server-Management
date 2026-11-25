@@ -302,7 +302,10 @@ func main() {
 			return det.Pid, nil
 		},
 	}, coll, lagStore, log)
-	go perf.Run(ctx)
+	perfDone := make(chan struct{})
+	go func() { defer close(perfDone); perf.Run(ctx) }()
+	// vor sq.Close (defer, LIFO): der Monitor speichert beim Beenden noch den offenen Lag
+	defer func() { <-perfDone }()
 	if ds, ok := admin.(hostctl.DesiredStore); ok {
 		rec := hostctl.NewReconciler(ds, controller, coll, mcState, hostState, bus, mcName, log)
 		if kvGet != nil {

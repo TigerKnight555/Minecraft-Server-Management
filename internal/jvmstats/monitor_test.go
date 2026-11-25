@@ -190,3 +190,73 @@ func TestMonitorFlushOnServerStop(t *testing.T) {
 		t.Errorf("nach Stopp: OpenLag = %+v, saved = %d, want nil und 2", m.Current().OpenLag, len(store.saved))
 	}
 }
+
+// Ohne laufendes Java: keine jvm.*-Serienpunkte, keine Heap-/GC-Werte.
+func TestMonitorNoJavaNoJVMValues(t *testing.T) {
+	pf := newProcFixture(t)
+	pf.write("510/stat", statLine(510, "sh", 500, 0, 0, 12345))
+	gcPath := filepath.Join(t.TempDir(), "gc.log")
+	appendTo(t, gcPath, lineYoung)
+	sink := &fakeSink{}
+	m := NewMonitor(Config{ProcRoot: pf.root, GCLogPath: gcPath, InitPID: pid500}, sink, nil, quiet())
+	m.Tick(context.Background(), time.Now())
+	st := m.Current()
+	if len(sink.samples) != 0 || st.HeapAfterGC != nil || st.HeapTotal != nil || st.GCPauseMax != nil || st.LastGCPauseMs != nil {
+		t.Errorf("samples = %v, Status = %+v, want leer", sink.samples, st)
+	}
+}
+
+// Ein unveränderter MC-Messwert (gleiche Zeit) löst keinen Lag aus.
+func TestMonitorMSPTFreshness(t *testing.T) {
+	pf := newProcFixture(t)
+	pf.thread(510, 511, "Server thread", 1000, 0)
+	gcPath := filepath.Join(t.TempDir(), "gc.log")
+	appendTo(t, gcPath, lineYoung)
+	t0 := time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC)
+	mc := collector.MCStatus{Time: t0, Online: true, TPS: 20, MSPT: 8}
+	store := &fakeLagStore{}
+	m := NewMonitor(Config{ProcRoot: pf.root, GCLogPath: gcPath, InitPID: pid500,
+		MC: func() collector.MCStatus { return mc }}, &fakeSink{}, store, quiet())
+	ctx := context.Background()
+	m.Tick(ctx, t0)
+	mc.MSPT = 80 // gleiche mc.Time: kein neuer Messwert
+	m.Tick(ctx, t0.Add(5*time.Second))
+	if m.Current().OpenLag != nil || len(store.saved) != 0 {
+		t.Errorf("alter MSPT-Wert löste Lag aus: %+v, saved = %d", m.Current().OpenLag, len(store.saved))
+	}
+	mc.Time = t0.Add(10 * time.Second) // neuer Messwert
+	m.Tick(ctx, t0.Add(10*time.Second))
+	if m.Current().OpenLag == nil || len(store.saved) != 1 {
+		t.Errorf("frischer MSPT-Wert: OpenLag = %+v, saved = %d", m.Current().OpenLag, len(store.saved))
+	}
+}
+
+// Neuer Auslöser nach mehr als 30 s: alter Lag wird beendet und der neue
+// offene Lag zusätzlich gespeichert (zwei Speicherungen, verschiedene IDs).
+func TestMonitorPausePathSavesBoth(t *testing.T) {
+	pf := newProcFixture(t)
+	pf.thread(510, 511, "Server thread", 1000, 0)
+	gcPath := filepath.Join(t.TempDir(), "gc.log")
+	appendTo(t, gcPath, lineYoung)
+	t0 := time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC)
+	store := &fakeLagStore{}
+	m := NewMonitor(Config{ProcRoot: pf.root, GCLogPath: gcPath, InitPID: pid500}, &fakeSink{}, store, quiet())
+	ctx := context.Background()
+	m.Tick(ctx, t0)
+	appendTo(t, gcPath, lineFull)
+	m.Tick(ctx, t0.Add(5*time.Second))
+	if len(store.saved) != 1 {
+		t.Fatalf("saved = %d, want 1", len(store.saved))
+	}
+	appendTo(t, gcPath, lineFull)
+	m.Tick(ctx, t0.Add(60*time.Second))
+	if len(store.saved) != 3 {
+		t.Fatalf("saved = %d, want 3 (alter Lag + neuer Lag)", len(store.saved))
+	}
+	if a, b := store.saved[1], store.saved[2]; a.ID == b.ID || a.ID != store.saved[0].ID {
+		t.Errorf("IDs = %d, %d, %d", store.saved[0].ID, a.ID, b.ID)
+	}
+	if m.Current().OpenLag == nil || m.Current().OpenLag.ID != store.saved[2].ID {
+		t.Errorf("OpenLag = %+v", m.Current().OpenLag)
+	}
+}

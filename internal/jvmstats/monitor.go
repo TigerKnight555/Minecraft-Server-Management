@@ -153,6 +153,10 @@ func (m *Monitor) Tick(ctx context.Context, now time.Time) {
 	pauses, err := m.gc.Poll()
 	if err != nil {
 		st.GCLog = Availability{Reason: gcReason(err)}
+	} else if errors.Is(terr, ErrNoJava) {
+		// Java läuft nicht: Log gelesen (Offset), aber keine Werte und keine
+		// Serienpunkte (Kachel „—", Lücke im Graph).
+		st.GCLog = Availability{OK: true}
 	} else {
 		st.GCLog = Availability{OK: true}
 		for _, p := range pauses {
