@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -66,6 +67,9 @@ CREATE TABLE IF NOT EXISTS samples_minute (
 	if err := s.migrateMaintenance(); err != nil {
 		return err
 	}
+	if err := s.migrateLags(); err != nil {
+		return err
+	}
 	return s.migrateRoutines()
 }
 
@@ -94,6 +98,17 @@ ON CONFLICT(series, ts) DO UPDATE SET
 		return err
 	}
 	defer insMin.Close()
+	// Pausen-Maxima behalten pro Minute das Maximum, sonst verschwinden
+	// Spitzen nach 48 h im Mittelwert
+	insMax, err := tx.PrepareContext(ctx, `
+INSERT INTO samples_minute(series, ts, value, n) VALUES(?,?,?,1)
+ON CONFLICT(series, ts) DO UPDATE SET
+	value = MAX(value, excluded.value),
+	n = n + 1`)
+	if err != nil {
+		return err
+	}
+	defer insMax.Close()
 
 	for _, smp := range samples {
 		ts := smp.Time.Unix()
@@ -101,7 +116,11 @@ ON CONFLICT(series, ts) DO UPDATE SET
 			return err
 		}
 		minuteTS := smp.Time.Truncate(time.Minute).Unix()
-		if _, err := insMin.ExecContext(ctx, smp.Series, minuteTS, smp.Value); err != nil {
+		ins := insMin
+		if strings.HasSuffix(smp.Series, ".pause_max") {
+			ins = insMax
+		}
+		if _, err := ins.ExecContext(ctx, smp.Series, minuteTS, smp.Value); err != nil {
 			return err
 		}
 	}
@@ -139,6 +158,10 @@ func (s *SQLite) Prune(ctx context.Context) error {
 	now := time.Now()
 	if _, err := s.db.ExecContext(ctx,
 		`DELETE FROM samples_raw WHERE ts < ?`, now.Add(-rawRetention).Unix()); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM lag_events WHERE end_ts < ?`, now.Add(-lagRetention).Unix()); err != nil {
 		return err
 	}
 	_, err := s.db.ExecContext(ctx,

@@ -93,6 +93,7 @@ func (c *Client) InspectContainer(ctx context.Context, id string) (collector.Con
 	var raw struct {
 		State struct {
 			Running    bool      `json:"Running"`
+			Pid        int       `json:"Pid"`
 			ExitCode   int       `json:"ExitCode"`
 			StartedAt  time.Time `json:"StartedAt"`
 			FinishedAt time.Time `json:"FinishedAt"`
@@ -112,6 +113,7 @@ func (c *Client) InspectContainer(ctx context.Context, id string) (collector.Con
 		FinishedAt:   raw.State.FinishedAt,
 		RestartCount: raw.RestartCount,
 		Env:          raw.Config.Env,
+		Pid:          raw.State.Pid,
 	}, nil
 }
 

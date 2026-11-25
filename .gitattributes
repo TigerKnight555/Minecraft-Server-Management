@@ -2,3 +2,6 @@
 # sonst scheitern sie mit "bad interpreter" (CRLF), egal von wo geklont wird.
 *.sh text eol=lf
 Dockerfile text eol=lf
+
+# Testdaten (procfs, GC-Log) byte-genau wie unter Linux
+internal/jvmstats/testdata/** text eol=lf

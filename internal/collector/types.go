@@ -82,6 +82,7 @@ type ContainerDetail struct {
 	FinishedAt   time.Time
 	RestartCount int      // erkennt Absturzschleifen
 	Env          []string // Container-Umgebung, z. B. "JAVA_VERSION=jdk-21.0.8+9"
+	Pid          int      // Host-PID des Container-Init (0 = läuft nicht) — Leistung-Tab
 }
 
 // DockerClient reads container information through the socket proxy.

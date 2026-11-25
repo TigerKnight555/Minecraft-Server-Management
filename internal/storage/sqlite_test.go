@@ -96,3 +96,27 @@ func TestPrune(t *testing.T) {
 		t.Errorf("after prune got %v, want only the fresh sample", got)
 	}
 }
+
+func TestMinuteKeepsMaxForPauseMax(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	base := time.Now().Add(-72 * time.Hour).Truncate(time.Minute)
+	if err := s.WriteSamples(ctx, []collector.Sample{
+		{Series: "jvm.gc.pause_max", Time: base.Add(5 * time.Second), Value: 10},
+		{Series: "jvm.gc.pause_max", Time: base.Add(20 * time.Second), Value: 300},
+		{Series: "jvm.gc.pause_max", Time: base.Add(40 * time.Second), Value: 20},
+		{Series: "host.cpu", Time: base.Add(5 * time.Second), Value: 10},
+		{Series: "host.cpu", Time: base.Add(20 * time.Second), Value: 30},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// älter als 48 h → QuerySeries liest samples_minute
+	got, err := s.QuerySeries(ctx, "jvm.gc.pause_max", base.Add(-time.Minute), base.Add(time.Minute))
+	if err != nil || len(got) != 1 || got[0].Value != 300 {
+		t.Fatalf("pause_max = %+v, %v, want Maximum 300", got, err)
+	}
+	cpu, err := s.QuerySeries(ctx, "host.cpu", base.Add(-time.Minute), base.Add(time.Minute))
+	if err != nil || len(cpu) != 1 || cpu[0].Value != 20 {
+		t.Fatalf("cpu = %+v, %v, want Mittel 20", cpu, err)
+	}
+}

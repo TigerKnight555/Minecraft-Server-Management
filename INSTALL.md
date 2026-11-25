@@ -121,6 +121,32 @@ weg), Minecraft läuft ungestört weiter. Manuell geht immer:
 `git pull && docker compose up -d --no-deps --build msm` — **niemals `docker compose
 down`, das stoppt auch den Minecraft-Server!**
 
+## Leistung-Tab: GC-Log einschalten
+
+Heap und GC-Pausen liest MSM aus dem GC-Log des Minecraft-Servers. Die
+`docker-compose.yml` schaltet es bei `mc-fabric` ein:
+
+```yaml
+JVM_XX_OPTS: "-Xlog:gc:file=/data/logs/gc.log:time,uptime:filecount=5,filesize=10m"
+```
+
+Nach einem MSM-Update, das diese Zeile mitbringt, zuerst das Log-Verzeichnis
+anlegen und dann `mc-fabric` einmal neu erstellen (das ist ein Neustart des
+Minecraft-Servers):
+
+```sh
+mkdir -p "$MC_DATA_PATH/logs"
+docker compose up -d mc-fabric
+```
+
+Das Verzeichnis muss vorher existieren: Auf einem frischen Datenordner
+verweigert die JVM sonst unter Umständen den Start, weil sie die Log-Datei
+nicht anlegen kann. Die Datei `logs/gc.log` muss außerdem für MSM lesbar sein
+(MSM liest als Benutzer 65532 über einen schreibgeschützten Mount).
+
+Ohne GC-Log zeigt der Tab „GC-Log nicht eingeschaltet"; Threads und
+MSPT funktionieren trotzdem.
+
 ## Client-Mods einspielen/aktualisieren
 
 Einzelne Datei: per scp nach `<client-pack>/mods/`. Größere Änderungen als

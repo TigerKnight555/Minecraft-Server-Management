@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -56,7 +57,8 @@ type Server struct {
 	managed           map[string]bool // allowlist for container actions
 	bus               *events.Bus     // optional; nil bus is a safe no-op
 	log               *slog.Logger
-	frontend          fs.FS // embedded web/dist, may be nil in tests
+	frontend          fs.FS      // embedded web/dist, may be nil in tests
+	perf              PerfSource // nil = Leistung-Tab aus
 }
 
 // Deps bundles the wiring — Phase 2 grew too many constructor params.
@@ -87,6 +89,7 @@ type Deps struct {
 	Managed           []string // container names allowed for start/stop/restart
 	Bus               *events.Bus
 	Frontend          fs.FS
+	Perf              PerfSource // jvmstats.Monitor; nil = Leistung-Routen aus
 	Log               *slog.Logger
 }
 
@@ -130,6 +133,7 @@ func New(d Deps) *Server {
 		bus:               d.Bus,
 		log:               d.Log,
 		frontend:          d.Frontend,
+		perf:              d.Perf,
 	}
 }
 
@@ -222,6 +226,11 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("POST /api/maintenance/{id}/end", s.handleEndWindow)
 		mux.HandleFunc("DELETE /api/maintenance/{id}", s.handleDeleteWindow)
 	}
+	// Leistung-Tab (Threads, Heap/GC, Lag-Protokoll)
+	if s.perf != nil {
+		mux.HandleFunc("GET /api/perf", s.handlePerf)
+		mux.HandleFunc("GET /api/perf/lags", s.handlePerfLags)
+	}
 	if s.authmgr != nil {
 		mux.HandleFunc("POST /api/login", s.authmgr.HandleLogin)
 		mux.HandleFunc("POST /api/logout", s.authmgr.HandleLogout)
@@ -248,15 +257,22 @@ func (s *Server) handleContainers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.collector.Containers())
 }
 
+// maxHistoryPoints begrenzt eine Verlaufs-Antwort (24 h im 5-s-Takt wären
+// 17 280 Punkte je Serie). Die Dashboard-Stunde (≤ 720) bleibt unverändert.
+const maxHistoryPoints = 1500
+
 // handleHistory serves chart data: /api/history?series=host.cpu&hours=24
+// oder mit festem Zeitraum &from=<unix>&to=<unix> (Lag-Ansicht im
+// Leistung-Tab, höchstens 30 Tage).
 func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
-	series := r.URL.Query().Get("series")
+	q := r.URL.Query()
+	series := q.Get("series")
 	if series == "" {
 		httpError(w, http.StatusBadRequest, "missing series parameter")
 		return
 	}
 	hours := 24
-	if h := r.URL.Query().Get("hours"); h != "" {
+	if h := q.Get("hours"); h != "" {
 		if _, err := fmt.Sscanf(h, "%d", &hours); err != nil || hours < 1 || hours > 24*30 {
 			httpError(w, http.StatusBadRequest, "invalid hours parameter")
 			return
@@ -264,13 +280,50 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	to := time.Now()
 	from := to.Add(-time.Duration(hours) * time.Hour)
+	if q.Has("from") || q.Has("to") {
+		fv, err1 := strconv.ParseInt(q.Get("from"), 10, 64)
+		tv, err2 := strconv.ParseInt(q.Get("to"), 10, 64)
+		if err1 != nil || err2 != nil || fv < 0 || tv <= fv || tv > time.Now().Unix()+24*3600 || tv > fv+30*24*3600 {
+			httpError(w, http.StatusBadRequest, "invalid from/to parameter")
+			return
+		}
+		from, to = time.Unix(fv, 0), time.Unix(tv, 0)
+	}
 	samples, err := s.store.QuerySeries(r.Context(), series, from, to)
 	if err != nil {
 		s.log.Error("history query failed", "series", series, "err", err)
 		httpError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, samples)
+	if samples == nil {
+		samples = []collector.Sample{}
+	}
+	writeJSON(w, http.StatusOK, downsample(samples, maxHistoryPoints, strings.HasSuffix(series, ".pause_max")))
+}
+
+// downsample fasst lange Reihen auf höchstens limit Punkte zusammen: pro
+// Eimer der Mittelwert, bei Spitzen-Serien (GC-Pausen) das Maximum — sonst
+// verschwänden genau die Ausreißer. Zeitpunkt = letzter Punkt im Eimer.
+func downsample(in []collector.Sample, limit int, peak bool) []collector.Sample {
+	if limit <= 0 || len(in) <= limit {
+		return in
+	}
+	size := (len(in) + limit - 1) / limit
+	out := make([]collector.Sample, 0, limit)
+	for i := 0; i < len(in); i += size {
+		b := in[i:min(i+size, len(in))]
+		sum, hi := 0.0, b[0].Value
+		for _, s := range b {
+			sum += s.Value
+			hi = max(hi, s.Value)
+		}
+		v := sum / float64(len(b))
+		if peak {
+			v = hi
+		}
+		out = append(out, collector.Sample{Series: b[0].Series, Time: b[len(b)-1].Time, Value: v})
+	}
+	return out
 }
 
 // handleStatsStream is the main SSE endpoint. Event types: container, host,
