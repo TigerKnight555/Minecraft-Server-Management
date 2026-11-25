@@ -283,7 +283,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	if q.Has("from") || q.Has("to") {
 		fv, err1 := strconv.ParseInt(q.Get("from"), 10, 64)
 		tv, err2 := strconv.ParseInt(q.Get("to"), 10, 64)
-		if err1 != nil || err2 != nil || tv <= fv || tv-fv > 30*24*3600 {
+		if err1 != nil || err2 != nil || fv < 0 || tv <= fv || tv > time.Now().Unix()+24*3600 || tv > fv+30*24*3600 {
 			httpError(w, http.StatusBadRequest, "invalid from/to parameter")
 			return
 		}
@@ -294,6 +294,9 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("history query failed", "series", series, "err", err)
 		httpError(w, http.StatusInternalServerError, "query failed")
 		return
+	}
+	if samples == nil {
+		samples = []collector.Sample{}
 	}
 	writeJSON(w, http.StatusOK, downsample(samples, maxHistoryPoints, strings.HasSuffix(series, ".pause_max")))
 }

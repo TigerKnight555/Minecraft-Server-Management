@@ -157,11 +157,19 @@ func TestHistoryFromTo(t *testing.T) {
 		"&from=" + itoa(to) + "&to=" + itoa(from), // to vor from
 		"&from=" + itoa(from),                     // to fehlt
 		"&from=x&to=" + itoa(to),
-		"&from=0&to=" + itoa(40*24*3600), // mehr als 30 Tage
+		"&from=0&to=" + itoa(40*24*3600),                    // mehr als 30 Tage
+		"&from=-9223372036854775808&to=9223372036854775807", // Überlauf
 	} {
 		if rec := get(h, "/api/history?series=jvm.gc.pause_max"+q); rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: status = %d, want 400", q, rec.Code)
 		}
+	}
+}
+
+func TestHistoryEmptyIsArray(t *testing.T) {
+	rec := get(perfHandler(t, nil, nil, nil), "/api/history?series=nix&hours=1")
+	if strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Errorf("body = %q, want []", rec.Body.String())
 	}
 }
 
