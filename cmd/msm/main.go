@@ -18,7 +18,7 @@
 //	MSM_BACKUP_CONTAINER    pre-created restic compose service  (default mc-backup)
 //	MSM_RESTORE_CONTAINER   pre-created restore compose service (default mc-restore)
 //	MSM_RESTORE_JOB_DIR     shared job dir for restore scripts  (default /job)
-//	MSM_MC_DATA_DIR         read-only MC data mount for the player list (default /mc/data)
+//	MSM_MC_DATA_DIR         read-only MC data mount: player list, GC log logs/gc.log (default /mc/data)
 //	MSM_HOST_SIGNAL_DIR     shared dir for host watcher signal files (default /host-signal)
 //	MSM_DISCORD_WEBHOOK_URL one Discord webhook, receives every event
 //	MSM_DISCORD_WEBHOOKS    JSON list with per-webhook event filters, wins over
@@ -59,6 +59,7 @@ import (
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/events"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/hostctl"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/hostmetrics"
+	"github.com/TigerKnight555/Minecraft-Server-Management/internal/jvmstats"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/maintenance"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mcquery"
 	"github.com/TigerKnight555/Minecraft-Server-Management/internal/mcrcon"
@@ -273,6 +274,35 @@ func main() {
 	sched.SetRebootSignaler(hostctl.NewSignaler(signalDir))
 	hostState := func() collector.HostSample { return coll.Snapshot().Host }
 	mcName := envOr("MSM_MC_CONTAINER", "mc-fabric")
+
+	// Leistung-Tab: Java-Threads über das Host-procfs, Heap/GC aus dem
+	// GC-Log, Lag-Protokoll. Fester 5-s-Takt, auch ohne Zuschauer.
+	var lagStore jvmstats.LagStore
+	if sq, ok := store.(*storage.SQLite); ok {
+		lagStore = sq
+	}
+	perf := jvmstats.NewMonitor(jvmstats.Config{
+		ProcRoot:  envOr("MSM_HOST_PROC", "/host/proc"),
+		GCLogPath: filepath.Join(mcDataDir, "logs", "gc.log"),
+		MC:        func() collector.MCStatus { return coll.Snapshot().MC },
+		InitPID: func(ctx context.Context) (int, error) {
+			in, ok := docker.(interface {
+				InspectContainer(context.Context, string) (collector.ContainerDetail, error)
+			})
+			if !ok {
+				return 0, errors.New("Docker-Inspect nicht verfügbar")
+			}
+			det, err := in.InspectContainer(ctx, upgrade.ResolveID(coll, mcName))
+			if err != nil {
+				return 0, err
+			}
+			if !det.Running || det.Pid == 0 {
+				return 0, errors.New("Container läuft nicht")
+			}
+			return det.Pid, nil
+		},
+	}, coll, lagStore, log)
+	go perf.Run(ctx)
 	if ds, ok := admin.(hostctl.DesiredStore); ok {
 		rec := hostctl.NewReconciler(ds, controller, coll, mcState, hostState, bus, mcName, log)
 		if kvGet != nil {

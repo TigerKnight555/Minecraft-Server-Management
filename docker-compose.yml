@@ -21,6 +21,10 @@ services:
       ENABLE_QUERY: "true"
       ENABLE_RCON: "true"
       RCON_PASSWORD: ${MSM_RCON_PASSWORD:?MSM_RCON_PASSWORD in .env setzen}
+      # Leistung-Tab: GC-Log für echten Heap und GC-Pausen; MSM liest es
+      # read-only über /mc/data. Wirkt erst nach `docker compose up -d mc-fabric`
+      # (ein Neustart des Minecraft-Servers).
+      JVM_XX_OPTS: "-Xlog:gc:file=/data/logs/gc.log:time,uptime:filecount=5,filesize=10m"
     ports:
       - "25565:25565"
       - "24454:24454/udp" # Simple Voice Chat — nie entfernen!
