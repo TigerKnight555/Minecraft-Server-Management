@@ -1,5 +1,6 @@
 // SSE client: one EventSource feeding Svelte stores. Reconnects with backoff.
 import { writable } from 'svelte/store'
+import { toChart } from './chartdata.js'
 
 export const containers = writable([])
 export const stats = writable({})   // name -> ContainerStats
@@ -7,6 +8,7 @@ export const host = writable(null)
 export const mc = writable(null)
 export const wan = writable(null)
 export const connected = writable(false)
+export const perf = writable(null)  // Leistungs-Stand (/api/perf, SSE "perf")
 
 // ring buffers for live charts: { seriesKey: {t:[], v:[]} }
 export const history = writable({})
@@ -22,16 +24,84 @@ function pushPoint(key, time, value) {
   })
 }
 
+// Verlauf aus der Datenbank (/api/history) vorladen: die Graphen zeigen beim
+// Öffnen sofort die letzte Stunde statt leer zu starten. Speicherwerte liegen
+// dort in Bytes, live kommen sie als GiB.
+const tracked = new Set()
+
+async function preload(keys) {
+  await Promise.all(keys.map(async (key) => {
+    try {
+      const resp = await fetch(`/api/history?series=${encodeURIComponent(key)}&hours=1`)
+      if (!resp.ok) return
+      const rows = (await resp.json()) ?? []
+      const pts = rows.map((r) => [Math.floor(new Date(r.time).getTime() / 1000), toChart(key, r.value)])
+      history.update((h) => {
+        const cur = h[key] ?? { t: [], v: [] }
+        // zusammenführen, nach Zeit sortieren, gleiche Sekunde nur einmal
+        // (Live-Punkt gewinnt)
+        const byT = new Map(pts)
+        cur.t.forEach((t, i) => byT.set(t, cur.v[i]))
+        const t = [...byT.keys()].sort((a, b) => a - b).slice(-MAX_POINTS)
+        return { ...h, [key]: { t, v: t.map((x) => byT.get(x)) } }
+      })
+    } catch {
+      // ohne Verlauf zeigt der Graph eben nur die Live-Punkte
+    }
+  }))
+}
+
+// fetchRange lädt einen festen Zeitraum (Unix-Sekunden) für die Graphen im
+// Leistung-Tab (6 h / 24 h / Lag-Zeitraum) — unabhängig vom Live-Verlauf.
+export async function fetchRange(keys, from, to) {
+  const out = {}
+  await Promise.all(keys.map(async (key) => {
+    try {
+      const resp = await fetch(`/api/history?series=${encodeURIComponent(key)}&from=${from}&to=${to}`)
+      if (!resp.ok) return
+      const rows = (await resp.json()) ?? []
+      out[key] = {
+        t: rows.map((r) => Math.floor(new Date(r.time).getTime() / 1000)),
+        v: rows.map((r) => toChart(key, r.value)),
+      }
+    } catch {
+      // Serie bleibt leer
+    }
+  }))
+  return out
+}
+
+// track registers chart series and loads their recent history.
+export function track(keys) {
+  if (tracked.size === 0 && typeof document !== 'undefined') {
+    // Tab war im Hintergrund (Browser drosseln den Stream): Lücke nachladen
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && tracked.size) preload([...tracked])
+    })
+  }
+  const fresh = keys.filter((k) => !tracked.has(k))
+  fresh.forEach((k) => tracked.add(k))
+  if (fresh.length) preload(fresh)
+}
+
 let es = null
 let retryMs = 1000
+let wasDown = false
 
 export function connect() {
   if (es) es.close()
   es = new EventSource('/api/stream/stats')
 
-  es.onopen = () => { connected.set(true); retryMs = 1000 }
+  es.onopen = () => {
+    connected.set(true)
+    retryMs = 1000
+    // nach einer Unterbrechung (Standby, Netz) die Lücke aus der DB füllen
+    if (wasDown && tracked.size) preload([...tracked])
+    wasDown = false
+  }
   es.onerror = () => {
     connected.set(false)
+    wasDown = true
     es.close()
     setTimeout(connect, retryMs)
     retryMs = Math.min(retryMs * 2, 30000)
@@ -65,6 +135,7 @@ export function connect() {
     mc.set(m)
     pushPoint('mc.tps', m.time, m.tps)
     pushPoint('mc.players', m.time, m.playersOnline)
+    if (m.mspt) pushPoint('mc.mspt', m.time, m.mspt)
   })
 
   es.addEventListener('wan', (e) => {
@@ -73,6 +144,16 @@ export function connect() {
     for (const t of w.targets ?? []) {
       pushPoint(`wan.${t.target}.rtt`, w.time, t.reached ? t.rttMs : null)
     }
+  })
+
+  es.addEventListener('perf', (e) => {
+    const p = JSON.parse(e.data)
+    perf.set(p)
+    if (p.serverThreadCpu != null) pushPoint('jvm.thread.server.cpu', p.time, p.serverThreadCpu)
+    if (p.javaCpu != null) pushPoint('jvm.cpu.total', p.time, p.javaCpu)
+    if (p.heapAfterGc != null) pushPoint('jvm.heap.after_gc', p.time, toChart('jvm.heap.after_gc', p.heapAfterGc))
+    if (p.heapTotal != null) pushPoint('jvm.heap.total', p.time, toChart('jvm.heap.total', p.heapTotal))
+    if (p.gcPauseMax != null) pushPoint('jvm.gc.pause_max', p.time, p.gcPauseMax)
   })
 }
 
@@ -217,3 +298,7 @@ export const basepackApply = (projectId, versionId, configs) =>
 export const basepackToggle = (key, on) => apiFetch('/api/basepack/toggle', { method: 'POST', body: JSON.stringify({ key, on }) })
 export const basepackConfigs = (configs) => apiFetch('/api/basepack/configs', { method: 'POST', body: JSON.stringify({ configs }) })
 export const basepackRemove = () => apiFetch('/api/basepack', { method: 'DELETE' })
+
+// --- Leistung ---
+export const perfStatus = () => apiFetch('/api/perf')
+export const perfLags = (days = 7) => apiFetch(`/api/perf/lags?days=${days}`)

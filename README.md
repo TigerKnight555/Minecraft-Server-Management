@@ -40,6 +40,14 @@ Homeserver getestet.
 - **Dashboard:** Live-Status von Server, Spielern, TPS, RAM/CPU,
   Internetqualität, NAS und Containern; Verlaufs-Charts, Live-Logs,
   RCON-Konsole, Audit-Log
+- **Leistung:** zeigt, warum der Server laggt — Auslastung der Java-Threads
+  (vor allem des Server-Threads, der die Spielwelt auf einem Kern rechnet),
+  echter Heap und GC-Pausen aus dem GC-Log der JVM, MSPT; Graphen über
+  1 h / 6 h / 24 h. Jeder Lag landet mit Auslöser, Spielerzahl, Top-Threads
+  und wahrscheinlicher Ursache im Lag-Protokoll (30 Tage) — auch wenn
+  niemand zuschaut. Dafür fragt MSM den MC-Status (spark-TPS/Tick per RCON)
+  dauerhaft alle 10 s ab, auch ohne offenes Dashboard. Das GC-Log braucht
+  ein vorhandenes `<MC_DATA_PATH>/logs` (siehe INSTALL.md)
 - **Routinen:** zeitgesteuerte Abläufe (Cron) für Backups, Host-Reboots,
   angekündigte Neustarts mit Spieler-Countdown und RCON-Befehle; mit
   Bedingungen wie „überspringen, wenn Spieler online" oder „auf leeren

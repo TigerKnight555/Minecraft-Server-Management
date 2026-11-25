@@ -119,6 +119,14 @@ func (c *Collector) publish(ev Event) {
 	}
 }
 
+// Publish verteilt ein Ereignis an alle SSE-Abonnenten — für Quellen
+// außerhalb des Collectors (z. B. "perf" aus jvmstats).
+func (c *Collector) Publish(ev Event) { c.publish(ev) }
+
+// Enqueue reiht Messpunkte für den nächsten gesammelten Schreibvorgang
+// (alle 30 s) ein.
+func (c *Collector) Enqueue(samples ...Sample) { c.enqueue(samples...) }
+
 // Snapshot returns the latest known state of everything, for initial page load.
 type Snapshot struct {
 	Containers []Container               `json:"containers"`
@@ -182,18 +190,21 @@ func (c *Collector) Run(ctx context.Context) {
 	loops := []struct {
 		name     string
 		interval time.Duration
+		stretch  bool // ohne Zuschauer 6x langsamer
 		fn       func(context.Context)
 	}{
-		{"containers", c.cfg.ContainerInterval, c.pollContainers},
-		{"host", c.cfg.HostInterval, c.pollHost},
-		{"mc", c.cfg.MCInterval, c.pollMC},
-		{"wan", c.cfg.WANInterval, c.pollWAN},
+		{"containers", c.cfg.ContainerInterval, true, c.pollContainers},
+		{"host", c.cfg.HostInterval, true, c.pollHost},
+		// mc nie strecken: MSPT ist Lag-Auslöser, Lags passieren meist,
+		// wenn niemand zuschaut (Leistung-Tab)
+		{"mc", c.cfg.MCInterval, false, c.pollMC},
+		{"wan", c.cfg.WANInterval, true, c.pollWAN},
 	}
 	for _, l := range loops {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			c.loop(ctx, l.interval, l.fn)
+			c.loop(ctx, l.interval, l.stretch, l.fn)
 		}()
 	}
 	wg.Add(1)
@@ -205,17 +216,14 @@ func (c *Collector) Run(ctx context.Context) {
 }
 
 // loop runs fn on the given interval; when no subscriber is connected the
-// interval is stretched 6x to reduce idle load (samples still get stored).
-func (c *Collector) loop(ctx context.Context, interval time.Duration, fn func(context.Context)) {
+// interval is stretched 6x to reduce idle load (samples still get stored) —
+// außer stretch ist false.
+func (c *Collector) loop(ctx context.Context, interval time.Duration, stretch bool, fn func(context.Context)) {
 	fn(ctx)
 	t := time.NewTimer(interval)
 	defer t.Stop()
 	for {
-		next := interval
-		if !c.HasSubscribers() {
-			next = interval * 6
-		}
-		t.Reset(next)
+		t.Reset(nextInterval(interval, stretch, c.HasSubscribers()))
 		select {
 		case <-ctx.Done():
 			return
@@ -223,6 +231,15 @@ func (c *Collector) loop(ctx context.Context, interval time.Duration, fn func(co
 			fn(ctx)
 		}
 	}
+}
+
+// nextInterval streckt den Takt ohne Zuschauer auf das 6-Fache, sofern die
+// Schleife das erlaubt.
+func nextInterval(interval time.Duration, stretch, watched bool) time.Duration {
+	if stretch && !watched {
+		return interval * 6
+	}
+	return interval
 }
 
 func (c *Collector) pollContainers(ctx context.Context) {
@@ -303,6 +320,10 @@ func (c *Collector) pollMC(ctx context.Context) {
 		Sample{Series: "mc.players", Time: s.Time, Value: float64(s.PlayersOnline)},
 		Sample{Series: "mc.tps", Time: s.Time, Value: s.TPS},
 	)
+	// MSPT-Verlauf für den Leistung-Tab; ohne Messwert Lücke statt 0
+	if s.Online && s.MSPT > 0 {
+		c.enqueue(Sample{Series: "mc.mspt", Time: s.Time, Value: s.MSPT})
+	}
 }
 
 func (c *Collector) pollWAN(ctx context.Context) {
